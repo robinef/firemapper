@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+*.pyc
+
+# Node / web
+node_modules/
+web/dist/
+
+# Generated data + secrets (never commit)
+data/
+web/public/data/
+.env
+
+# Local dev / agent tooling (not part of the project)
+.claude/
+.lean-ctx/
+scratch/
+docs/superpowers/
+*.bak
+.DS_Store

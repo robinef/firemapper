@@ -1,0 +1,419 @@
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import {
+  loadAircraft,
+  loadDaySlice,
+  loadEvents,
+  loadFrp,
+  loadIsochrones,
+  loadManifest,
+  loadWind,
+} from "./data";
+import { createMap } from "./map";
+import { FIRE_HUE, addActiveFires, fireLayerIds } from "./layer_fires";
+import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
+import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
+import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
+import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
+import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
+import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
+import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
+import { ImagerySwipe, scarTiles, type ImageryConfig, type Scar } from "./layer_imagery";
+import { mountSwitcher, type LayerModule } from "./registry";
+import { mountPanel, renderAircraftPanel } from "./panel";
+import { mountTimeline } from "./timeline";
+import { setupFireCard } from "./firecard";
+import type { Manifest } from "./types";
+
+const BASE = "/data";
+
+// Rebuilt layer by layer against docs/cartography-rules.md. Overview shows the
+// coarse "where are the fires" layers; a fire's card shows its detail. "When did
+// the fire reach each place?" is answered per-fire by the arrival-coloured
+// footprint in the card, not a global toggle.
+async function boot() {
+  const map = createMap("map");
+  if (import.meta.env.DEV) {
+    (window as unknown as { __map: maplibregl.Map }).__map = map;
+  }
+  const panel = mountPanel("panel", () => undefined);
+
+  map.on("load", async () => {
+    const manifest: Manifest = await loadManifest(BASE);
+    // Show DATA age, not just when the file was built — the freshness a citizen
+    // actually cares about is "how old is the newest satellite detection".
+    const latestIso = manifest.live_frp?.latest;
+    let freshness = "";
+    if (latestIso) {
+      const mins = Math.round((Date.now() - new Date(latestIso).getTime()) / 60000);
+      const age = mins < 90 ? `${mins} min` : `${Math.round(mins / 60)} h`;
+      const stale = mins > 180 ? " ⚠ stale" : "";
+      freshness = ` · newest satellite data ${age} old${stale}`;
+    }
+    document.getElementById("header")!.textContent = `FireMapper${freshness}`;
+
+    const events = await loadEvents(manifest, BASE);
+    const iso = await loadIsochrones(manifest, BASE).catch(
+      () => ({ type: "FeatureCollection", features: [] }) as GeoJSON.FeatureCollection,
+    );
+    // Active-fire footprint = the outermost (open-ended) arrival band.
+    const footprint: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: iso.features.filter(
+        (f) => (f.properties as { max_age?: number })?.max_age === 9999,
+      ),
+    };
+
+    const frp =
+      manifest.frp_points != null
+        ? await loadFrp(manifest, BASE).catch(() => null)
+        : null;
+
+    addDaySlice(map); // under the fires: painted when a histogram day is clicked
+    addActiveFires(map, events, footprint);
+    if (frp) addIntensity(map, frp);
+    if (frp) addSpread(map, frp);
+    const wind =
+      manifest.wind_points != null ? await loadWind(manifest, BASE).catch(() => null) : null;
+    if (wind) addWind(map, wind);
+    addViirs(map, manifest.generated_at.slice(0, 10));
+    const aircraft =
+      manifest.aircraft != null ? await loadAircraft(manifest, BASE).catch(() => null) : null;
+    if (aircraft) {
+      // Stamp each plane's position age now, so the layer can dim a stale
+      // airborne fix (it may be km from the truth) — computed here because
+      // MapLibre styles have no concept of "now".
+      const nowSec = Date.now() / 1000;
+      for (const f of aircraft.features) {
+        const pt = (f.properties as { pos_time?: number }).pos_time;
+        (f.properties as Record<string, unknown>).age_min =
+          pt ? Math.round((nowSec - pt) / 60) : null;
+      }
+      addAircraft(map, aircraft);
+    }
+    if (manifest.imagery?.scars?.length) addScars(map, manifest.imagery.scars);
+
+    const modules: LayerModule[] = [
+      {
+        key: "fires",
+        levels: [1, 2] as (1|2)[],
+        label: "Active fires",
+        question: "Where is fire burning now, and how big?",
+        layerIds: [...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels"],
+        defaultOn: true,
+        legend: {
+          title: "Active fires",
+          entries: [
+            { color: FIRE_HUE, size: 8, shape: "dot", label: "smaller burned area" },
+            { color: FIRE_HUE, size: 16, shape: "dot", label: "larger burned area" },
+            { color: "rgba(255,90,31,0.4)", size: 14, shape: "dot", label: "quiet — no new detection 24–48 h" },
+          ],
+          note: "One colour = fire. Bigger dot = more area burned; faded = gone quiet. Zoom in for the outline.",
+        },
+      },
+      {
+        key: "intensity",
+        levels: [1, 2] as (1|2)[],
+        label: "Fire intensity",
+        question: "How violently is it burning right now?",
+        layerIds: INTENSITY_LAYER_IDS,
+        defaultOn: false,
+        legend: INTENSITY_LEGEND,
+      },
+      {
+        key: "spread",
+        levels: [2] as (1|2)[],
+        label: "Fire spread",
+        question: "Which way is it moving, and how fast?",
+        layerIds: SPREAD_LAYER_IDS,
+        defaultOn: false,
+        legend: SPREAD_LEGEND,
+      },
+      {
+        key: "wind",
+        levels: [2] as (1|2)[],
+        label: "Wind",
+        question: "Which way is the wind pushing it?",
+        layerIds: WIND_LAYER_IDS,
+        defaultOn: false,
+        legend: WIND_LEGEND,
+      },
+      {
+        key: "viirs",
+        levels: [2] as (1|2)[],
+        label: "VIIRS detail",
+        question: "Finest-resolution detection footprint (375 m)",
+        layerIds: VIIRS_LAYER_IDS,
+        defaultOn: false,
+        legend: VIIRS_LEGEND,
+      },
+      {
+        key: "aircraft",
+        levels: [1, 2] as (1|2)[],
+        label: "Firefighting aircraft",
+        question: "Are water bombers working this fire?",
+        layerIds: AIRCRAFT_LAYER_IDS,
+        defaultOn: aircraft != null && aircraft.features.length > 0,
+        legend: AIRCRAFT_LEGEND,
+      },
+      {
+        key: "scars",
+        levels: [1] as (1|2)[],
+        label: "Burn scars (past fires)",
+        question: "How much did past fires destroy?",
+        layerIds: SCAR_LAYER_IDS,
+        defaultOn: true,
+        legend: SCAR_LEGEND,
+      },
+    ];
+    const switcher = mountSwitcher(
+      document.getElementById("layers")!,
+      document.getElementById("legend")!,
+      modules,
+      map,
+    );
+    // Overview histogram: clicking a day paints that day's detections across
+    // Europe (a continental time-scrubber). Clicking the shown day again clears.
+    const dayDates = new Set(manifest.day_slice_dates ?? []);
+    let shownDay: string | null = null;
+    const timelineEl = document.getElementById("timeline")!;
+    const mountOverviewTimeline = () =>
+      mountTimeline(timelineEl, manifest.timeline, {
+        onSelect: async (d) => {
+          if (shownDay === d.date) {
+            hideDaySlice(map);
+            shownDay = null;
+            return;
+          }
+          if (!dayDates.has(d.date)) {
+            hideDaySlice(map);
+            shownDay = null;
+            return;
+          }
+          shownDay = d.date;
+          setDaySlice(map, await loadDaySlice(manifest, d.date));
+        },
+      });
+    mountOverviewTimeline();
+    // Level 2: clicking any fire zone (active dot, footprint, or past-scar
+    // marker) opens that fire's card — map flies in, others dim, stats on the
+    // right, the fire's own histogram on the bottom. Before/after is a button
+    // inside the card, driven by the compare mode built here.
+    const compare = setupCompareMode(map, manifest);
+    const fireCard = setupFireCard(
+      map, manifest, compare, timelineEl, switcher, mountOverviewTimeline,
+      () => {
+        hideDaySlice(map);
+        shownDay = null;
+      },
+    );
+    for (const id of [...fireLayerIds, "fire-footprint-fill"]) {
+      map.on("click", id, fireCard.openFire);
+      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
+    }
+    for (const id of SCAR_LAYER_IDS) {
+      map.on("click", id, fireCard.openScar);
+      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
+    }
+
+    // Click an aircraft → its detail panel. The halo is a larger, easier
+    // hit target than the small plane icon.
+    for (const id of ["aircraft", "aircraft-halo"]) {
+      map.on("click", id, (e) => {
+        const feat = e.features?.[0];
+        if (feat) panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
+      });
+      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
+    }
+
+    // Boot done + layers mounted → drop the cold-start splash.
+    const splash = document.getElementById("loading");
+    if (splash) {
+      splash.classList.add("done");
+      setTimeout(() => splash.remove(), 450);
+    }
+  });
+}
+
+/**
+ * Before/after imagery is a compare MODE you ENTER by clicking a fire on the
+ * map — the map is the picker, so there is no list in the side panel. The scar
+ * (a location + the two capture dates) is derived from the clicked fire itself.
+ * Keyless NASA GIBS true-colour by default (works for any date, including last
+ * month's fires); CDSE Sentinel-2 10 m when creds provide an HD source, with a
+ * deeper zoom cap so close-ups stay crisp instead of over-zooming a coarse tile.
+ *
+ * Returns an entry handler to bind to fire-layer clicks, or null when no
+ * imagery is configured.
+ */
+interface CompareMode {
+  /** Enter from a live fire click — dates synthesised from the fire. */
+  fromFire: (e: maplibregl.MapLayerMouseEvent) => void;
+  /** Enter from a past-scar marker click — uses the scar's stored dates. */
+  fromScar: (e: maplibregl.MapLayerMouseEvent) => void;
+  /** Leave compare mode (destroy the swipe, clear the banner). */
+  exit: () => void;
+}
+
+function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode | null {
+  const cfg = manifest.imagery;
+  if (!cfg) return null;
+  const maxzoom = cfg.hd ? 14 : 8;
+  let swipe: ImagerySwipe | null = null;
+
+  // Every data overlay is hidden while comparing, so nothing (H3 footprint
+  // hexes, heat, hexbins, markers) sits on top of the before/after imagery.
+  const OVERLAY_LAYERS = [
+    ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
+    "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
+    ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
+    ...VIIRS_LAYER_IDS, ...AIRCRAFT_LAYER_IDS, ...SCAR_LAYER_IDS,
+  ];
+  const overlayVis: Record<string, string> = {};
+  const hideOverlays = () => {
+    for (const id of OVERLAY_LAYERS) {
+      if (!map.getLayer(id)) continue;
+      overlayVis[id] = (map.getLayoutProperty(id, "visibility") as string) ?? "visible";
+      map.setLayoutProperty(id, "visibility", "none");
+    }
+  };
+  const restoreOverlays = () => {
+    for (const id of Object.keys(overlayVis)) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", overlayVis[id]);
+    }
+    for (const id of Object.keys(overlayVis)) delete overlayVis[id];
+  };
+
+  const exit = () => {
+    swipe?.destroy();
+    swipe = null;
+    restoreOverlays();
+    setCompareNotice(null, cfg, exit);
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") exit();
+  });
+
+  const enter = (scar: Scar) => {
+    swipe?.destroy();
+    hideOverlays();
+    map.flyTo({ center: [scar.lon, scar.lat], zoom: cfg.hd ? 13 : 10 });
+    const t = scarTiles(cfg, scar);
+    swipe = new ImagerySwipe(map, t.before, t.after, maxzoom);
+    setCompareNotice(scar, cfg, exit);
+  };
+
+  return {
+    fromFire: (e) => enter(scarFromClick(e)),
+    fromScar: (e) => {
+      const s = scarFromProps(e.features?.[0]?.properties ?? {});
+      if (s) enter(s);
+    },
+    exit,
+  };
+}
+
+/** Reconstruct a Scar from a past-scar marker's feature properties, which
+ * already carry the exact before/after dates the pipeline computed. */
+function scarFromProps(p: Record<string, unknown>): Scar | null {
+  const s = ["id", "label", "kind", "before", "after", "started"].every(
+    (k) => typeof p[k] === "string",
+  );
+  if (!s || typeof p.lon !== "number" || typeof p.lat !== "number") return null;
+  return {
+    id: p.id as string,
+    label: p.label as string,
+    kind: p.kind as "active" | "past",
+    lon: p.lon as number,
+    lat: p.lat as number,
+    started: p.started as string,
+    before: p.before as string,
+    after: p.after as string,
+  };
+}
+
+/** Build a scar (location + before/after dates) from a clicked fire feature.
+ * Uses the click point, so it works whether a proportional dot or the footprint
+ * polygon was hit, and falls back to sensible active-fire dates when a footprint
+ * feature carries no lifecycle props. */
+function scarFromClick(e: maplibregl.MapLayerMouseEvent): Scar {
+  const p = (e.features?.[0]?.properties ?? {}) as Record<string, unknown>;
+  const day = 86_400_000;
+  const now = Date.now();
+  const yesterday = new Date(now - day);
+  const parsed = typeof p.started === "string" ? new Date(p.started) : null;
+  const start = parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date(now - day);
+  const past = typeof p.status === "string" ? p.status !== "active" : false;
+  const before = new Date(start.getTime() - 6 * day);
+  let after = past
+    ? new Date(Math.min(start.getTime() + 14 * day, yesterday.getTime()))
+    : yesterday;
+  if (after.getTime() < start.getTime()) after = new Date(start.getTime());
+  const label =
+    (typeof p.name === "string" && p.name) ||
+    (typeof p.place === "string" && p.place) ||
+    (past ? "Burn scar" : "Active fire");
+  return {
+    id: typeof p.id === "string" ? p.id : "",
+    label,
+    kind: past ? "past" : "active",
+    lon: e.lngLat.lng,
+    lat: e.lngLat.lat,
+    started: isoDay(start),
+    before: isoDay(before),
+    after: isoDay(after),
+  };
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** Compare-mode banner: fire label, the two capture dates, source note, and an
+ * exit control. Passing null clears it (mode off). */
+function setCompareNotice(scar: Scar | null, cfg: ImageryConfig, onExit: () => void) {
+  const el = document.getElementById("notice");
+  if (!el) return;
+  if (!scar) {
+    el.innerHTML = "";
+    el.style.display = "none";
+    return;
+  }
+  const src = cfg.hd ? "Sentinel-2 · 10 m" : "MODIS · 250 m, coarse (regional scars only)";
+  // A burn scar only shows once the fire has burned for days and the sky has
+  // cleared. When "after" is within a few days of ignition, say so plainly —
+  // otherwise the two images look identical and the mode seems broken.
+  const day = 86_400_000;
+  const scarAgeDays = (Date.parse(scar.after) - Date.parse(scar.started)) / day;
+  const tooRecent = scar.kind === "active" && scarAgeDays < 4;
+  const hint = tooRecent
+    ? `<span class="compare-hint">Fire too recent — scar not visible yet. ` +
+      `Optical scars take days to appear.</span>`
+    : "";
+  el.innerHTML =
+    `<div class="compare-banner">` +
+    `<span class="compare-title">${escapeHtml(scar.label)}</span>` +
+    `<span class="compare-dates">` +
+    `<b>Before</b> pre-fire · ${scar.before}<br>` +
+    `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ${scar.after}` +
+    `</span>` +
+    hint +
+    `<span class="compare-src">${src}</span>` +
+    `<button class="compare-exit" type="button">&times; Exit compare</button>` +
+    `</div>`;
+  el.style.display = "block";
+  el.querySelector(".compare-exit")?.addEventListener("click", onExit);
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
+  );
+}
+
+boot();
