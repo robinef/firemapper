@@ -6,7 +6,6 @@ __pycache__/
 
 # Node / web
 node_modules/
-web/dist/
 
 # Generated data + secrets (never commit)
 data/
