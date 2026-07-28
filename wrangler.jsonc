@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "firemapper",
+  "compatibility_date": "2025-01-01",
+  // Static site: serve the built Vite output. The build step must produce
+  // web/dist (npm run build) AND the data under web/public/data (the Python
+  // pipeline) before this deploys — see the Cloudflare "Build command".
+  "assets": {
+    "directory": "./web/dist",
+    "not_found_handling": "single-page-application"
+  }
+}
