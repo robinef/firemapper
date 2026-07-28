@@ -23,7 +23,9 @@ service.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 # GIBS true-colour layers (keyless). MODIS Terra is the daily default; VIIRS is
 # an alternative. Corrected-reflectance = natural colour.
@@ -39,29 +41,29 @@ TRUE_COLOR_LAYER = "TRUE-COLOR-S2L2A"
 
 # Curated real European megafire scars, always available so the before/after
 # mode has a striking green→black example even with no live past fires (and even
-# keyless — GIBS carries these historical dates too, just coarser). Dates are
-# the WINDOW-END capture days: `before` sits just pre-ignition (still green),
-# `after` on the settled black scar. Verified against CDSE Sentinel-2.
-NOTABLE_SCARS = [
-    # The twin July 2022 Gironde pine megafires.
-    {"id": "landiras-2022", "label": "Landiras · Gironde 2022",
-     "lon": -0.57, "lat": 44.52, "before": "2022-07-05", "after": "2022-08-28"},
-    {"id": "la-teste-2022", "label": "La Teste-de-Buch · Gironde 2022",
-     "lon": -1.17, "lat": 44.545, "before": "2022-07-05", "after": "2022-08-20"},
-    # Evros / Alexandroupoli GR — Aug 2023, largest wildfire in EU history.
-    {"id": "evros-2023", "label": "Evros · Greece 2023",
-     "lon": 26.15, "lat": 41.05, "before": "2023-08-10", "after": "2023-09-15"},
-    # Rhodes GR — July 2023, forced mass tourist evacuations.
-    {"id": "rhodes-2023", "label": "Rhodes · Greece 2023",
-     "lon": 27.92, "lat": 36.13, "before": "2023-07-10", "after": "2023-08-18"},
-]
+# keyless — GIBS carries these historical dates too, just coarser). The list
+# lives in notable_scars.json (data, not code) so it can be edited without
+# touching the pipeline. Each entry carries the WINDOW-END capture days:
+# `before` sits just pre-ignition (still green), `after` on the settled black
+# scar. Verified against CDSE Sentinel-2.
+_NOTABLE_SCARS_FILE = Path(__file__).parent / "notable_scars.json"
 
 
 def notable_scars() -> list[dict]:
-    """The curated real megafire scars, shaped like build_scars() output."""
+    """The curated real megafire scars, shaped like build_scars() output.
+
+    Loaded from notable_scars.json next to this module. Fully guarded: a missing
+    or unparseable file yields [] rather than raising, so a bad edit can never
+    take the whole imagery manifest down."""
+    try:
+        raw = json.loads(_NOTABLE_SCARS_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - missing/invalid file → no curated scars
+        return []
+    if not isinstance(raw, list):
+        return []
     return [
         {**s, "kind": "past", "started": s["before"]}
-        for s in NOTABLE_SCARS
+        for s in raw
     ]
 
 
@@ -158,13 +160,33 @@ def hd_config(settings) -> dict | None:
     return {"wms_base": f"{WMS_BASE}/{instance}", "layer": layer}
 
 
-def build_imagery(settings, events: dict, now: datetime, places: list | None = None) -> dict | None:
+def _dedup_scars(scars: list[dict]) -> list[dict]:
+    """Drop scars sharing a rounded lon/lat with an earlier one, so a best-effort
+    external source (EFFIS) does not duplicate a scar we already derived from our
+    own FIRMS detections. First occurrence wins (our own scars come first)."""
+    seen: set[tuple[float, float]] = set()
+    out: list[dict] = []
+    for s in scars:
+        key = (round(s["lon"], 2), round(s["lat"], 2))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def build_imagery(
+    settings, events: dict, now: datetime, places: list | None = None,
+    extra_scars: list[dict] | None = None,
+) -> dict | None:
     """Imagery config for the manifest: keyless GIBS layer + per-scar dates,
     with an optional CDSE HD source. Live scars from our detections are joined
-    with the curated real megafires, so the before/after mode always has a
+    with the curated real megafires (and any best-effort external burned-area
+    scars in `extra_scars`, e.g. EFFIS), so the before/after mode always has a
     green→black example to show. `places` labels real scars with their nearest
     town."""
-    scars = build_scars(events, now, places) + notable_scars()
+    scars = build_scars(events, now, places) + notable_scars() + (extra_scars or [])
+    scars = _dedup_scars(scars)
     if not scars:
         return None
     return {"source": "gibs", "gibs_layer": GIBS_LAYER, "hd": hd_config(settings), "scars": scars}

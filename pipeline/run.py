@@ -12,6 +12,7 @@ from .events import cluster
 from .export import export
 from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_aircraft import fetch_aircraft
+from .fetch_effis import fetch_effis_ba
 from .fetch_imagery import build_imagery
 from .timeline import build_timeline
 from .day_slices import build_day_slices
@@ -102,8 +103,12 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # clustered over a longer window so fires that have gone quiet persist as
     # "past" scars — no external burned-area service.
     scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    # EFFIS burned areas are a best-effort bonus tier: its Oracle backend is
+    # often down, so fetch_effis_ba is self-guarding and _safe wraps it again.
+    effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
+    print(f"[info] EFFIS burned-area scars: {len(effis)}")
     imagery = _safe(
-        lambda: build_imagery(settings, scar_events, now, places),
+        lambda: build_imagery(settings, scar_events, now, places, extra_scars=effis),
         default=None, label="imagery-scars"
     )
     if imagery:

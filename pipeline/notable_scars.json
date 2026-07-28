@@ -1,0 +1,10 @@
+[
+  {"id": "landiras-2022", "label": "Landiras · Gironde 2022",
+   "lon": -0.57, "lat": 44.52, "before": "2022-07-05", "after": "2022-08-28"},
+  {"id": "la-teste-2022", "label": "La Teste-de-Buch · Gironde 2022",
+   "lon": -1.17, "lat": 44.545, "before": "2022-07-05", "after": "2022-08-20"},
+  {"id": "evros-2023", "label": "Evros · Greece 2023",
+   "lon": 26.15, "lat": 41.05, "before": "2023-08-10", "after": "2023-09-15"},
+  {"id": "rhodes-2023", "label": "Rhodes · Greece 2023",
+   "lon": 27.92, "lat": 36.13, "before": "2023-07-10", "after": "2023-08-18"}
+]
