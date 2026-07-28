@@ -69,3 +69,19 @@ def test_fetch_firms_history_incremental_skips_stored_windows(tmp_path):
     calls.clear()
     fetch_firms_history(s, days=30, http_get=fake_get)
     assert len(calls) < 6
+
+
+def test_fetch_firms_history_uses_configured_window(tmp_path):
+    # No explicit `days` → the window comes from settings.firms_history_days.
+    # 45 days / 5-day windows = 9 windows against an empty store.
+    s = load_settings(env={
+        "FIRMS_MAP_KEY": "k", "DATA_DIR": str(tmp_path), "FIRMS_HISTORY_DAYS": "45",
+    })
+    calls: list[str] = []
+
+    def fake_get(url: str) -> str:
+        calls.append(url)
+        return _csv_on(url.rsplit("/", 1)[-1])
+
+    fetch_firms_history(s, http_get=fake_get)  # days omitted → configured 45
+    assert len(calls) == 9

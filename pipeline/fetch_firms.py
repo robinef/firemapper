@@ -89,10 +89,15 @@ def _store_latest_viirs(store: Path):
 
 
 def fetch_firms_history(
-    settings: Settings, days: int = 30, http_get: Callable[[str], str] | None = None
+    settings: Settings, days: int | None = None, http_get: Callable[[str], str] | None = None
 ) -> int:
     """Append recent VIIRS hotspots to the persistent store so past fires exist
     as historical scars. Needs a FIRMS key; no key → no-op (0).
+
+    The window size defaults to settings.firms_history_days (30) but an explicit
+    `days` arg overrides it. NRT covers only ~the last 2 months; windows older
+    than ~60 days need the SP (Standard Processing) archive, which is out of
+    scope here.
 
     Incremental: the store is a src_id-deduped cache, so windows already covered
     by it are skipped and only days newer than the latest stored VIIRS detection
@@ -101,6 +106,8 @@ def fetch_firms_history(
     force a full refetch.) The area API caps a dated request at 5 days, so this
     chains 5-day windows back from today.
     """
+    if days is None:
+        days = settings.firms_history_days
     if settings.firms_map_key is None:
         return 0
     if http_get is None:

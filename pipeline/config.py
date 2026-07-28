@@ -21,6 +21,7 @@ class Settings:
     sh_layer: str | None
     data_dir: Path
     out_dir: Path
+    firms_history_days: int = 30
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -49,4 +50,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         sh_layer=merged.get("SENTINELHUB_LAYER"),
         data_dir=Path(merged.get("DATA_DIR", "data")),
         out_dir=Path(merged.get("OUT_DIR", "web/public/data")),
+        firms_history_days=_int(merged.get("FIRMS_HISTORY_DAYS"), 30),
     )
+
+
+def _int(value: str | None, default: int) -> int:
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default

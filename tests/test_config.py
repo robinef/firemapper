@@ -10,6 +10,14 @@ def test_load_settings_from_mapping():
     assert s.eumetsat_key is None
 
 
+def test_firms_history_days_default_and_override():
+    assert load_settings(env={"FIRMS_MAP_KEY": "k"}).firms_history_days == 30
+    s = load_settings(env={"FIRMS_MAP_KEY": "k", "FIRMS_HISTORY_DAYS": "45"})
+    assert s.firms_history_days == 45
+    # A garbage value falls back to the default rather than raising.
+    assert load_settings(env={"FIRMS_HISTORY_DAYS": "nope"}).firms_history_days == 30
+
+
 def test_bbox_sane():
     lon_min, lat_min, lon_max, lat_max = EUROPE_BBOX
     assert lon_min < lon_max and lat_min < lat_max
