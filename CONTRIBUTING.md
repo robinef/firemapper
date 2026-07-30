@@ -33,3 +33,36 @@ See [`AGENTS.md`](AGENTS.md) for the architecture and conventions.
 
 Open an issue with steps to reproduce and, if relevant, the generation manifest
 (`web/public/data/manifest.json`) and console output.
+
+## Maintainer notes
+
+`main` is **not branch-protected yet** — GitHub requires a public repository or a
+paid plan for that, and this repo is currently private on the free tier. The
+intended rules, once either is true:
+
+```bash
+gh api -X POST repos/robinef/firemapper/rulesets --input - <<'JSON'
+{
+  "name": "main protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "required_status_checks": [
+          { "context": "pipeline (pytest)" },
+          { "context": "web (tsc + vitest)" }
+        ]
+      }
+    }
+  ]
+}
+JSON
+```
+
+That blocks force-pushes and deletion of `main` and requires both CI jobs to pass.
+Deliberately no required review count, so a solo maintainer isn't blocked.
