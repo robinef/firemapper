@@ -32,22 +32,22 @@ class FakeS3:
         self.put_order: list[str] = []
         self.deleted: list[str] = []
 
-    def get_object(self, Bucket, Key):  # noqa: N803 - boto3 signature
+    def get_object(self, Bucket, Key):
         if Key not in self.objects:
             raise FileNotFoundError(Key)
         return {"Body": _Body(self.objects[Key])}
 
-    def put_object(self, Bucket, Key, Body, **kw):  # noqa: N803 - boto3 signature
+    def put_object(self, Bucket, Key, Body, **kw):
         if self.fail_on and Key == self.fail_on:
             raise RuntimeError(f"upload failed: {Key}")
         self.put_order.append(Key)
         self.objects[Key] = Body
 
-    def list_objects_v2(self, Bucket, Prefix=""):  # noqa: N803 - boto3 signature
+    def list_objects_v2(self, Bucket, Prefix=""):
         keys = [k for k in sorted(self.objects) if k.startswith(Prefix)]
         return {"Contents": [{"Key": k} for k in keys]} if keys else {}
 
-    def delete_object(self, Bucket, Key):  # noqa: N803 - boto3 signature
+    def delete_object(self, Bucket, Key):
         self.deleted.append(Key)
         self.objects.pop(Key, None)
 

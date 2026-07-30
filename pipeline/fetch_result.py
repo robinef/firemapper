@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 
@@ -66,6 +66,10 @@ def newest_timestamp(values) -> datetime | None:
 
     Shared by the layers whose payloads carry per-record times (MTG pixels,
     wind samples), so every layer's `observed_at` is derived the same way.
+
+    Naive timestamps are assumed UTC and stamped as such: sources hand us bare
+    strings like "2026-07-30T14:15:00", and `Date.parse` in the browser would
+    read those as LOCAL time, skewing every age by the viewer's offset.
     """
     best: datetime | None = None
     for value in values:
@@ -75,6 +79,8 @@ def newest_timestamp(values) -> datetime | None:
             parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError:
             continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
         if best is None or parsed > best:
             best = parsed
     return best

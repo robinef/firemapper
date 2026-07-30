@@ -55,9 +55,15 @@ make dev       # open the map at http://localhost:5173
 
 That's it — no server, no database to run. The map reads plain static files.
 
-Want live data? Get a free
+`make sample` needs no key: the keyless sources (Meteosat intensity, wind,
+firefighting aircraft) are real and live, and the fire history is synthetic so
+the demo is never empty.
+
+Want the real fire history too? Get a free
 [NASA FIRMS key](https://firms.modaps.eosdis.nasa.gov/api/map_key/), drop it in
-`.env` (copy `.env.example`), then `make refresh`.
+`.env` (copy `.env.example`), then `make refresh-full` — 30 days of real VIIRS
+detections replace the synthetic ones. `make refresh-fast` updates only the live
+layers and never needs a key.
 
 ## Contributing
 

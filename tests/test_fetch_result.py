@@ -53,3 +53,20 @@ def test_an_unreadable_observation_time_is_not_a_failure():
 def test_failed_result_is_not_usable():
     assert FetchResult("failed", [], NOW).usable is False
     assert FetchResult("empty", [], NOW).usable is True
+
+
+def test_naive_timestamps_are_treated_as_utc():
+    """A bare "2026-07-30T14:15:00" would be read as LOCAL time by the browser,
+    skewing every layer age by the viewer's offset."""
+    from pipeline.fetch_result import newest_timestamp
+
+    got = newest_timestamp(["2026-07-30T14:15:00"])
+    assert got is not None and got.tzinfo is not None
+    assert got == datetime(2026, 7, 30, 14, 15, tzinfo=timezone.utc)
+
+
+def test_newest_timestamp_picks_the_latest_and_skips_junk():
+    from pipeline.fetch_result import newest_timestamp
+
+    got = newest_timestamp(["2026-07-30T10:00:00Z", "nonsense", None, "2026-07-30T12:00:00Z"])
+    assert got == datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)

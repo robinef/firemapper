@@ -1,4 +1,4 @@
-.PHONY: setup test refresh watch dev bench sample
+.PHONY: setup test refresh refresh-fast refresh-full watch dev bench sample
 
 setup:
 	uv sync
@@ -11,6 +11,14 @@ test:
 
 refresh:
 	uv run python -m pipeline.run refresh
+
+# Live layers only (no API key needed) vs. the full run that also tops up the
+# 30-day VIIRS archive and the slow bonus tiers (needs FIRMS_MAP_KEY).
+refresh-fast:
+	uv run python -m pipeline.run refresh fast
+
+refresh-full:
+	uv run python -m pipeline.run refresh full
 
 watch:
 	uv run python -m pipeline.run watch

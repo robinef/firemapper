@@ -1,32 +1,69 @@
 # Architecture
 
-FireMapper has no backend. A Python pipeline fetches satellite fire data, stores
-it locally, and writes **static files**; a browser app renders them. The
-"database" is [DuckDB](https://duckdb.org/) running in-process, and the storage
-format is GeoParquet on disk.
+FireMapper has no application backend. A Python pipeline fetches satellite fire
+data, stores it as GeoParquet, and writes **static artifacts**; a browser app
+renders them. The "database" is [DuckDB](https://duckdb.org/) running
+in-process. The only server-side component is a Cloudflare Worker that reads
+published artifacts out of an object store — it holds no logic and no state.
 
 ```
 satellite / API sources
         │  fetch
         ▼
-data/raw/*.parquet ──────── GeoParquet + geometry + H3 keys (the local store)
+data/raw/*.parquet ──────── GeoParquet + geometry + H3 keys (the store)
         │  cluster + measure
         ▼
-web/public/data/gen-<ts>/ ── static JSON / GeoJSON artifacts + manifest.json
-        │  read
+<out_dir>/gen-<ts>/ ─────── static JSON / GeoJSON artifacts + manifest.json
+        │  publish (deployed) / read directly (local dev)
         ▼
-MapLibre frontend (web/) ─── static site
+R2 bucket ──── Worker /data/* ──── MapLibre frontend (web/)
 ```
+
+Locally, `<out_dir>` is `web/public/data` and Vite serves it directly — no
+bucket, no Worker, no credentials. Deployed, the same directory is published to
+R2 by CI every 15 minutes. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Why this shape
 
-- **Local-first.** Everything works offline from the local store; no service to
-  operate, nothing to pay for, easy to fork and run.
-- **Static output.** The map is plain files behind a CDN, so hosting is trivial
-  and the app cannot be taken down by a backend outage.
+- **Local-first.** Everything works offline from the local store; nothing to
+  operate to develop against, easy to fork and run.
+- **Static output.** The map is plain files behind a CDN. There is no request
+  path that can compute a wrong answer under load.
 - **Reproducible.** Each pipeline run writes a new immutable `gen-<timestamp>/`
   directory. `manifest.json` is written **last**, atomically, so a client polling
-  during a run never sees a half-published generation.
+  during a run never sees a half-published generation. Publishing to R2 preserves
+  that ordering across the network.
+
+## Freshness contract
+
+Every layer records how old it is, and the UI is required to say so. Three
+timestamps per layer, deliberately distinct: `attempted_at` (we tried),
+`fetched_at` (data arrived), `observed_at` (the newest observation *inside* the
+data). Only the last one answers "how old is this satellite detection".
+
+| Layer | Source | Age budget | Carried on failure? |
+|---|---|---|---|
+| `events` | VIIRS + MTG fused | 3 h | yes, up to 6 h |
+| `frp` | Meteosat MTG FCI | 1 h | yes, up to 2 h |
+| `wind` | Open-Meteo | 3 h | yes, up to 6 h |
+| `aircraft` | OpenSky ADS-B | 20 min | **never** |
+| `timeline` | archive | 24 h | yes, up to 48 h |
+| `imagery` | GIBS + EFFIS + curated | 7 d | yes, up to 14 d |
+
+Rules that fall out of it:
+
+- **Only failures are carried.** A fetch that succeeds and returns nothing is
+  the truth and replaces what came before — a quiet winter must not render as
+  last week's fires.
+- **Carried data expires** at twice its budget, so a dead feed cannot leave
+  ghost data on the map indefinitely.
+- **Aircraft is never carried.** A stale plane position is a false claim about
+  where an aircraft is, not degraded data. Grounded aircraft and fixes older
+  than the budget are dropped in the pipeline, before they reach the map.
+- **The header badge is computed from fire sources only** (`events`, `frp`). A
+  successful wind fetch says nothing about whether we can still see fires.
+- **Derived layers inherit their source's staleness**: spread arrows and
+  isochrones are computed from FRP pixels, so stale pixels grey them too.
 
 ## Data sources
 
