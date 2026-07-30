@@ -148,7 +148,9 @@ def _carry_layer_files(previous_generation: Path, gen: Path, filenames: list[str
     return True
 
 
-def validate_generation(gen: Path) -> list[str]:
+def validate_generation(
+    gen: Path, layers: dict | None = None, carry_available: set[str] | None = None
+) -> list[str]:
     problems = []
     for name in ("events.geojson", "stats.json", "lineage.json"):
         p = gen / name
@@ -159,6 +161,13 @@ def validate_generation(gen: Path) -> list[str]:
             json.loads(p.read_text())
         except json.JSONDecodeError:
             problems.append(f"invalid json: {name}")
+
+    # A failed layer that could have been carried but was not is a bug in the
+    # carry path, and publishing it would put an empty layer on the live map —
+    # the exact regression this design exists to prevent. Refuse instead.
+    for key in sorted(carry_available or set()):
+        if (layers or {}).get(key, {}).get("status") == "failed":
+            problems.append(f"{key} failed but a carry was available and unused")
     return problems
 
 
@@ -335,6 +344,9 @@ def export(
     )
 
     layers: dict[str, dict] = {}
+    # Layers a carry was possible for, so the validator can catch a failed
+    # carry rather than letting an empty layer reach the map.
+    carry_available: set[str] = set()
     newest_detection = max(
         (m["acq_time"] for ms in events.values() for m in ms), default=None
     )
@@ -354,12 +366,14 @@ def export(
         result = results.get(key)
         if result is None:
             continue
-        if (
-            previous_generation is not None
-            and should_carry(key, result, previous_layers.get(key), now)
-            and _carry_layer_files(previous_generation, gen, filenames)
-        ):
+        carryable = previous_generation is not None and should_carry(
+            key, result, previous_layers.get(key), now
+        )
+        if carryable:
+            carry_available.add(key)
+        if carryable and _carry_layer_files(previous_generation, gen, filenames):
             layers[key] = carried_entry(previous_layers[key], now=now)
+            carry_available.discard(key)  # carried successfully, nothing to flag
             print(f"[warn] {key}: fetch failed, carrying the previous generation")
             continue
         layers[key] = layer_entry(key, result, now=now, source=source)
@@ -374,7 +388,7 @@ def export(
         "gibs_tiles", FetchResult("ok", None, now, now), now=now, source="nasa-gibs",
     )
 
-    problems = validate_generation(gen)
+    problems = validate_generation(gen, layers=layers, carry_available=carry_available)
     if problems:
         raise RuntimeError(f"generation invalid, not publishing: {problems}")
     # Atomic publish: write to a temp file then os.replace so a polling client

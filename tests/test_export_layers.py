@@ -133,3 +133,25 @@ def test_tiers_report_what_actually_arrived(tmp_path):
     export(settings, meteosat_only, {}, [], [], now=T(20, 12))
 
     assert _manifest(settings)["tiers"]["viirs"] is False
+
+
+def test_publish_refused_when_a_carry_was_available_but_not_applied(tmp_path):
+    """Belt and braces: carry-forward should have handled this, so reaching the
+    validator with an empty critical layer and a live carry means a bug."""
+    import pytest
+
+    from pipeline.export import validate_generation
+
+    settings = _settings(tmp_path)
+    gen = settings.out_dir / "gen-20260730T120000Z"
+    (gen / "tracks").mkdir(parents=True)
+    (gen / "events.geojson").write_text('{"type":"FeatureCollection","features":[]}')
+    (gen / "stats.json").write_text('{"detections":{}}')
+    (gen / "lineage.json").write_text('{"merged":{},"reactivated":{}}')
+    (gen / "frp.geojson").write_text('{"type":"FeatureCollection","features":[]}')
+
+    layers = {"frp": {"status": "failed", "max_age_s": 3600}}
+    problems = validate_generation(gen, layers=layers, carry_available={"frp"})
+
+    assert any("frp" in p for p in problems)
+    assert validate_generation(gen, layers=layers, carry_available=set()) == []
