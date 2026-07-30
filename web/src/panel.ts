@@ -104,7 +104,7 @@ export function renderFrpPanel(p: Record<string, unknown>, now: Date = new Date(
         ? `<span class="muted">No clear local spread direction</span>`
         : `Spreading toward <b>${compass(dir)}</b> (${dir}°)`
     }</div>
-    <div class="panel-row small muted">~2 km Meteosat pixel · refreshed every 10 min</div>
+    <div class="panel-row small muted">~2 km Meteosat pixel · Meteosat scans every 10 min, this map republishes every 15</div>
     ${SAFETY}
   `;
 }
