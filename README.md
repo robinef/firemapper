@@ -68,9 +68,15 @@ make watch     # poll on an interval (WATCH_INTERVAL_S to override)
 make test      # pytest (pipeline) + tsc + vitest (frontend)
 ```
 
+## Deploy
+
+Runs as a static Cloudflare Worker — [`wrangler.jsonc`](wrangler.jsonc) serves
+`web/dist`, deployed on every push to `main`. See the deployment section of
+[`AGENTS.md`](AGENTS.md) for how to refresh the data.
+
 ## Docs
 
-- [`AGENTS.md`](AGENTS.md) — architecture, commands, conventions.
+- [`AGENTS.md`](AGENTS.md) — architecture, commands, conventions, deployment.
 - [`docs/cartography-rules.md`](docs/cartography-rules.md) — the map-design rules
   each layer is built against.
 

@@ -71,3 +71,39 @@ npm test           # vitest
 
 `uv run --with pytest pytest -q` **and** (`cd web && npx tsc --noEmit && npm test`)
 are green. Add a test with any behaviour change.
+
+## Deployment (Cloudflare Workers)
+
+Live at **https://firemapper.robinef.workers.dev** — a Cloudflare Worker serving
+static assets. `wrangler.jsonc` points `assets.directory` at `./web/dist`, and
+Cloudflare's git integration runs `npx wrangler deploy` on every push to `main`.
+
+**Current setup — committed build artifact.** Cloudflare's *Build command* is not
+set, so nothing is compiled remotely: `web/dist` (the Vite bundle **plus** the
+generated `web/dist/data/`) is committed to the repo and uploaded as-is. That
+makes the served data a **static snapshot** — it only changes when someone
+rebuilds and commits `web/dist` again:
+
+```bash
+uv run python -m scripts.make_sample   # regenerate web/public/data
+npm --prefix web ci && npm --prefix web run build
+git add -f web/dist && git commit -m "chore: rebuild web/dist" && git push
+```
+
+**Preferred setup — build on Cloudflare (removes the committed artifact).** The
+Cloudflare build image already has Python + uv, so it can run the pipeline. Set
+the Worker's *Build command* to:
+
+```
+uv run python -m scripts.make_sample && npm --prefix web ci && npm --prefix web run build
+```
+
+Then delete `web/dist` from git and re-add `web/dist/` to `.gitignore` — every
+push regenerates fresh data. For scheduled refreshes (data ages between pushes),
+add a cron GitHub Action that reruns the build and `npx wrangler deploy` with a
+`CLOUDFLARE_API_TOKEN` secret.
+
+**Never expose `SENTINELHUB_INSTANCE_ID` to a public deploy** — the instance id
+is itself a WMS access token and would be visible in the browser via
+`manifest.imagery.hd`. Build without it: `hd` stays `null` and the before/after
+swipe falls back to keyless NASA GIBS imagery.
