@@ -1,32 +1,14 @@
 # AGENTS.md
 
-Guidance for AI coding agents (and humans) working in this repo. See
-[`README.md`](README.md) for the project overview.
+Guidance for AI coding agents (and humans) working in this repo.
 
-## What this is
+**Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first** — it explains the
+pipeline, the storage model, the clustering, the frontend structure and the
+repository layout. This file only adds the working conventions on top of it.
 
-A local-first European wildfire map. A Python pipeline fetches satellite fire
-data, clusters it into fire events, and writes **static GeoParquet + JSON/GeoJSON**
-artifacts; a MapLibre frontend renders them. No server, no database daemon — the
-"backend" is DuckDB running in-process and files on disk.
-
-## Layout
-
-```
-pipeline/      Python data pipeline (fetch → cluster → export)
-  store.py       DuckDB-spatial + GeoParquet storage (the one DB connection)
-  events.py      H3 union-find clustering (adjacency built in DuckDB SQL)
-  fetch_*.py     data sources: FIRMS, Meteosat MTG, wind, aircraft, imagery
-  export.py      writes web/public/data/gen-*/ artifacts + manifest.json
-  run.py         orchestration (process / refresh / watch)
-web/           Vite + TypeScript + MapLibre GL frontend
-  src/layer_*.ts   one module per map layer
-  src/firecard.ts  the Level-2 per-fire detail view
-tests/         pytest (pipeline)
-web/tests/     vitest (frontend)
-scripts/       make_sample.py — generate a local demo dataset
-docs/          cartography-rules.md (design constraints)
-```
+Other references: [`README.md`](README.md) (what the project is),
+[`docs/cartography-rules.md`](docs/cartography-rules.md) (map-design constraints),
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (how the live site is built and hosted).
 
 ## Setup & commands
 
@@ -72,38 +54,9 @@ npm test           # vitest
 `uv run --with pytest pytest -q` **and** (`cd web && npx tsc --noEmit && npm test`)
 are green. Add a test with any behaviour change.
 
-## Deployment (Cloudflare Workers)
+## Deployment
 
-Live at **https://firemapper.robinef.workers.dev** — a Cloudflare Worker serving
-static assets. `wrangler.jsonc` points `assets.directory` at `./web/dist`, and
-Cloudflare's git integration runs `npx wrangler deploy` on every push to `main`.
-
-**Current setup — committed build artifact.** Cloudflare's *Build command* is not
-set, so nothing is compiled remotely: `web/dist` (the Vite bundle **plus** the
-generated `web/dist/data/`) is committed to the repo and uploaded as-is. That
-makes the served data a **static snapshot** — it only changes when someone
-rebuilds and commits `web/dist` again:
-
-```bash
-uv run python -m scripts.make_sample   # regenerate web/public/data
-npm --prefix web ci && npm --prefix web run build
-git add -f web/dist && git commit -m "chore: rebuild web/dist" && git push
-```
-
-**Preferred setup — build on Cloudflare (removes the committed artifact).** The
-Cloudflare build image already has Python + uv, so it can run the pipeline. Set
-the Worker's *Build command* to:
-
-```
-uv run python -m scripts.make_sample && npm --prefix web ci && npm --prefix web run build
-```
-
-Then delete `web/dist` from git and re-add `web/dist/` to `.gitignore` — every
-push regenerates fresh data. For scheduled refreshes (data ages between pushes),
-add a cron GitHub Action that reruns the build and `npx wrangler deploy` with a
-`CLOUDFLARE_API_TOKEN` secret.
-
-**Never expose `SENTINELHUB_INSTANCE_ID` to a public deploy** — the instance id
-is itself a WMS access token and would be visible in the browser via
-`manifest.imagery.hd`. Build without it: `hd` stays `null` and the before/after
-swipe falls back to keyless NASA GIBS imagery.
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Two things matter when touching
+it: `web/dist` is currently a **committed build artifact** (so served data is a
+static snapshot until rebuilt), and `SENTINELHUB_INSTANCE_ID` must **never** reach
+a public deploy — it is a WMS access token that would be visible in the browser.
