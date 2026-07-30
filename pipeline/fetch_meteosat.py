@@ -62,10 +62,12 @@ def fetch_frp_points(
 
     import json as _json
 
-    try:
-        fc = _json.loads(http_text(_wfs_points_url(bbox, count)))
-    except Exception:  # noqa: BLE001 - heatmap is an enhancement, never fatal
-        return []
+    # Deliberately NOT swallowed. Returning [] on a transport failure makes an
+    # outage indistinguishable from "no fires burning", and the caller then
+    # publishes an empty layer over good data instead of carrying it forward.
+    # The caller (pipeline.run.process) wraps this in attempt(), which is where
+    # the degradation decision belongs.
+    fc = _json.loads(http_text(_wfs_points_url(bbox, count)))
 
     out: list[dict] = []
     for f in fc.get("features", []):

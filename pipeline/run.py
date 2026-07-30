@@ -95,10 +95,18 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
         print(f"[info] MTG FRP live tier: latest {extent['end']} every {extent['step']}")
 
     wind_pts = wind_sample_points(frp_points)
-    wind_result = attempt(
-        lambda: fetch_wind(wind_pts), label="open-meteo-wind", now=now, default=[],
-        observed=lambda samples: newest_timestamp(w.get("time") for w in samples),
-    )
+    if frp_result.status == "failed":
+        # Wind is sampled AT the fire pixels, so a failed FRP fetch leaves
+        # nothing to query. Reporting that as "empty" would claim we looked and
+        # found no wind, and would replace good data; inherit the failure so the
+        # layer is carried instead.
+        wind_result = FetchResult("failed", [], now)
+        print("[warn] wind: skipped, no FRP pixels to sample (upstream failed)")
+    else:
+        wind_result = attempt(
+            lambda: fetch_wind(wind_pts), label="open-meteo-wind", now=now, default=[],
+            observed=lambda samples: newest_timestamp(w.get("time") for w in samples),
+        )
     wind = wind_result.data
     print(f"[info] wind samples: {len(wind)}")
 

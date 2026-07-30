@@ -91,11 +91,17 @@ def test_fetch_frp_points_parses_rounds_and_filters():
     }
 
 
-def test_fetch_frp_points_returns_empty_on_failure():
+def test_fetch_frp_points_raises_on_failure():
+    """Must NOT return []. Swallowing the error here made an outage identical to
+    "no fires burning", and on 2026-07-30 that published an empty intensity
+    layer over good data on the live map. attempt() classifies it instead."""
+    import pytest
+
     def boom(url: str) -> str:
         raise RuntimeError("offline")
 
-    assert fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=boom) == []
+    with pytest.raises(RuntimeError, match="offline"):
+        fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=boom)
 
 
 def test_mtg_frp_extent_returns_none_when_unreachable():
