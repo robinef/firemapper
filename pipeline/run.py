@@ -14,6 +14,7 @@ from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_aircraft import fetch_aircraft
 from .fetch_effis import fetch_effis_ba
 from .fetch_imagery import build_imagery
+from .fetch_result import FetchResult, attempt, newest_timestamp
 from .timeline import build_timeline
 from .day_slices import build_day_slices
 
@@ -55,8 +56,16 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # detections, events, footprint and isochrones must all derive from this
     # one source, or the markers and outlines describe different fires.
     if frp_points is None:
-        frp_points = _safe(
-            lambda: fetch_frp_points(EUROPE_BBOX), default=[], label="mtg-frp-points"
+        frp_result = attempt(
+            lambda: fetch_frp_points(EUROPE_BBOX), label="mtg-frp-points", now=now,
+            default=[], observed=lambda pts: newest_timestamp(p.get("time") for p in pts),
+        )
+        frp_points = frp_result.data
+    else:
+        # Injected by callers (tests, make_sample) — treat as an observed fetch.
+        frp_result = FetchResult(
+            "ok" if frp_points else "empty", frp_points, now,
+            newest_timestamp(p.get("time") for p in frp_points),
         )
     print(f"[info] MTG FRP pixels: {len(frp_points)}")
     # Always fuse the live MTG pixels with the (VIIRS/MODIS) archive: VIIRS gives
@@ -86,10 +95,19 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
         print(f"[info] MTG FRP live tier: latest {extent['end']} every {extent['step']}")
 
     wind_pts = wind_sample_points(frp_points)
-    wind = _safe(lambda: fetch_wind(wind_pts), default=[], label="open-meteo-wind")
+    wind_result = attempt(
+        lambda: fetch_wind(wind_pts), label="open-meteo-wind", now=now, default=[],
+        observed=lambda samples: newest_timestamp(w.get("time") for w in samples),
+    )
+    wind = wind_result.data
     print(f"[info] wind samples: {len(wind)}")
 
-    aircraft = _safe(fetch_aircraft, default=[], label="opensky-aircraft")
+    aircraft_result = attempt(
+        lambda: fetch_aircraft(now=now), label="opensky-aircraft", now=now, default=[],
+        # ADS-B positions are epoch seconds, not ISO strings.
+        observed=lambda planes: _newest_epoch(p.get("pos_time") for p in planes),
+    )
+    aircraft = aircraft_result.data
     print(f"[info] firefighting aircraft: {len(aircraft)}")
 
     # Persist each live layer as a GeoParquet snapshot (latest wins), so nothing
@@ -107,15 +125,24 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # often down, so fetch_effis_ba is self-guarding and _safe wraps it again.
     effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
     print(f"[info] EFFIS burned-area scars: {len(effis)}")
-    imagery = _safe(
+    imagery_result = attempt(
         lambda: build_imagery(settings, scar_events, now, places, extra_scars=effis),
-        default=None, label="imagery-scars"
+        label="imagery-scars", now=now, default=None,
     )
+    imagery = imagery_result.data
     if imagery:
         print(f"[info] imagery scars: {len(imagery['scars'])} (hd={bool(imagery['hd'])})")
 
     # Daily fire-activity timeline (polar detections) for the bottom histogram.
-    timeline = build_timeline(rows, now)
+    timeline_result = attempt(
+        lambda: build_timeline(rows, now), label="timeline", now=now, default=[],
+        # A timeline of all-zero days is not data, whatever its length: report
+        # the newest day that actually had a detection.
+        observed=lambda days: newest_timestamp(
+            d["date"] for d in days if d.get("count")
+        ),
+    )
+    timeline = timeline_result.data
     print(f"[info] timeline: {sum(d['count'] for d in timeline)} detections over {len(timeline)} d")
 
     # Per-day Europe-wide detection slices — click a histogram day to paint it.
@@ -125,10 +152,35 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     )
     print(f"[info] day slices: {len(day_slices)} days")
 
+    # Per-layer outcomes travel with the data so export can tell a failed fetch
+    # from a genuinely empty one and decide what to carry forward.
+    results = {
+        "frp": frp_result,
+        "wind": wind_result,
+        "aircraft": aircraft_result,
+        "imagery": imagery_result,
+        "timeline": timeline_result,
+    }
     return export(
         settings, events, liveness, places, alerts, now,
         live_frp, frp_points, wind, aircraft, imagery, timeline, day_slices,
+        results=results,
     )
+
+
+def _newest_epoch(values) -> datetime | None:
+    """Newest epoch-seconds timestamp in an iterable, as an aware datetime."""
+    best: float | None = None
+    for value in values:
+        if value is None:
+            continue
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        if best is None or seconds > best:
+            best = seconds
+    return datetime.fromtimestamp(best, tz=timezone.utc) if best is not None else None
 
 
 def _safe(fn, default, label: str):
