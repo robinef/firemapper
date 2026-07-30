@@ -62,7 +62,10 @@ def test_full_refresh_with_key_fetches_everything(tmp_path, monkeypatch):
 
     run.refresh(settings, tier="full")
 
-    assert called == ["firms", "history", "meteosat", "process"]
+    # history BEFORE firms: the NRT poll stamps the store with today, and
+    # fetch_firms_history skips every window ending at or below the latest
+    # stored day — reversing these silently reduces a 30-day seed to 2 days.
+    assert called == ["history", "firms", "meteosat", "process"]
 
 
 def test_unknown_tier_is_rejected(tmp_path):

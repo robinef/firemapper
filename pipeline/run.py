@@ -209,9 +209,14 @@ def refresh(settings: Settings, tier: str = "full") -> None:
             raise RuntimeError(
                 "FIRMS_MAP_KEY missing — refusing to publish an empty archive"
             )
-        _safe(lambda: fetch_firms(settings), 0, "firms")
-        # Seed ~30 days of VIIRS history so past fires exist as scars.
+        # History BEFORE the 2-day NRT poll, and the order is load-bearing.
+        # fetch_firms_history skips any window ending at or below the latest
+        # day already stored, so letting the NRT poll land first stamps the
+        # store with today and makes the 30-day seed skip EVERY window — a cold
+        # start then yields two days of history and a near-empty timeline,
+        # silently, because both calls report success.
         _safe(lambda: fetch_firms_history(settings), 0, "firms-history")
+        _safe(lambda: fetch_firms(settings), 0, "firms")
         _safe(lambda: fetch_meteosat(settings), None, "meteosat")
     process(settings, now=datetime.now(timezone.utc))
 

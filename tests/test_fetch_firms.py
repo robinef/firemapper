@@ -85,3 +85,45 @@ def test_fetch_firms_history_uses_configured_window(tmp_path):
 
     fetch_firms_history(s, http_get=fake_get)  # days omitted → configured 45
     assert len(calls) == 9
+
+
+HEADER_ONLY = "latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n"
+
+
+def _one_row(lat="44.0", lon="8.0", date="2026-07-11"):
+    return HEADER_ONLY + f"{lat},{lon},330.1,0.4,0.4,{date},1200,N,VIIRS,n,2.0NRT,295.0,12.3,D\n"
+
+
+def test_history_falls_back_to_the_sister_satellite(tmp_path):
+    """SNPP returned an empty CSV for 2026-07-11..15 while NOAA-20 had ~9k rows.
+    One satellite's outage must not become a silent hole in the timeline."""
+    asked: list[str] = []
+
+    def http_get(url: str) -> str:
+        asked.append(url)
+        return HEADER_ONLY if "VIIRS_SNPP_NRT" in url else _one_row()
+
+    settings = load_settings(env={
+        "FIRMS_MAP_KEY": "k", "DATA_DIR": str(tmp_path), "OUT_DIR": str(tmp_path / "o"),
+    })
+    total = fetch_firms_history(settings, days=5, http_get=http_get)
+
+    assert total > 0
+    assert any("VIIRS_SNPP_NRT" in u for u in asked)
+    assert any("VIIRS_NOAA20_NRT" in u for u in asked)
+
+
+def test_history_stops_at_the_first_satellite_with_data(tmp_path):
+    asked: list[str] = []
+
+    def http_get(url: str) -> str:
+        asked.append(url)
+        return _one_row()
+
+    settings = load_settings(env={
+        "FIRMS_MAP_KEY": "k", "DATA_DIR": str(tmp_path), "OUT_DIR": str(tmp_path / "o"),
+    })
+    fetch_firms_history(settings, days=5, http_get=http_get)
+
+    # no point paying for NOAA-20 when SNPP already answered
+    assert all("VIIRS_NOAA20_NRT" not in u for u in asked)
