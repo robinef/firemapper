@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from pipeline.fetch_aircraft import classify, fetch_aircraft
 
 
@@ -84,11 +86,16 @@ def test_fetch_maps_fields_units_and_position_time():
     assert milan["pos_time"] == EPOCH_NOW - 50
 
 
-def test_fetch_survives_network_error():
+def test_fetch_raises_on_network_error():
+    """A transport failure must NOT look like an empty sky. It propagates so
+    attempt() can classify it `failed` and carry the previous snapshot; an
+    earlier version returned [] here and published an empty layer over good
+    data during an upstream outage."""
     def boom(url: str) -> str:
         raise RuntimeError("offline")
 
-    assert fetch_aircraft(http_text=boom) == []
+    with pytest.raises(RuntimeError, match="offline"):
+        fetch_aircraft(http_text=boom)
 
 
 def test_fetch_survives_empty_states():

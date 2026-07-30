@@ -110,10 +110,10 @@ def fetch_aircraft(
             return r.text
 
     q = "&".join(f"{k}={v}" for k, v in EUROPE.items())
-    try:
-        data = json.loads(http_text(f"{OPENSKY_URL}?{q}"))
-    except Exception:  # noqa: BLE001 - tracker is an overlay, never fatal
-        return []
+    # Errors propagate on purpose: an empty list must mean "no firefighting
+    # aircraft airborne", never "OpenSky was unreachable". The caller wraps this
+    # in attempt(), which decides whether to carry the previous snapshot.
+    data = json.loads(http_text(f"{OPENSKY_URL}?{q}"))
 
     epoch_now = int((now or datetime.now(timezone.utc)).timestamp())
     out: list[dict] = []

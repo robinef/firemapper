@@ -74,3 +74,36 @@ def test_unknown_tier_is_rejected(tmp_path):
     })
     with pytest.raises(ValueError, match="unknown tier"):
         run.refresh(settings, tier="medium")
+
+
+def test_failed_frp_does_not_publish_wind_as_empty(tmp_path, monkeypatch):
+    """Observed in CI 2026-07-30: the MTG fetch returned nothing, wind samples
+    are taken AT the fire pixels, so wind became 0 too - and both were published
+    as `empty`, replacing good data on the live map. Wind must inherit the
+    upstream failure so it is carried instead."""
+    from pipeline import run as run_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("EUMETView unreachable")
+
+    monkeypatch.setattr(run_mod, "fetch_frp_points", boom)
+    monkeypatch.setattr(run_mod, "fetch_wind", lambda *a, **k: [{"lon": 1, "lat": 1}])
+    monkeypatch.setattr(run_mod, "fetch_aircraft", lambda *a, **k: [])
+    monkeypatch.setattr(run_mod, "mtg_frp_extent", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod, "build_imagery", lambda *a, **k: None)
+
+    captured = {}
+
+    def fake_export(*args, **kwargs):
+        captured.update(kwargs.get("results") or {})
+        return tmp_path / "gen-x"
+
+    monkeypatch.setattr(run_mod, "export", fake_export)
+    settings = load_settings(env={
+        "DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o"),
+    })
+
+    run_mod.process(settings, now=T(20, 12))
+
+    assert captured["frp"].status == "failed"
+    assert captured["wind"].status == "failed", "wind must not claim it looked and found nothing"
