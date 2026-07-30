@@ -81,7 +81,7 @@ export function addAircraft(map: maplibregl.Map, fc: GeoJSON.FeatureCollection) 
     source: "aircraft",
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 8, 10, 16],
-      "circle-color": ["case", ["get", "on_ground"], "rgba(0,0,0,0)", "rgba(38,208,206,0.18)"],
+      "circle-color": "rgba(38,208,206,0.18)",
       "circle-blur": 0.6,
     },
   });
@@ -105,11 +105,11 @@ export function addAircraft(map: maplibregl.Map, fc: GeoJSON.FeatureCollection) 
       "icon-allow-overlap": true,
     },
     paint: {
-      // Dim on the ground (at base) and dim a stale airborne fix — a plane at
-      // ~350 km/h moves ~6 km/min, so an old position should not look certain.
+      // Grounded aircraft and positions past the publish budget never reach the
+      // artifact at all. What remains can still be minutes old, so dim an older
+      // fix: a plane at ~350 km/h moves ~6 km/min and should not look certain.
       "icon-opacity": [
         "case",
-        ["get", "on_ground"], 0.5,
         [">", ["coalesce", ["get", "age_min"], 0], 5], 0.45,
         1,
       ] as never,
@@ -143,7 +143,7 @@ export const AIRCRAFT_LEGEND = {
     { color: BOMBER, size: 12, shape: "square" as const, label: "water bomber" },
     { color: COORD, size: 12, shape: "square" as const, label: "coordination plane" },
     { color: HELI, size: 12, shape: "square" as const, label: "rescue helicopter" },
-    { color: "rgba(38,208,206,0.5)", size: 12, shape: "square" as const, label: "on the ground / stale fix (dim)" },
+    { color: "rgba(38,208,206,0.5)", size: 12, shape: "square" as const, label: "older fix (dim)" },
   ],
-  note: "ADS-B, nose = heading. Shows only aircraft AIRBORNE right now — most of the fleet sits parked with its transponder off between missions.",
+  note: "ADS-B, nose = heading. Airborne aircraft only, with a position at most 20 minutes old — older fixes and parked aircraft are not drawn. Most of the fleet sits with its transponder off between missions.",
 };
