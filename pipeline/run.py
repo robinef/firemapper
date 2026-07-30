@@ -139,26 +139,43 @@ def _safe(fn, default, label: str):
         return default
 
 
-def refresh(settings: Settings) -> None:
-    _safe(lambda: fetch_firms(settings), 0, "firms")
-    # Seed ~30 days of VIIRS history (needs a FIRMS key) so past fires exist as
-    # scars; without a key this no-ops and past scars stay sparse.
-    _safe(lambda: fetch_firms_history(settings), 0, "firms-history")
-    _safe(lambda: fetch_meteosat(settings), None, "meteosat")
+def refresh(settings: Settings, tier: str = "full") -> None:
+    """Run one refresh at the given tier.
+
+    "fast" (every 15 min): live layers only — MTG FRP, wind, aircraft —
+    re-clustered against the archive already on disk. Nothing here needs a key.
+
+    "full" (hourly): also tops up the polar (VIIRS/MODIS) archive and the slow
+    bonus tiers. A missing FIRMS key is FATAL here rather than a warning: an
+    empty archive publishes a map with no fires and no timeline, which is
+    exactly the failure that shipped to production.
+    """
+    if tier not in ("fast", "full"):
+        raise ValueError(f"unknown tier {tier}")
+    if tier == "full":
+        if settings.firms_map_key is None:
+            raise RuntimeError(
+                "FIRMS_MAP_KEY missing — refusing to publish an empty archive"
+            )
+        _safe(lambda: fetch_firms(settings), 0, "firms")
+        # Seed ~30 days of VIIRS history so past fires exist as scars.
+        _safe(lambda: fetch_firms_history(settings), 0, "firms-history")
+        _safe(lambda: fetch_meteosat(settings), None, "meteosat")
     process(settings, now=datetime.now(timezone.utc))
 
 
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "refresh"
     settings = load_settings()
+    tier = sys.argv[2] if len(sys.argv) > 2 else "full"
     if cmd == "refresh":
-        refresh(settings)
+        refresh(settings, tier=tier)
     elif cmd == "watch":
         import os
 
         interval = int(os.environ.get("WATCH_INTERVAL_S", "600"))
         while True:
-            refresh(settings)
+            refresh(settings, tier=tier)
             time.sleep(interval)
     elif cmd == "bench":
         bench = load_settings(env={"DATA_DIR": "data/bench", "OUT_DIR": "data/bench/out"})
