@@ -22,6 +22,25 @@ class Settings:
     data_dir: Path
     out_dir: Path
     firms_history_days: int = 30
+    # Cloudflare R2 holds the durable hotspot archive and the published site
+    # data, so a scheduled run can pick up where the previous one left off.
+    r2_account_id: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_bucket: str | None = None
+
+    @property
+    def r2_configured(self) -> bool:
+        """All four or nothing — a partial config would fail mid-publish."""
+        return all(
+            value is not None
+            for value in (
+                self.r2_account_id,
+                self.r2_access_key_id,
+                self.r2_secret_access_key,
+                self.r2_bucket,
+            )
+        )
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -51,6 +70,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         data_dir=Path(merged.get("DATA_DIR", "data")),
         out_dir=Path(merged.get("OUT_DIR", "web/public/data")),
         firms_history_days=_int(merged.get("FIRMS_HISTORY_DAYS"), 30),
+        r2_account_id=merged.get("R2_ACCOUNT_ID"),
+        r2_access_key_id=merged.get("R2_ACCESS_KEY_ID"),
+        r2_secret_access_key=merged.get("R2_SECRET_ACCESS_KEY"),
+        r2_bucket=merged.get("R2_BUCKET"),
     )
 
 
