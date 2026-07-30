@@ -20,3 +20,6 @@ docs/superpowers/
 *.bak
 .DS_Store
 web/dist/
+
+# wrangler local state (dev server cache, asset manifests)
+.wrangler/
