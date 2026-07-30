@@ -2,9 +2,10 @@
 
 Free, no key for anonymous bbox queries. We keep only aircraft we can identify
 as firefighting assets by callsign — the map must not imply an airliner is a
-water bomber. Each aircraft carries `pos_time` (OpenSky `last_contact`, epoch
+water bomber. Each aircraft carries `pos_time` (OpenSky `time_position`, epoch
 seconds) so the UI can show how old the position is: planes move ~6-9 km per
-minute, so a stale position placed confidently would mislead.
+minute, so a stale position placed confidently would mislead. Positions older
+than the publish budget, and aircraft on the ground, are not returned at all.
 
 Identification is a heuristic on the callsign, not a transponder type field, so
 the UI wording says "identified as", never a bare assertion. Only telephony
@@ -45,6 +46,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Callable
 
 OPENSKY_URL = "https://opensky-network.org/api/states/all"
@@ -83,8 +85,22 @@ def classify(callsign: str, icao24: str | None = None) -> tuple[str, str] | None
     return None
 
 
-def fetch_aircraft(http_text: Callable[[str], str] | None = None) -> list[dict]:
-    """Return firefighting aircraft with position, heading, speed, altitude."""
+def fetch_aircraft(
+    http_text: Callable[[str], str] | None = None,
+    *,
+    now: datetime | None = None,
+    max_age_s: int = 1200,
+) -> list[dict]:
+    """Airborne firefighting aircraft whose position is fresh enough to draw.
+
+    `time_position` (field 3), NOT `last_contact` (field 4), is when the
+    POSITION was determined. A transponder heard seconds ago can still be
+    reporting a fix from half an hour back, and drawing that as current puts a
+    water bomber tens of kilometres from where it actually is.
+
+    Aircraft on the ground are dropped outright: the layer answers "is a bomber
+    working this fire?", and a parked plane is not an answer.
+    """
     if http_text is None:
         import requests
 
@@ -99,6 +115,7 @@ def fetch_aircraft(http_text: Callable[[str], str] | None = None) -> list[dict]:
     except Exception:  # noqa: BLE001 - tracker is an overlay, never fatal
         return []
 
+    epoch_now = int((now or datetime.now(timezone.utc)).timestamp())
     out: list[dict] = []
     for s in data.get("states") or []:
         # State vectors can be short/malformed; skip a bad row rather than
@@ -111,6 +128,13 @@ def fetch_aircraft(http_text: Callable[[str], str] | None = None) -> list[dict]:
             lon, lat = s[5], s[6]
             if lon is None or lat is None:
                 continue
+            if bool(s[8]):  # on_ground — parked, not working a fire
+                continue
+            time_position = s[3]
+            if time_position is None:
+                continue
+            if epoch_now - time_position > max_age_s:
+                continue
             out.append(
                 {
                     "icao24": s[0],
@@ -119,11 +143,11 @@ def fetch_aircraft(http_text: Callable[[str], str] | None = None) -> list[dict]:
                     "lon": round(lon, 4),
                     "lat": round(lat, 4),
                     "alt_m": None if s[7] is None else round(s[7]),
-                    "on_ground": bool(s[8]),
                     "speed_kmh": None if s[9] is None else round(s[9] * 3.6),
                     "heading": None if s[10] is None else round(s[10]),
-                    # OpenSky last_contact (epoch s): how old this position is.
-                    "pos_time": s[4],
+                    # OpenSky time_position (epoch s): when this POSITION was
+                    # determined, not when the transponder was last heard.
+                    "pos_time": time_position,
                     "type": kind[0],
                     "role": kind[1],
                 }

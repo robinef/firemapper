@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from pipeline.fetch_aircraft import classify, fetch_aircraft
 
@@ -38,37 +39,49 @@ def test_dragon_helicopter_requires_french_icao24():
     assert classify("DRAGON123", None) is None
 
 
-def _state(icao, cs, lon, lat, alt, ground, vel, hdg, last_contact=1_700_000_100):
-    # OpenSky state-vector positional layout (index 4 = last_contact).
-    return [icao, cs, "France", 1_700_000_000, last_contact, lon, lat, alt, ground, vel, hdg, 0]
+NOW = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+EPOCH_NOW = int(NOW.timestamp())
 
 
-FAKE = {
-    "states": [
-        _state("3b7b3e", "PELICAN32 ", -0.71, 44.83, None, True, None, None),
-        _state("aaa111", "AFR23", 2.0, 45.0, 10000, False, 240, 90),  # airliner, dropped
-        _state("bbb222", "MILAN78", 1.4, 43.6, 900, False, 130, 210, last_contact=1_700_000_050),
-        _state("ccc333", "PELICAN9", None, None, 0, True, 0, 0),  # no position, dropped
-        ["short", "MILAN5"],  # malformed short row → skipped, not fatal
+def _state(icao, cs, lon, lat, alt, ground, vel, hdg, time_position=None):
+    # OpenSky state-vector positional layout: index 3 = time_position (when the
+    # POSITION was fixed), index 4 = last_contact (when the transponder was
+    # last heard). Only index 3 says how old the position is.
+    return [
+        icao, cs, "France",
+        EPOCH_NOW - 60 if time_position is None else time_position,
+        EPOCH_NOW,  # heard just now in every case
+        lon, lat, alt, ground, vel, hdg, 0,
     ]
-}
 
 
-def test_fetch_keeps_only_identified_firefighters_with_position():
-    ac = fetch_aircraft(http_text=lambda url: json.dumps(FAKE))
-    assert sorted(a["callsign"] for a in ac) == ["MILAN78", "PELICAN32"]
+def _fake():
+    return {
+        "states": [
+            # grounded at base — dropped: a parked plane is not fighting a fire
+            _state("3b7b3e", "PELICAN32 ", -0.71, 44.83, None, True, None, None),
+            _state("aaa111", "AFR23", 2.0, 45.0, 10000, False, 240, 90),  # airliner, dropped
+            _state("bbb222", "MILAN78", 1.4, 43.6, 900, False, 130, 210,
+                   time_position=EPOCH_NOW - 50),
+            _state("ccc333", "PELICAN9", None, None, 0, True, 0, 0),  # no position, dropped
+            ["short", "MILAN5"],  # malformed short row → skipped, not fatal
+        ]
+    }
+
+
+def test_fetch_keeps_only_airborne_identified_firefighters():
+    ac = fetch_aircraft(http_text=lambda url: json.dumps(_fake()), now=NOW)
+    assert sorted(a["callsign"] for a in ac) == ["MILAN78"]
 
 
 def test_fetch_maps_fields_units_and_position_time():
-    ac = fetch_aircraft(http_text=lambda url: json.dumps(FAKE))
+    ac = fetch_aircraft(http_text=lambda url: json.dumps(_fake()), now=NOW)
     milan = next(a for a in ac if a["callsign"] == "MILAN78")
     assert milan["type"] == "Dash-8 Q400MR"
-    assert milan["on_ground"] is False
     assert milan["speed_kmh"] == round(130 * 3.6)
     assert milan["heading"] == 210
-    assert milan["pos_time"] == 1_700_000_050  # staleness must be carryable
-    pel = next(a for a in ac if a["callsign"] == "PELICAN32")
-    assert pel["on_ground"] is True and pel["alt_m"] is None
+    # position age comes from time_position, never from last_contact
+    assert milan["pos_time"] == EPOCH_NOW - 50
 
 
 def test_fetch_survives_network_error():
@@ -81,3 +94,44 @@ def test_fetch_survives_network_error():
 def test_fetch_survives_empty_states():
     assert fetch_aircraft(http_text=lambda url: json.dumps({"states": None})) == []
     assert fetch_aircraft(http_text=lambda url: json.dumps({})) == []
+
+
+# --- freshness: the 20-minute promise is only true if the timestamps mean what
+# the UI says they mean ---
+
+def _plain_state(callsign="PELICAN 32", *, time_position, last_contact, on_ground=False):
+    # OpenSky state vector: 0 icao24, 1 callsign, 2 country, 3 time_position,
+    # 4 last_contact, 5 lon, 6 lat, 7 baro_alt, 8 on_ground, 9 velocity, 10 heading
+    return ["3a1b2c", callsign, "France", time_position, last_contact,
+            2.5, 44.0, 1200.0, on_ground, 90.0, 180.0]
+
+
+def _fetch(states, **kw):
+    return fetch_aircraft(lambda url: json.dumps({"states": states}), now=NOW, **kw)
+
+
+def test_pos_time_is_time_position_not_last_contact():
+    rows = _fetch([_plain_state(time_position=EPOCH_NOW - 60, last_contact=EPOCH_NOW)])
+    assert rows[0]["pos_time"] == EPOCH_NOW - 60
+
+
+def test_stale_position_with_recent_contact_is_dropped():
+    """A transponder heard 5 s ago can still be reporting a 40-minute-old fix."""
+    rows = _fetch([_plain_state(time_position=EPOCH_NOW - 2400, last_contact=EPOCH_NOW - 5)])
+    assert rows == []
+
+
+def test_on_ground_aircraft_are_excluded():
+    rows = _fetch([_plain_state(time_position=EPOCH_NOW - 30, last_contact=EPOCH_NOW, on_ground=True)])
+    assert rows == []
+
+
+def test_missing_time_position_is_dropped():
+    rows = _fetch([_plain_state(time_position=None, last_contact=EPOCH_NOW)])
+    assert rows == []
+
+
+def test_position_inside_the_budget_is_kept():
+    rows = _fetch([_plain_state(time_position=EPOCH_NOW - 1199, last_contact=EPOCH_NOW)])
+    assert len(rows) == 1
+    assert rows[0]["callsign"] == "PELICAN 32"
