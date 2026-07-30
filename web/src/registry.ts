@@ -1,5 +1,8 @@
 import type maplibregl from "maplibre-gl";
 
+import { moduleReason, moduleStale } from "./freshness";
+import type { Manifest } from "./types";
+
 export type Level = 1 | 2;
 
 /** One map layer group the user can toggle, with its own legend. */
@@ -16,6 +19,10 @@ export interface LayerModule {
    *  both. A layer hidden at the current level is force-hidden on the map, so a
    *  detail layer left on never leaks back into the overview. */
   levels?: Level[];
+  /** Manifest `layers` keys this module draws from. A module is greyed when any
+   *  of them is past its age budget — derived layers (spread, isochrones) name
+   *  the source they were computed from, not themselves. */
+  freshnessKeys?: string[];
   legend?: {
     title: string;
     /** `shape:"dot"` + `size` render a scaled circle, so a legend can show a
@@ -44,6 +51,7 @@ export function mountSwitcher(
   legendEl: HTMLElement,
   modules: LayerModule[],
   map: maplibregl.Map,
+  manifest?: Manifest,
 ): Switcher {
   const state = new Map(modules.map((m) => [m.key, m.defaultOn]));
   let level: Level = 1;
@@ -96,7 +104,15 @@ export function mountSwitcher(
       });
       const text = document.createElement("span");
       text.className = "layer-text";
-      text.innerHTML = `<span class="layer-name">${m.label}</span><span class="layer-hint">${m.question}</span>`;
+      // A layer past its age budget still renders, but says so: silently
+      // showing hours-old pixels as current is the failure this guards against.
+      const stale = manifest ? moduleStale(manifest, m, new Date()) : false;
+      const reason = stale && manifest ? moduleReason(manifest, m, new Date()) : null;
+      if (stale) row.classList.add("stale");
+      text.innerHTML =
+        `<span class="layer-name">${m.label}</span>` +
+        `<span class="layer-hint">${m.question}</span>` +
+        (reason ? `<span class="layer-reason">⚠ ${reason}</span>` : "");
       row.append(cb, text);
       layersEl.append(row);
     }

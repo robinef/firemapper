@@ -46,6 +46,16 @@ export function mountTimeline(
     el.style.display = "none";
     return;
   }
+  // A window of all-zero days is not a chart, it is a message. The live site
+  // rendered 30 empty bars and looked merely quiet, when in fact the polar
+  // archive had never been filled.
+  if (days.every((d) => !d.count)) {
+    el.style.display = "";
+    el.innerHTML =
+      `<div class="timeline-empty">No VIIRS detections in this window — ` +
+      `the polar archive is empty or its feed is down.</div>`;
+    return;
+  }
   const {
     title = "Fire activity · detections / day",
     unit = "detections",
