@@ -1,12 +1,17 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "firemapper",
+  "main": "worker/index.ts",
   "compatibility_date": "2025-01-01",
-  // Static site: serve the built Vite output. The build step must produce
-  // web/dist (npm run build) AND the data under web/public/data (the Python
-  // pipeline) before this deploys — see the Cloudflare "Build command".
+  // The app shell is static and deploys only when code changes. Every
+  // generation the pipeline publishes lands in the DATA bucket instead, so a
+  // 15-minute data refresh costs zero deploys — see docs/DEPLOYMENT.md.
   "assets": {
     "directory": "./web/dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  }
+  },
+  "r2_buckets": [
+    { "binding": "DATA", "bucket_name": "firemapper-data" }
+  ]
 }
