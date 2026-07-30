@@ -18,6 +18,7 @@ export interface R2ObjectBody {
 
 export interface R2BucketLike {
   get(key: string): Promise<R2ObjectBody | null>;
+  head?(key: string): Promise<{ size?: number } | null>;
 }
 
 export interface FetcherLike {
@@ -49,20 +50,28 @@ export default {
     }
 
     const key = url.pathname.slice(1); // "/data/x" -> "data/x"
-    const object = await env.DATA.get(key);
-    if (!object) {
-      return new Response("data unavailable", {
+    const immutable = url.pathname.startsWith(`${DATA_PREFIX}gen-`);
+    const headers = {
+      "content-type": contentType(key),
+      "cache-control": immutable ? GENERATION_CACHE : MANIFEST_CACHE,
+    };
+    const missing = () =>
+      new Response("data unavailable", {
         status: 503,
         headers: { "cache-control": "no-store", "retry-after": "60" },
       });
+
+    // HEAD must not stream a body. Answering it with get() works but wastes the
+    // read, and monitors/CDNs probe with HEAD — an unhandled one looks like an
+    // outage.
+    if (request.method === "HEAD") {
+      const meta = env.DATA.head ? await env.DATA.head(key) : await env.DATA.get(key);
+      return meta ? new Response(null, { headers }) : missing();
     }
 
-    const immutable = url.pathname.startsWith(`${DATA_PREFIX}gen-`);
-    return new Response(object.body as BodyInit, {
-      headers: {
-        "content-type": contentType(key),
-        "cache-control": immutable ? GENERATION_CACHE : MANIFEST_CACHE,
-      },
-    });
+    const object = await env.DATA.get(key);
+    if (!object) return missing();
+
+    return new Response(object.body as BodyInit, { headers });
   },
 };

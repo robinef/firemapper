@@ -19,3 +19,4 @@ scratch/
 docs/superpowers/
 *.bak
 .DS_Store
+web/dist/
