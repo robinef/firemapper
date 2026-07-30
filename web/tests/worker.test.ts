@@ -52,3 +52,45 @@ describe("worker /data routing", () => {
     expect(await res.text()).toBe("shell");
   });
 });
+
+describe("worker HEAD handling", () => {
+  function envWithHead(objects: Record<string, string>): Env {
+    return {
+      DATA: {
+        async get(key: string) {
+          return key in objects ? { body: objects[key] } : null;
+        },
+        async head(key: string) {
+          return key in objects ? { size: objects[key].length } : null;
+        },
+      },
+      ASSETS: { fetch: async () => new Response("shell", { status: 200 }) },
+    };
+  }
+
+  it("answers HEAD for a nested generation file without a body", async () => {
+    const res = await worker.fetch(
+      new Request("https://x/data/gen-1/tracks/e1.json", { method: "HEAD" }),
+      envWithHead({ "data/gen-1/tracks/e1.json": '{"id":"e1"}' }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toContain("immutable");
+    expect(await res.text()).toBe("");
+  });
+
+  it("503s a HEAD for a missing object", async () => {
+    const res = await worker.fetch(
+      new Request("https://x/data/nope.json", { method: "HEAD" }),
+      envWithHead({}),
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("falls back to get() when the bucket exposes no head()", async () => {
+    const res = await worker.fetch(
+      new Request("https://x/data/manifest.json", { method: "HEAD" }),
+      env({ "data/manifest.json": "{}" }),
+    );
+    expect(res.status).toBe(200);
+  });
+});

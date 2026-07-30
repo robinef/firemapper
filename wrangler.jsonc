@@ -9,7 +9,15 @@
   "assets": {
     "directory": "./web/dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Assets are served BEFORE the Worker by default, so a stale web/dist/data
+    // left in a build would shadow the bucket and pin the site to whatever was
+    // committed. Data must always come from R2.
+    //
+    // "**" is required, not "*": generation paths nest
+    // (/data/gen-<ts>/tracks/<id>.json) and a single-segment glob left them to
+    // the asset layer, which answered HEAD probes with 503.
+    "run_worker_first": ["/data/**"]
   },
   "r2_buckets": [
     { "binding": "DATA", "bucket_name": "firemapper-data" }
