@@ -15,7 +15,8 @@ def test_export_writes_manifest_last_and_validates(tmp_path):
     ev = cluster([hs(45.0, 8.0, T(20, 0)), hs(45.005, 8.0, T(20, 6))], now=T(20, 12))
     gen = export(s, ev, liveness={}, places=[], alerts=[], now=T(20, 12))
     man = json.loads((s.out_dir / "manifest.json").read_text())
-    assert man["schema_version"] == "1.0.0"
+    # Minor bumps must stay loadable by a 1.x client, so pin the MAJOR only.
+    assert man["schema_version"].split(".")[0] == "1"
     assert man["generation"] == gen.name
     assert validate_generation(gen) == []
     fc = json.loads((gen / "events.geojson").read_text())

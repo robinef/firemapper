@@ -7,7 +7,9 @@ from typing import Mapping
 
 EUROPE_BBOX = (-25.0, 34.0, 45.0, 72.0)  # lon_min, lat_min, lon_max, lat_max
 H3_RES = 8
-SCHEMA_VERSION = "1.0.0"
+# 1.1.0 adds the per-layer `layers` freshness map. Minor bump: every 1.0 key
+# keeps its name and meaning, so an old client still loads a new manifest.
+SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)

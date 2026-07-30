@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import SCHEMA_VERSION, Settings
+from .fetch_result import FetchResult
+from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, nearest_place
 from .events import lifecycle, reactivation_links
 import h3
@@ -122,6 +124,30 @@ def _previous_ids_cells(out_dir: Path) -> dict[str, set[str]] | None:
     return prev
 
 
+def _previous_manifest(out_dir: Path) -> dict:
+    man = out_dir / "manifest.json"
+    if not man.exists():
+        return {}
+    try:
+        return json.loads(man.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _carry_layer_files(previous_generation: Path, gen: Path, filenames: list[str]) -> bool:
+    """Copy a previous generation's files for a layer whose fetch failed.
+
+    Returns False when the files are not there to copy, so the caller can fall
+    back to publishing what it has rather than silently dropping the layer.
+    """
+    available = [n for n in filenames if (previous_generation / n).exists()]
+    if len(available) != len(filenames):
+        return False
+    for name in filenames:
+        shutil.copy2(previous_generation / name, gen / name)
+    return True
+
+
 def validate_generation(gen: Path) -> list[str]:
     problems = []
     for name in ("events.geojson", "stats.json", "lineage.json"):
@@ -145,9 +171,10 @@ def prune_generations(out_dir: Path, keep: int = 3) -> None:
 def export(
     settings: Settings, events, liveness, places, alerts, now,
     live_frp=None, frp_points=None, wind=None, aircraft=None,
-    imagery=None, timeline=None, day_slices=None,
+    imagery=None, timeline=None, day_slices=None, results=None,
 ) -> Path:
     out = settings.out_dir
+    results = results or {}
     gen = out / f"gen-{now.strftime('%Y%m%dT%H%M%SZ')}"
     (gen / "tracks").mkdir(parents=True, exist_ok=True)
     (gen / "slices").mkdir(exist_ok=True)
@@ -295,6 +322,58 @@ def export(
         json.dumps({"merged": merged, "reactivated": reactivation_links(events, now)})
     )
 
+    # Per-layer freshness. A failed fetch keeps the previous generation's file
+    # (marked "carried") instead of publishing an empty layer; a CONFIRMED empty
+    # replaces it, so a quiet world never looks like an outage and vice versa.
+    previous_manifest = _previous_manifest(out)
+    previous_layers = previous_manifest.get("layers") or {}
+    previous_generation = (
+        out / previous_manifest["generation"]
+        if previous_manifest.get("generation")
+        and (out / previous_manifest["generation"]).exists()
+        else None
+    )
+
+    layers: dict[str, dict] = {}
+    newest_detection = max(
+        (m["acq_time"] for ms in events.values() for m in ms), default=None
+    )
+    layers["events"] = layer_entry(
+        "events",
+        FetchResult("ok" if events else "empty", events, now, newest_detection),
+        now=now, source="viirs+mtg",
+    )
+
+    for key, source, filenames in (
+        ("frp", "mtg-fci", ["frp.geojson", "isochrones.geojson"]),
+        ("wind", "open-meteo", ["wind.geojson"]),
+        ("aircraft", "opensky", ["aircraft.geojson"]),
+        ("timeline", "archive", []),
+        ("imagery", "gibs+effis", []),
+    ):
+        result = results.get(key)
+        if result is None:
+            continue
+        if (
+            previous_generation is not None
+            and should_carry(key, result, previous_layers.get(key), now)
+            and _carry_layer_files(previous_generation, gen, filenames)
+        ):
+            layers[key] = carried_entry(previous_layers[key], now=now)
+            print(f"[warn] {key}: fetch failed, carrying the previous generation")
+            continue
+        layers[key] = layer_entry(key, result, now=now, source=source)
+
+    # Carried layers whose payload lives in the manifest itself, not a file.
+    if layers.get("timeline", {}).get("status") == "carried":
+        timeline = previous_manifest.get("timeline") or timeline
+    if layers.get("imagery", {}).get("status") == "carried":
+        imagery = previous_manifest.get("imagery") or imagery
+
+    layers["gibs_tiles"] = layer_entry(
+        "gibs_tiles", FetchResult("ok", None, now, now), now=now, source="nasa-gibs",
+    )
+
     problems = validate_generation(gen)
     if problems:
         raise RuntimeError(f"generation invalid, not publishing: {problems}")
@@ -305,7 +384,16 @@ def export(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION, "generated_at": now.isoformat(),
-                "generation": gen.name, "tiers": {"viirs": True, "meteosat": bool(liveness)},
+                "generation": gen.name,
+                # Reported, not asserted: the old hardcoded `"viirs": True`
+                # claimed a tier the live site did not actually have.
+                "tiers": {
+                    "viirs": any(
+                        m["tier"] != "meteosat" for ms in events.values() for m in ms
+                    ),
+                    "meteosat": bool(liveness),
+                },
+                "layers": layers,
                 "slice_bins": slice_bins,
                 "live_frp": live_frp,
                 "frp_points": len(frp_feats),
