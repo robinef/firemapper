@@ -1,9 +1,15 @@
-"""Generate synthetic European wildfire hotspots + artifacts for the local demo.
+"""Build a local demo dataset + artifacts, real data when possible.
 
-Deterministic (seed 42). Produces a handful of fires across southern Europe in
-different lifecycle states (accelerating / growing / steady / declining), with
-movement tracks and a couple of Meteosat liveness rows, then runs the pipeline
-processing stage to emit web/public/data/ artifacts. No network, no API key.
+With a `FIRMS_MAP_KEY` this tops up the real VIIRS archive (30 days) and fuses
+live Meteosat pixels — the same data the deployed site shows.
+
+**Without a key it falls back to synthetic fires**, deterministic (seed 42):
+a handful across southern Europe in different lifecycle states (accelerating /
+growing / steady / declining), with movement tracks and Meteosat liveness rows.
+That fallback is the point of `make sample`: the README promises a working demo
+with no account, and an empty map is not a demo.
+
+Either way it then runs the processing stage to emit web/public/data/ artifacts.
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pipeline.config import load_settings
 from pipeline.fetch_firms import append_hotspots
 from pipeline.run import process
+from pipeline.store import read_hotspots
 
 random.seed(42)
 NOW = datetime.now(timezone.utc)
@@ -90,8 +97,19 @@ def main() -> None:
 
     hist = fetch_firms_history(settings)
     print(f"[info] FIRMS history hotspots (new): {hist}")
+
+    # fetch_firms_history returns 0 without a key rather than raising, so a
+    # keyless run would otherwise publish an empty map and look broken. Fall
+    # back to synthetic fires so `make sample` always produces a usable demo.
+    if not store.exists() or not read_hotspots(store):
+        rows: list[dict] = []
+        for _name, lat, lon, drift, kind, met in FIRES:
+            rows.extend(_rows_for_fire(lat, lon, drift, kind, met=met))
+        append_hotspots(rows, store)
+        print(f"[info] no real detections available → {len(rows)} synthetic rows")
+
     gen = process(settings, now=NOW)
-    print(f"sample: real MTG-driven → {gen}")
+    print(f"sample: {gen}")
 
 
 if __name__ == "__main__":
