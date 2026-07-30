@@ -14,6 +14,7 @@ which is what keeps lineage and carry-forward reasoning about one generation.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import Settings
@@ -21,6 +22,9 @@ from .config import Settings
 ARCHIVE_PREFIX = "archive/"
 DATA_PREFIX = "data/"
 MANIFEST_KEY = f"{DATA_PREFIX}manifest.json"
+# botocore clients are thread-safe for API calls; the ceiling here is R2's
+# per-connection round trip, not local CPU.
+UPLOAD_WORKERS = 16
 
 
 def archive_key(generation: str) -> str:
@@ -64,13 +68,25 @@ def hydrate(settings: Settings, client) -> str | None:
     settings.out_dir.mkdir(parents=True, exist_ok=True)
     (settings.out_dir / "manifest.json").write_bytes(raw)
 
-    for key in _keys(client, settings.r2_bucket, f"{DATA_PREFIX}{generation}/"):
+    def download(key: str) -> None:
         body = _get(client, settings.r2_bucket, key)
         if body is None:
-            continue
-        destination = settings.out_dir / key[len(DATA_PREFIX):]
+            return
+        relative = key[len(DATA_PREFIX):]
+        destination = settings.out_dir / relative
+        # Keys come from our own publish(), but they are still remote input:
+        # refuse anything that would escape out_dir rather than trusting the
+        # bucket's contents to be well-formed.
+        if ".." in Path(relative).parts or Path(relative).is_absolute():
+            print(f"[warn] refusing suspicious remote key: {key}")
+            return
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(body)
+
+    # Same round-trip bound as publish(): a generation is thousands of small
+    # objects, and hydrate runs before every refresh.
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
+        list(pool.map(download, _keys(client, settings.r2_bucket, f"{DATA_PREFIX}{generation}/")))
 
     body = _get(client, settings.r2_bucket, manifest.get("archive") or archive_key(generation))
     if body is not None:
@@ -84,9 +100,7 @@ def publish(settings: Settings, generation_dir: Path, client) -> None:
     bucket = settings.r2_bucket
     generation = generation_dir.name
 
-    for path in sorted(generation_dir.rglob("*")):
-        if not path.is_file():
-            continue
+    def upload(path: Path) -> None:
         relative = path.relative_to(settings.out_dir).as_posix()
         client.put_object(
             Bucket=bucket,
@@ -94,6 +108,17 @@ def publish(settings: Settings, generation_dir: Path, client) -> None:
             Body=path.read_bytes(),
             ContentType="application/json",
         )
+
+    # A generation is thousands of small objects (one track per fire event, one
+    # slice per day), and each PUT is a round trip. Serially that measured ~24
+    # minutes for 8306 files — longer than the 15-minute refresh interval and
+    # past the workflow timeout, so the manifest would never be written and the
+    # site would never advance. Concurrency here is what makes the cadence real.
+    files = [p for p in sorted(generation_dir.rglob("*")) if p.is_file()]
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
+        # list() forces the iterator so a failed upload re-raises here, before
+        # the manifest is written.
+        list(pool.map(upload, files))
 
     store = settings.data_dir / "raw" / "hotspots.parquet"
     key = archive_key(generation)
