@@ -3,11 +3,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from .config import EUROPE_BBOX, Settings
+
+# Same VIIRS instrument on three platforms. Tried in order per history window:
+# an outage on one satellite must not become a hole in the timeline. Observed
+# 2026-07-11..15, where SNPP returned an empty CSV while NOAA-20 had ~9k rows.
+HISTORY_SOURCES = ("VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT")
 from .store import append_hotspots  # re-export: hotspots persist as GeoParquet
 
 # FIRMS area API. VIIRS (3 sats) + MODIS. Docs: https://firms.modaps.eosdis.nasa.gov/api/area/
@@ -135,12 +141,29 @@ def fetch_firms_history(
         # Skip windows the store already fully covers (fetch only newer days).
         if have_until is not None and window_end <= have_until:
             continue
-        url = (
-            f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
-            f"{settings.firms_map_key}/VIIRS_SNPP_NRT/{area}/{span}/{start.isoformat()}"
-        )
-        try:
-            total += append_hotspots(parse_firms_csv(http_get(url), "viirs"), store)
-        except Exception:  # noqa: BLE001 - history is best-effort
-            continue
+        # One satellite is a single point of failure: an SNPP processing outage
+        # returns HTTP 200 with a header row and no data, which would land as a
+        # silent multi-day hole in the timeline. Fall through to the sister
+        # platforms, which fly the same instrument, before giving up on a window.
+        window_rows = 0
+        for source in HISTORY_SOURCES:
+            url = (
+                f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
+                f"{settings.firms_map_key}/{source}/{area}/{span}/{start.isoformat()}"
+            )
+            try:
+                rows = parse_firms_csv(http_get(url), "viirs")
+            except Exception as e:  # noqa: BLE001 - history is best-effort
+                print(f"[warn] firms-history {source} {start}: {e}", file=sys.stderr)
+                continue
+            if rows:
+                window_rows = append_hotspots(rows, store)
+                break
+        if not window_rows:
+            print(
+                f"[warn] firms-history: no detections for the 5 days from {start} "
+                f"from any of {', '.join(HISTORY_SOURCES)}",
+                file=sys.stderr,
+            )
+        total += window_rows
     return total
