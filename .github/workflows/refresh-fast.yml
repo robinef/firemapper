@@ -1,0 +1,33 @@
+name: refresh-fast
+
+# Live layers only: MTG FRP (10-minute cadence), wind and aircraft, re-clustered
+# against the archive already in R2. Needs no API key.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# queue: max is load-bearing. The default (`single`) CANCELS an older pending
+# run, so the hourly full refresh would be discarded by the next fast run every
+# time the two collide. Cannot be combined with cancel-in-progress: true.
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run python -m scripts.refresh_remote fast
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
