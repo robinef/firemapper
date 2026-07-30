@@ -27,7 +27,19 @@ Two consequences worth stating plainly:
 |---|---|---|
 | [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/15` | MTG FRP, wind, aircraft, then re-clusters against the archive |
 | [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | hourly at :07 | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
-| [`deploy.yml`](../.github/workflows/deploy.yml) | push to `main` | builds the shell and runs `npx wrangler deploy` |
+
+Deploys are **not** a workflow. Cloudflare's git integration (Workers Builds)
+watches `main` and builds the app shell itself:
+
+| Setting | Value |
+|---|---|
+| Build command | `npm --prefix web ci && npm --prefix web run build` |
+| Deploy command | `npx wrangler deploy` |
+
+Keeping deploys there rather than in Actions means one deploy path and no
+`CLOUDFLARE_API_TOKEN` to mint, store or rotate — the integration already has
+repository access. A build command is required: without one, Workers Builds
+uploads whatever is in `web/dist`, which is no longer committed.
 
 Both refresh workflows share `concurrency: { group: refresh, queue: max }`.
 `queue: max` is load-bearing: the default `queue: single` cancels an older
@@ -75,7 +87,9 @@ Repository secrets:
 |---|---|---|
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | both refresh workflows | R2 API token with Object Read & Write |
 | `FIRMS_MAP_KEY` | `refresh-full` | free from NASA FIRMS |
-| `CLOUDFLARE_API_TOKEN` | `deploy` | "Edit Cloudflare Workers" template |
+
+No Cloudflare token is needed as a repository secret: deploys run inside
+Cloudflare's own build integration, not from Actions.
 
 Seed the archive once, locally, with `FIRMS_MAP_KEY` in `.env`:
 
