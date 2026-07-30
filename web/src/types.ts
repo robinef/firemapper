@@ -1,8 +1,12 @@
+import type { LayerFreshness } from "./freshness";
+
 export interface Manifest {
   schema_version: string;
   generated_at: string;
   generation: string;
   tiers: { viirs: boolean; meteosat: boolean };
+  /** Per-layer freshness (schema >= 1.1.0). Absent on older manifests. */
+  layers?: Record<string, LayerFreshness>;
   slice_bins?: string[];
   live_frp?: { url: string; layer: string; latest: string; step: string } | null;
   frp_points?: number;

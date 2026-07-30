@@ -9,6 +9,7 @@ import {
   loadManifest,
   loadWind,
 } from "./data";
+import { badgeText } from "./freshness";
 import { createMap } from "./map";
 import { FIRE_HUE, addActiveFires, fireLayerIds } from "./layer_fires";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
@@ -40,17 +41,12 @@ async function boot() {
 
   map.on("load", async () => {
     const manifest: Manifest = await loadManifest(BASE);
-    // Show DATA age, not just when the file was built — the freshness a citizen
+    // Show DATA age, not when the file was built — the freshness a citizen
     // actually cares about is "how old is the newest satellite detection".
-    const latestIso = manifest.live_frp?.latest;
-    let freshness = "";
-    if (latestIso) {
-      const mins = Math.round((Date.now() - new Date(latestIso).getTime()) / 60000);
-      const age = mins < 90 ? `${mins} min` : `${Math.round(mins / 60)} h`;
-      const stale = mins > 180 ? " ⚠ stale" : "";
-      freshness = ` · newest satellite data ${age} old${stale}`;
-    }
-    document.getElementById("header")!.textContent = `FireMapper${freshness}`;
+    // Derived from the fire layers' observation times, so the badge cannot be
+    // made to look fresh by some unrelated layer that happened to succeed.
+    document.getElementById("header")!.textContent =
+      `FireMapper${badgeText(manifest, new Date())}`;
 
     const events = await loadEvents(manifest, BASE);
     const iso = await loadIsochrones(manifest, BASE).catch(
@@ -96,6 +92,7 @@ async function boot() {
     const modules: LayerModule[] = [
       {
         key: "fires",
+        freshnessKeys: ["events"],
         levels: [1, 2] as (1|2)[],
         label: "Active fires",
         question: "Where is fire burning now, and how big?",
@@ -113,6 +110,7 @@ async function boot() {
       },
       {
         key: "intensity",
+        freshnessKeys: ["frp"],
         levels: [1, 2] as (1|2)[],
         label: "Fire intensity",
         question: "How violently is it burning right now?",
@@ -122,6 +120,7 @@ async function boot() {
       },
       {
         key: "spread",
+        freshnessKeys: ["frp"],
         levels: [2] as (1|2)[],
         label: "Fire spread",
         question: "Which way is it moving, and how fast?",
@@ -131,6 +130,7 @@ async function boot() {
       },
       {
         key: "wind",
+        freshnessKeys: ["wind"],
         levels: [2] as (1|2)[],
         label: "Wind",
         question: "Which way is the wind pushing it?",
@@ -140,6 +140,7 @@ async function boot() {
       },
       {
         key: "viirs",
+        freshnessKeys: ["gibs_tiles"],
         levels: [2] as (1|2)[],
         label: "VIIRS detail",
         question: "Finest-resolution detection footprint (375 m)",
@@ -149,6 +150,7 @@ async function boot() {
       },
       {
         key: "aircraft",
+        freshnessKeys: ["aircraft"],
         levels: [1, 2] as (1|2)[],
         label: "Firefighting aircraft",
         question: "Are water bombers working this fire?",
@@ -158,6 +160,7 @@ async function boot() {
       },
       {
         key: "scars",
+        freshnessKeys: ["imagery"],
         levels: [1] as (1|2)[],
         label: "Burn scars (past fires)",
         question: "How much did past fires destroy?",
@@ -171,6 +174,7 @@ async function boot() {
       document.getElementById("legend")!,
       modules,
       map,
+      manifest,
     );
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
