@@ -1,3 +1,6 @@
+import pytest
+
+from pipeline import run
 from pipeline.config import load_settings
 from pipeline.fetch_firms import append_hotspots
 from pipeline.run import process
@@ -19,3 +22,52 @@ def test_process_end_to_end(tmp_path, monkeypatch):
     gen = process(s, now=T(20, 12))
     assert (s.out_dir / "manifest.json").exists()
     assert (gen / "events.geojson").exists()
+
+
+def test_full_refresh_without_key_raises(tmp_path):
+    """A missing FIRMS key must stop the run. Degrading silently is what
+    published a 30-day timeline of zeroes to production."""
+    settings = load_settings(env={
+        "DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o"),
+    })
+    with pytest.raises(RuntimeError, match="FIRMS_MAP_KEY"):
+        run.refresh(settings, tier="full")
+
+
+def test_fast_refresh_skips_the_polar_archive(tmp_path, monkeypatch):
+    called: list[str] = []
+    monkeypatch.setattr(run, "fetch_firms", lambda *a, **k: called.append("firms"))
+    monkeypatch.setattr(run, "fetch_firms_history", lambda *a, **k: called.append("history"))
+    monkeypatch.setattr(run, "fetch_meteosat", lambda *a, **k: called.append("meteosat"))
+    monkeypatch.setattr(run, "process", lambda *a, **k: called.append("process"))
+    settings = load_settings(env={
+        "DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o"),
+    })
+
+    run.refresh(settings, tier="fast")
+
+    assert called == ["process"]
+
+
+def test_full_refresh_with_key_fetches_everything(tmp_path, monkeypatch):
+    called: list[str] = []
+    monkeypatch.setattr(run, "fetch_firms", lambda *a, **k: called.append("firms"))
+    monkeypatch.setattr(run, "fetch_firms_history", lambda *a, **k: called.append("history"))
+    monkeypatch.setattr(run, "fetch_meteosat", lambda *a, **k: called.append("meteosat"))
+    monkeypatch.setattr(run, "process", lambda *a, **k: called.append("process"))
+    settings = load_settings(env={
+        "FIRMS_MAP_KEY": "k",
+        "DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o"),
+    })
+
+    run.refresh(settings, tier="full")
+
+    assert called == ["firms", "history", "meteosat", "process"]
+
+
+def test_unknown_tier_is_rejected(tmp_path):
+    settings = load_settings(env={
+        "DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o"),
+    })
+    with pytest.raises(ValueError, match="unknown tier"):
+        run.refresh(settings, tier="medium")
