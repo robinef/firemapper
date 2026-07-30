@@ -162,3 +162,47 @@ def test_prune_keeps_newest_generations_and_their_archives(tmp_path):
     assert archive_key("gen-1") not in fake.objects
     assert "data/gen-4/events.geojson" in fake.objects
     assert archive_key("gen-2") in fake.objects
+
+
+def test_publish_still_writes_manifest_after_concurrent_uploads(tmp_path):
+    """Uploads run in a thread pool for speed; the manifest must still be the
+    last write, or a client could see a generation that is not fully there."""
+    settings, gen = _publishable(tmp_path)
+    for i in range(40):
+        (gen / "tracks" / f"e{i}.json").write_text(f'{{"id":"e{i}"}}')
+    fake = FakeS3()
+
+    publish(settings, gen, fake)
+
+    assert fake.put_order[-1] == "data/manifest.json"
+    # e0..e39, with e1 overwriting the one _publishable already wrote
+    assert len([k for k in fake.objects if k.startswith(f"data/{gen.name}/tracks/")]) == 40
+
+
+def test_publish_propagates_an_upload_failure_from_the_pool(tmp_path):
+    """A failure inside a worker thread must abort before the manifest lands,
+    not be swallowed by the executor."""
+    settings, gen = _publishable(tmp_path)
+    fake = FakeS3(fail_on=f"data/{gen.name}/stats.json")
+
+    with pytest.raises(RuntimeError):
+        publish(settings, gen, fake)
+
+    assert "data/manifest.json" not in fake.objects
+
+
+def test_hydrate_refuses_a_traversing_key(tmp_path):
+    """Remote keys are our own output, but hydrate still must not write outside
+    out_dir if the bucket ever serves a malformed key."""
+    settings = _settings(tmp_path)
+    objects = {
+        "data/manifest.json": json.dumps({"generation": "gen-1"}).encode(),
+        "data/gen-1/events.geojson": b"{}",
+        "data/gen-1/../../escaped.json": b"pwned",
+    }
+
+    hydrate(settings, FakeS3(objects))
+
+    assert (settings.out_dir / "gen-1" / "events.geojson").exists()
+    assert not (settings.out_dir.parent / "escaped.json").exists()
+    assert not (tmp_path / "escaped.json").exists()
