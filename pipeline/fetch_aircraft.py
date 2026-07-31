@@ -75,8 +75,25 @@ def _is_french_icao24(icao24: str | None) -> bool:
     return len(h) >= 2 and h[0] == "3" and h[1] in "89ab"
 
 
+# An ADS-B callsign is whatever the aircraft chooses to broadcast — it is
+# attacker-influenced data, and it ends up rendered in the aircraft panel.
+# A callsign is A-Z, 0-9 and spaces; anything else is not a callsign at all and
+# is refused outright rather than pattern-matched.
+#
+# The CHARSET is the security property here, not the length: the family
+# patterns below anchor only their start (`^PELICAN\s?\d`), so without this a
+# broadcast callsign like `PELICAN1<img src=x onerror=…>` classified as a water
+# bomber and carried its payload into the panel's innerHTML. The length bound is
+# only a sanity cap — ICAO allows 8, but OpenSky's padding and the telephony
+# forms we match ("PELICAN 32") run longer, so 12 keeps real aircraft while
+# still refusing anything resembling a payload.
+VALID_CALLSIGN = re.compile(r"^[A-Z0-9 ]{1,12}$")
+
+
 def classify(callsign: str, icao24: str | None = None) -> tuple[str, str] | None:
     cs = (callsign or "").strip().upper()
+    if not VALID_CALLSIGN.match(cs):
+        return None
     for pattern, kind, role in CALLSIGN_FAMILIES:
         if pattern.match(cs):
             return kind, role
