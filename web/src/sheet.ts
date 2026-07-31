@@ -38,7 +38,13 @@ export interface Sheet {
 
 export function detentHeights(): Record<Detent, number> {
   const vh = window.innerHeight || 800;
-  return { peek: 100, half: Math.round(vh * 0.5), full: Math.round(vh * 0.88) };
+  // peek exists to show the histogram — that's the one thing a glance at the
+  // collapsed sheet is for. Measured at 375px: handle ~28 + gap 8 +
+  // .tl-head (wraps to 2 lines) ~34 + gap 5 + .tl-bars 54 + gap 5 +
+  // .tl-axis ~14 ≈ 148px of real content. 100 sliced the bars and the date
+  // axis off entirely; 150 clears the measured content with a few px to
+  // spare instead of also trimming the axis/readout at this one detent.
+  return { peek: 150, half: Math.round(vh * 0.5), full: Math.round(vh * 0.88) };
 }
 
 /**
@@ -98,7 +104,16 @@ export function createSheet(breakpoint = 640): Sheet {
         container.appendChild(el);
       }
       document.body.appendChild(container);
-      applyHeight();
+      // Every peek/mode CSS rule is keyed on data-detent/data-mode (see
+      // style.css's mobile block), and nothing else ever set them before this
+      // point — applyHeight() only sizes the box, it doesn't stamp either
+      // attribute. Without this, first load had neither attribute at all
+      // (different from every later state, where at least one detail:open
+      // or detail:close round trip has run), so #panel/layers/legend were
+      // laid out inside a 100px sheet but still reachable by scrolling —
+      // only becoming truly hidden once data-detent="peek" existed.
+      api.setContent(mode);
+      api.snapTo(detent);
 
       offs.push(
         onUi("detail:open", () => {

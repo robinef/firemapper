@@ -11,7 +11,7 @@ import {
 } from "./data";
 import { badgeText } from "./freshness";
 import { createMap } from "./map";
-import { FIRE_HUE, addActiveFires, fireLayerIds } from "./layer_fires";
+import { FIRE_HUE, addActiveFires, fireHaloIds, fireLayerIds } from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
@@ -41,7 +41,12 @@ async function boot() {
   if (import.meta.env.DEV) {
     (window as unknown as { __map: maplibregl.Map }).__map = map;
   }
-  const panel = mountPanel("panel", () => undefined);
+  // The aircraft panel is the only thing mountPanel closes (the fire card
+  // bypasses mountPanel entirely) — without announcing detail:close here, the
+  // sheet's mode never leaves "aircraft" after the user closes it, hiding the
+  // layer list and legends at every detent until a fire card is separately
+  // opened and closed.
+  const panel = mountPanel("panel", () => emitUi("detail:close"));
 
   map.on("load", async () => {
     const manifest: Manifest = await loadManifest(BASE);
@@ -101,7 +106,7 @@ async function boot() {
         label: "Active fires",
         question: "Where is fire burning now, and how big?",
         layerIds: [
-          "fire-halo", ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
+          ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
         ],
         defaultOn: true,
         legend: {
@@ -226,11 +231,11 @@ async function boot() {
     // harmless for the idempotent aircraft panel, but for fires it meant two
     // concurrent `loadTrack` requests racing to render the card.
     const CLICK_ORDER = [
-      "fire-halo", ...fireLayerIds, "fire-footprint-fill",
+      ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
       ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
     ];
     const HANDLERS: Record<string, (e: maplibregl.MapLayerMouseEvent) => void> = {};
-    for (const id of ["fire-halo", ...fireLayerIds, "fire-footprint-fill"]) {
+    for (const id of [...fireHaloIds, ...fireLayerIds, "fire-footprint-fill"]) {
       HANDLERS[id] = fireCard.openFire;
     }
     for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
@@ -285,10 +290,10 @@ async function boot() {
 
     // Cursor feedback stays per-layer; it is desktop-only and harmless on touch.
     // aircraft-halo is a visible semi-transparent glow (layer_aircraft.ts:78-87),
-    // so it gets the pointer cursor same as before this change. fire-halo is
-    // fully transparent — a pointer over apparently-empty map would be a false
-    // affordance — so it is deliberately left out here even though it is a
-    // valid click target.
+    // so it gets the pointer cursor same as before this change. The fire-halo-*
+    // layers are fully transparent — a pointer over apparently-empty map would
+    // be a false affordance — so they are deliberately left out here even
+    // though each is a valid click target.
     for (const id of [
       ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
     ]) {
@@ -339,7 +344,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
   // hexes, heat, hexbins, markers) sits on top of the before/after imagery.
   const OVERLAY_LAYERS = [
-    "fire-halo", ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
+    ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
     ...VIIRS_LAYER_IDS, ...AIRCRAFT_LAYER_IDS, ...SCAR_LAYER_IDS,
@@ -381,7 +386,17 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // Guard against re-entry (switching scars while already comparing):
     // lockMap() again would capture the already-disabled state and corrupt
     // what exit() restores to, so only capture it the first time in.
-    if (!locked) locked = lockMap(map);
+    //
+    // Only lock on touch: ImagerySwipe appends its divider to
+    // main.getContainer() (layer_imagery.ts:163) while MapLibre's drag
+    // handlers bind to getCanvasContainer() — a sibling subtree — so a
+    // mouse-drag on the divider never reaches MapLibre's pan handler in the
+    // first place. On a touchscreen a finger that misses the narrow grab
+    // zone WOULD land on the map underneath and pan mid-comparison, so the
+    // lock still earns its keep there. Gating on `(pointer: coarse)` rather
+    // than a width breakpoint follows the actual ambiguity (touch vs mouse
+    // drag), not the viewport size the mobile sheet happens to use.
+    if (!locked && window.matchMedia?.("(pointer: coarse)").matches) locked = lockMap(map);
     hideOverlays();
     map.flyTo({ center: [scar.lon, scar.lat], zoom: cfg.hd ? 13 : 10 });
     const t = scarTiles(cfg, scar);

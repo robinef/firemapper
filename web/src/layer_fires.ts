@@ -22,6 +22,10 @@ import type maplibregl from "maplibre-gl";
 export const FIRE_HUE = "#ff5a1f";
 export const FIRE_CLASSES = ["major", "medium", "minor"] as const;
 export const fireLayerIds = FIRE_CLASSES.map((c) => `fires-${c}`);
+/** One invisible tap-target halo per size class — see the CLASS_MINZOOM loop
+ * below for why there is no single "fire-halo" any more. Exported so every
+ * caller that used to hardcode the bare string can spread this instead. */
+export const fireHaloIds = FIRE_CLASSES.map((c) => `fire-halo-${c}`);
 
 /** Radius ∝ √area, with a gentle zoom boost. Exported for tests. */
 export function fireRadiusExpression(): unknown {
@@ -100,28 +104,35 @@ export function addActiveFires(
     },
   });
 
-  // Invisible 44px tap target under every fire dot, whatever its size class.
-  // MapLibre hit-tests the RENDERED circle, and an 8-16px dot is far below the
-  // touch minimum. Same trick as aircraft-halo (layer_aircraft.ts:79).
-  // Deliberately not in any legend: it is a target, not a symbol.
-  map.addLayer({
-    id: "fire-halo",
-    type: "circle",
-    source: "fires",
-    filter: ["!=", ["get", "status"], "closed"],
-    paint: { "circle-radius": 22, "circle-color": "rgba(0,0,0,0)" },
-  });
-
   // Proportional symbol per size class, each revealed at its own zoom and all
-  // gone by z9 where the footprint takes over.
+  // gone by z9 where the footprint takes over. Its invisible 44px tap-target
+  // halo is added right before it, one per class with the SAME filter and
+  // zoom range as the dot it backs — a single halo covering every class (the
+  // original design) would sit under classes not yet revealed at the current
+  // zoom (major shows from z3, minor not until z8.5) and blanket the map with
+  // click targets for fires nothing on screen represents. MapLibre hit-tests
+  // the RENDERED circle, and an 8-16px dot is far below the touch minimum, so
+  // the halo is still needed — just scoped like its dot. Same enlarging trick
+  // as aircraft-halo (layer_aircraft.ts:79). Deliberately not in any legend:
+  // it is a target, not a symbol.
   for (const [cls, minz] of Object.entries(CLASS_MINZOOM)) {
+    const filter = ["all", ["!=", ["get", "status"], "closed"], ["==", ["get", "size_class"], cls]];
+    map.addLayer({
+      id: `fire-halo-${cls}`,
+      type: "circle",
+      source: "fires",
+      minzoom: minz,
+      maxzoom: 9.5,
+      filter: filter as never,
+      paint: { "circle-radius": 22, "circle-color": "rgba(0,0,0,0)" },
+    });
     map.addLayer({
       id: `fires-${cls}`,
       type: "circle",
       source: "fires",
       minzoom: minz,
       maxzoom: 9.5,
-      filter: ["all", ["!=", ["get", "status"], "closed"], ["==", ["get", "size_class"], cls]],
+      filter: filter as never,
       paint: {
         "circle-color": FIRE_HUE,
         "circle-radius": fireRadiusExpression() as never,

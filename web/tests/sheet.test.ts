@@ -45,6 +45,22 @@ describe("sheet", () => {
     expect(container.contains(document.getElementById("timeline"))).toBe(true);
   });
 
+  // Regression: mount() used to call applyHeight() only, never setContent()/
+  // snapTo() — so first load had neither data-attribute set at all, unlike
+  // every later state (reached only after a detail:open/close round trip).
+  // Every peek/mode CSS rule in style.css is keyed on these two attributes,
+  // so a fresh page load and a page that had already opened-and-closed a
+  // card rendered the sheet differently.
+  it("stamps data-detent and data-mode on mount, before any UI event fires", () => {
+    const sheet = createSheet(640);
+    sheet.mount();
+    const container = document.querySelector(".sheet")!;
+    expect(container.getAttribute("data-detent")).toBe("peek");
+    expect(container.getAttribute("data-mode")).toBe("overview");
+    expect(sheet.detent).toBe("peek");
+    expect(sheet.mode).toBe("overview");
+  });
+
   it("restores the original parents on destroy", () => {
     const sheet = createSheet(640);
     sheet.mount();

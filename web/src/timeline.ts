@@ -161,6 +161,11 @@ export function mountTimeline(
     // pointerup handlers (pointerup fires, browser synthesizes click, both
     // would call onSelect without this consolidation).
     barsWrap.addEventListener("pointerup", (e) => {
+      // pointerup fires for every button, unlike the click it replaced —
+      // without this a right-click (context menu) or middle-click would
+      // still select the day and trigger onSelect's fetch underneath the menu.
+      if (e.button !== 0) return;
+
       // Validate this is the same pointer gesture (guards against drag-selection).
       if (!pointerDownState || e.pointerId !== pointerDownState.pointerId) return;
 
