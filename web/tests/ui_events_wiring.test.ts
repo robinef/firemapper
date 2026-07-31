@@ -29,7 +29,9 @@ describe("ui event wiring", () => {
     onUi("detail:close", () => seen.push("close"));
 
     const { setupFireCard } = await import("../src/firecard");
-    document.body.innerHTML = `<div id="panel"></div><div id="timeline"></div>`;
+    // index.html starts #panel with class="hidden"; match that here so
+    // isOpen reflects the real initial state instead of a fixture artifact.
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const map = {
       getLayer: () => null, getSource: () => null, setPaintProperty: () => {},
       getPaintProperty: () => 1, on: () => {}, off: () => {}, flyTo: () => {},
@@ -46,6 +48,7 @@ describe("ui event wiring", () => {
       () => {},
       () => {},
     );
+    expect(card.isOpen).toBe(false); // nothing opened yet
     card.close();
     expect(seen).toEqual(["close"]);
   });

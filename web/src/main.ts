@@ -254,9 +254,15 @@ async function boot() {
         // button can be a stretch one-handed. Confirmed missing only by
         // driving a real click in a real browser: jsdom's tests never asserted
         // a background tap does anything, so this silently regressed to a
-        // no-op. Idempotent when nothing is open (close() just re-hides an
-        // already-hidden panel), so it's safe to call unconditionally here.
-        fireCard.close();
+        // no-op.
+        //
+        // Gated on isOpen — close() is not side-effect-free when nothing is
+        // open: it also calls mountOverview(), which re-renders the level-1
+        // histogram and wipes any selected day bin. Calling it unconditionally
+        // on every miss-click made an ordinary empty-map click (any viewport,
+        // desktop included) silently clear a selected histogram day even
+        // though no card had ever been opened.
+        if (fireCard.isOpen) fireCard.close();
         return;
       }
       // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live

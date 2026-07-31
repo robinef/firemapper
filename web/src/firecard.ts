@@ -133,6 +133,13 @@ export interface FireCard {
   openFire: (e: maplibregl.MapLayerMouseEvent) => void;
   openScar: (e: maplibregl.MapLayerMouseEvent) => void;
   close: () => void;
+  /** Whether a fire/scar card is currently showing. Callers that only want
+   *  to dismiss an OPEN card (e.g. a background map tap) must check this
+   *  first: close() is not side-effect-free when nothing is open — it also
+   *  calls mountOverview(), which re-renders the level-1 histogram and wipes
+   *  any selected day bin, so calling it unconditionally on every miss-click
+   *  would silently clear a selection the user never asked to touch. */
+  readonly isOpen: boolean;
 }
 
 export function setupFireCard(
@@ -332,5 +339,12 @@ export function setupFireCard(
     if (e.key === "Escape" && !panel.classList.contains("hidden")) close();
   });
 
-  return { openFire, openScar, close };
+  return {
+    openFire,
+    openScar,
+    close,
+    get isOpen() {
+      return !panel.classList.contains("hidden");
+    },
+  };
 }

@@ -138,4 +138,53 @@ describe("sheet", () => {
     // to "full" — the drag traveled, it did not just snap to where it started
     expect(sheet.detent).toBe("full");
   });
+
+  // Regression for the real-browser-only lockup: setPointerCapture/
+  // releasePointerCapture can throw NotFoundError when the browser's
+  // internal pointer-id tracking doesn't recognise the id as currently
+  // active (a real, documented cross-browser Pointer Events quirk). jsdom's
+  // no-op stubs above never exercise this path, so this test forces exactly
+  // one throw from each — matching a genuine first-drag failure — and
+  // asserts a SECOND, independent drag still completes. Before the fix, an
+  // uncaught throw from either call left activePointerId stuck non-null
+  // forever, and the `if (activePointerId !== null) return;` guard in
+  // pointerdown silently rejected every subsequent drag for the rest of the
+  // page's life.
+  it("recovers from a NotFoundError on pointer capture so the next drag still works", () => {
+    const sheet = createSheet(640);
+    sheet.mount();
+    const handle = document.querySelector(".sheet-handle") as HTMLElement;
+
+    let setCalls = 0;
+    let releaseCalls = 0;
+    handle.setPointerCapture = () => {
+      setCalls++;
+      if (setCalls === 1) throw new DOMException("no active pointer", "NotFoundError");
+    };
+    handle.releasePointerCapture = () => {
+      releaseCalls++;
+      if (releaseCalls === 1) throw new DOMException("no active pointer", "NotFoundError");
+    };
+
+    const dispatch = (target: EventTarget, type: string, id: number, y: number, t: number) => {
+      const e = new PointerEvent(type, { pointerId: id, clientY: y, bubbles: true });
+      Object.defineProperty(e, "timeStamp", { value: t });
+      target.dispatchEvent(e);
+    };
+
+    // First drag: both capture calls throw. Must not leave the handle stuck.
+    dispatch(handle, "pointerdown", 1, 500, 0);
+    dispatch(window, "pointermove", 1, 400, 16);
+    dispatch(window, "pointerup", 1, 400, 32);
+    expect(sheet.detent).toBe("full");
+
+    // Second, independent drag with fresh pointer capture calls (no longer
+    // throwing) — only possible if activePointerId was reset after the first.
+    dispatch(handle, "pointerdown", 2, 700, 100);
+    dispatch(window, "pointermove", 2, 750, 116);
+    dispatch(window, "pointerup", 2, 750, 132);
+    expect(sheet.detent).toBe("peek");
+    expect(setCalls).toBe(2);
+    expect(releaseCalls).toBe(2);
+  });
 });

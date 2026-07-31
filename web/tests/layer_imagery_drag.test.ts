@@ -175,4 +175,43 @@ describe("ImagerySwipe divider drag lifecycle", () => {
       swipe.destroy();
     }).not.toThrow();
   });
+
+  // Regression for the real-browser-only lockup: setPointerCapture/
+  // releasePointerCapture can throw NotFoundError when the browser's
+  // internal pointer-id tracking doesn't recognise the id as currently
+  // active (a real, documented cross-browser Pointer Events quirk — see
+  // sheet.ts's identical handle-drag pattern for the fuller writeup). The
+  // no-op stubs in makeSwipe() never exercise this path, so this test
+  // forces exactly one throw from each call, matching a genuine first-drag
+  // failure, and asserts a second, independent drag still moves the
+  // divider. Before the fix, an uncaught throw left activePointerId stuck
+  // non-null and the divider dead for the rest of the page's life.
+  it("recovers from a NotFoundError on pointer capture so the next drag still works", () => {
+    const { divider } = makeSwipe();
+    let setCalls = 0;
+    let releaseCalls = 0;
+    divider.setPointerCapture = () => {
+      setCalls++;
+      if (setCalls === 1) throw new DOMException("no active pointer", "NotFoundError");
+    };
+    divider.releasePointerCapture = () => {
+      releaseCalls++;
+      if (releaseCalls === 1) throw new DOMException("no active pointer", "NotFoundError");
+    };
+
+    // First drag: both capture calls throw. Must not leave the divider stuck.
+    dispatch(divider, "pointerdown", 1, 100);
+    dispatch(window, "pointermove", 1, 100);
+    dispatch(window, "pointerup", 1, 100);
+    expect(divider.style.left).toBe("100px");
+
+    // Second, independent drag with fresh pointer capture calls (no longer
+    // throwing) — only possible if activePointerId was reset after the first.
+    dispatch(divider, "pointerdown", 2, 250);
+    dispatch(window, "pointermove", 2, 250);
+    dispatch(window, "pointerup", 2, 250);
+    expect(divider.style.left).toBe("250px");
+    expect(setCalls).toBe(2);
+    expect(releaseCalls).toBe(2);
+  });
 });
