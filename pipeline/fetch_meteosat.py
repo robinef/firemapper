@@ -20,6 +20,19 @@ from .fetch_firms import _src_id, append_hotspots
 EUMETVIEW_WMS = "https://view.eumetsat.int/geoserver/ows"
 MTG_FRP_LAYER = "mtg_fd:frp"
 
+# The service throws an intermittent server-side NullPointerException, returned
+# as HTTP 400 with exceptionCode=NoApplicableCode, on a request it answers fine
+# seconds later — measured at roughly one call in three while otherwise up, with
+# occasional 503s alongside. The request is not at fault, so the only remedy is
+# to ask again. Three attempts turns a ~1-in-3 flake into a ~1-in-27 loss.
+FRP_ATTEMPTS = 3
+FRP_BACKOFF_S = 2.0
+# Per-attempt cap. Successful calls land in seconds; anything near this is the
+# service being down, where retrying is pointless — so keep the ceiling low
+# enough that three attempts cannot stall a refresh (3 x 60 s worst case, and
+# attempt() carries the previous layer forward anyway).
+FRP_TIMEOUT_S = 60
+
 
 def _wfs_points_url(bbox: tuple[float, float, float, float], count: int) -> str:
     lon_min, lat_min, lon_max, lat_max = bbox
@@ -38,6 +51,30 @@ def _wfs_points_url(bbox: tuple[float, float, float, float], count: int) -> str:
     )
 
 
+def _retrying(
+    http_text: Callable[[str], str],
+    sleep: Callable[[float], None],
+    attempts: int = FRP_ATTEMPTS,
+) -> Callable[[str], str]:
+    """Wrap a fetcher so a transient upstream fault costs a pause, not the layer.
+
+    Re-raises the last error once the budget is spent — the carry-forward
+    contract in attempt() depends on a real outage still surfacing.
+    """
+
+    def call(url: str) -> str:
+        for i in range(attempts):
+            try:
+                return http_text(url)
+            except Exception:  # noqa: BLE001 - any transport/server fault is worth one more try
+                if i == attempts - 1:
+                    raise
+                sleep(FRP_BACKOFF_S * 2**i)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    return call
+
+
 def fetch_frp_points(
     bbox: tuple[float, float, float, float],
     http_text: Callable[[str], str] | None = None,
@@ -46,6 +83,7 @@ def fetch_frp_points(
     # server-side sort fast; 30k made GeoServer sort the global set and stall.
     count: int = 8000,
     min_confidence: int = 0,
+    sleep: Callable[[float], None] | None = None,
 ) -> list[dict]:
     """Fetch individual MTG FRP pixels (MW) as points, for a weighted heatmap.
 
@@ -56,18 +94,25 @@ def fetch_frp_points(
         import requests
 
         def http_text(url: str) -> str:  # pragma: no cover - network
-            r = requests.get(url, timeout=180)
+            r = requests.get(url, timeout=FRP_TIMEOUT_S)
             r.raise_for_status()
             return r.text
 
+    if sleep is None:  # pragma: no cover - real clock
+        import time
+
+        sleep = time.sleep
+
     import json as _json
 
-    # Deliberately NOT swallowed. Returning [] on a transport failure makes an
-    # outage indistinguishable from "no fires burning", and the caller then
-    # publishes an empty layer over good data instead of carrying it forward.
-    # The caller (pipeline.run.process) wraps this in attempt(), which is where
-    # the degradation decision belongs.
-    fc = _json.loads(http_text(_wfs_points_url(bbox, count)))
+    # Retried, then deliberately NOT swallowed. Returning [] on a transport
+    # failure makes an outage indistinguishable from "no fires burning", and the
+    # caller then publishes an empty layer over good data instead of carrying it
+    # forward. The caller (pipeline.run.process) wraps this in attempt(), which
+    # is where the degradation decision belongs — so a spent retry budget must
+    # still raise.
+    raw = _retrying(http_text, sleep)(_wfs_points_url(bbox, count))
+    fc = _json.loads(raw)
 
     out: list[dict] = []
     for f in fc.get("features", []):
