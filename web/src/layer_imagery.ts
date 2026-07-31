@@ -174,8 +174,11 @@ export class ImagerySwipe {
       this.after.addLayer({ id: "after", type: "raster", source: "after" });
     });
 
-    // Divider handle.
+    // Divider handle. Class carries only touch-action (style.css) — layout,
+    // colour, etc. stay inline below; a CSS rule targeting this class would
+    // otherwise sit next to an element that had no class to match.
     this.divider = document.createElement("div");
+    this.divider.className = "swipe-divider";
     this.divider.style.cssText =
       "position:absolute;top:0;bottom:0;width:3px;background:#fff;z-index:3;" +
       "cursor:ew-resize;box-shadow:0 0 4px rgba(0,0,0,.6);pointer-events:auto";
@@ -216,15 +219,32 @@ export class ImagerySwipe {
       const rect = parent.getBoundingClientRect();
       this.setRatio((clientX - rect.left) / rect.width);
     };
+    // A single tracked pointerId means a second finger landing mid-drag is
+    // ignored rather than hijacking the divider (see sheet.ts's handle drag
+    // for the same pattern).
+    let activePointerId: number | null = null;
     const onDown = (e: PointerEvent) => {
+      if (activePointerId !== null) return; // a drag is already in progress
       e.preventDefault();
-      const onPointer = (ev: PointerEvent) => move(ev.clientX);
-      const onUp = () => {
+      activePointerId = e.pointerId;
+      this.divider.setPointerCapture?.(e.pointerId);
+      const onPointer = (ev: PointerEvent) => {
+        if (ev.pointerId === activePointerId) move(ev.clientX);
+      };
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== activePointerId) return;
+        this.divider.releasePointerCapture?.(ev.pointerId);
+        activePointerId = null;
         window.removeEventListener("pointermove", onPointer);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
       };
       window.addEventListener("pointermove", onPointer);
       window.addEventListener("pointerup", onUp);
+      // Without pointercancel, an interrupted gesture (incoming call, OS
+      // gesture) leaves pointermove bound and the divider follows a finger
+      // that is no longer there.
+      window.addEventListener("pointercancel", onUp);
     };
     this.divider.addEventListener("pointerdown", onDown);
   }

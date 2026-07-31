@@ -300,4 +300,18 @@ body.fire-focus #timeline { right: 356px; }
   /* Header badge on one line instead of wrapping/overflowing a narrow viewport. */
   #header { font-size: 12px; max-width: 92vw; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
+
+  /* Compare-mode divider must own its horizontal drag or the browser claims
+     it for scrolling and pointermove never fires — the divider would feel
+     completely dead on a phone while working fine with a mouse. Single-finger
+     map pan is disabled for the duration (see compare_lock.ts) so this is the
+     only horizontal gesture in play; two-finger pinch-zoom is untouched. */
+  .swipe-divider { touch-action: none; }
+  /* 44px grab zone around the 3px visual line, same pattern as .sheet-handle
+     above: widens the whole column so the divider is grabbable anywhere near
+     it, not just on the hairline itself. */
+  .swipe-divider::before {
+    content: ""; position: absolute; top: 0; bottom: 0;
+    left: -21px; width: 44px;
+  }
 }
