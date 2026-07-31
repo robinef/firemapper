@@ -3,6 +3,8 @@ from pipeline.events import cluster
 import json
 
 from pipeline.fetch_meteosat import (
+    FRP_ATTEMPTS,
+    FRP_BACKOFF_S,
     fetch_frp_points,
     fetch_meteosat,
     liveness_for_events,
@@ -109,3 +111,44 @@ def test_mtg_frp_extent_returns_none_when_unreachable():
         raise RuntimeError("offline")
 
     assert mtg_frp_extent(http_text=boom) is None
+
+
+def test_fetch_frp_points_retries_a_transient_failure():
+    """EUMETView's GeoServer throws an intermittent NullPointerException (HTTP
+    400) on a request it serves fine moments later; measured roughly one call in
+    three while the service was otherwise up. One flake must not cost the whole
+    intensity layer for that refresh."""
+    calls = []
+
+    def flaky(url: str) -> str:
+        calls.append(url)
+        if len(calls) < 3:
+            raise RuntimeError("NoApplicableCode: java.lang.NullPointerException")
+        return json.dumps(FRP_FC)
+
+    slept: list[float] = []
+    pts = fetch_frp_points(
+        (-25.0, 34.0, 45.0, 72.0),
+        http_text=flaky,
+        min_confidence=50,
+        sleep=slept.append,
+    )
+    assert len(calls) == 3
+    assert len(pts) == 1
+    assert slept == [FRP_BACKOFF_S, FRP_BACKOFF_S * 2]  # backs off between tries
+
+
+def test_fetch_frp_points_still_raises_once_retries_are_spent():
+    """Retrying must not turn a real outage into silence — the carry-forward
+    contract in attempt() depends on this still raising."""
+    import pytest
+
+    calls = []
+
+    def boom(url: str) -> str:
+        calls.append(url)
+        raise RuntimeError("offline")
+
+    with pytest.raises(RuntimeError, match="offline"):
+        fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=boom, sleep=lambda _: None)
+    assert len(calls) == FRP_ATTEMPTS
