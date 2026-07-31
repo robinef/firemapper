@@ -98,4 +98,43 @@ describe("compare mode enter/exit", () => {
     expect(seen).toEqual([]);
     off();
   });
+
+  // `fakeMap` above hardcodes isEnabled() to true, so it can't tell a correct
+  // restore from a corrupted one — a fake with REAL state (same shape as
+  // compare_touch.test.ts's) is needed to catch the `enter()` re-entry guard
+  // regressing: without `if (!locked) locked = lockMap(map)`, a second
+  // fromFire() while already comparing would recapture {false, false} (the
+  // already-locked state) and exit() would then restore to disabled instead
+  // of the map's true pre-compare state.
+  it("restores the original handler state even after switching fires without exiting", async () => {
+    const handler = (on: boolean) => ({
+      _on: on,
+      isEnabled() {
+        return this._on;
+      },
+      enable() {
+        this._on = true;
+      },
+      disable() {
+        this._on = false;
+      },
+    });
+    const dragPan = handler(true);
+    const dragRotate = handler(true);
+    const map = {
+      getLayer: () => null, getLayoutProperty: () => "visible", setLayoutProperty: () => {},
+      flyTo: () => {}, dragPan, dragRotate,
+    } as unknown as maplibregl.Map;
+
+    const { setupCompareMode } = await import("../src/main");
+    const compare = setupCompareMode(map, manifest)!;
+
+    compare.fromFire(fireClick); // first entry: locks, captures {true, true}
+    expect(dragPan.isEnabled()).toBe(false);
+    compare.fromFire(fireClick); // re-entry (switching fires) without exiting first
+    compare.exit();
+
+    expect(dragPan.isEnabled()).toBe(true);
+    expect(dragRotate.isEnabled()).toBe(true);
+  });
 });
