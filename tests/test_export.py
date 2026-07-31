@@ -55,3 +55,38 @@ def test_prune_keeps_three(tmp_path):
         (s.out_dir / f"gen-2026072{i}T000000Z").mkdir(parents=True)
     prune_generations(s.out_dir, keep=3)
     assert len(list(s.out_dir.glob("gen-*"))) == 3
+
+
+def test_publishes_after_two_consecutive_upstream_failures(tmp_path):
+    """The 2026-07-31 prod freeze, end to end.
+
+    EUMETView 400s, so frp fails and wind (sampled AT the fire pixels) inherits
+    the failure. Run 1 has no carry source in budget, so it publishes both as
+    failed and writes no wind.geojson. Run 2 must still publish: the only carry
+    candidate is run 1's own FAILED wind layer, which holds nothing to copy.
+    Judging that carryable is what made export refuse the whole generation and
+    froze the live map for hours over one upstream fault.
+    """
+    from pipeline.fetch_result import FetchResult
+
+    s = _settings(tmp_path)
+    ev = cluster([hs(45.0, 8.0, T(20, 0)), hs(45.005, 8.0, T(20, 6))], now=T(20, 12))
+    failed = lambda t: FetchResult("failed", [], t)  # noqa: E731
+
+    gen1 = export(
+        s, ev, {}, [], [], now=T(20, 12),
+        results={"frp": failed(T(20, 12)), "wind": failed(T(20, 12))},
+    )
+    man1 = json.loads((s.out_dir / "manifest.json").read_text())
+    assert man1["layers"]["wind"]["status"] == "failed"
+    assert (gen1 / "wind.geojson").exists()  # written empty, so a carry has a file
+
+    # Two hours later, still failing. Must publish rather than raise.
+    gen2 = export(
+        s, ev, {}, [], [], now=T(20, 14),
+        results={"frp": failed(T(20, 14)), "wind": failed(T(20, 14))},
+    )
+    man2 = json.loads((s.out_dir / "manifest.json").read_text())
+    assert man2["generation"] == gen2.name != gen1.name
+    assert man2["layers"]["wind"]["status"] == "failed"
+    assert validate_generation(gen2) == []
