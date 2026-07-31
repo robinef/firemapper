@@ -204,3 +204,86 @@ body.fire-focus #timeline { right: 356px; }
   border-radius: 50%; font-size: 14px; cursor: pointer; flex: 0 0 auto; }
 .scrub-range { flex: 1; accent-color: #ff6b00; }
 .scrub-label { flex: 0 0 auto; min-width: 150px; text-align: right; font-size: 12px; color: #ddd; }
+
+/* ---- Mobile: one bottom sheet, map stays hero ---------------------- */
+/* Everything above 640px untouched, so desktop layout cannot regress. */
+@media (max-width: 640px) {
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 7;
+    background: var(--panel); border-radius: 14px 14px 0 0;
+    box-shadow: 0 -2px 16px rgba(0,0,0,.5);
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 0 12px 12px;
+    transition: height .18s ease-out;
+    overflow-y: auto; overscroll-behavior: contain;
+    /* handle owns drag; body scrolls */
+    touch-action: pan-y;
+  }
+  .sheet-handle {
+    position: relative; /* containing block for ::before's grab zone below */
+    flex: 0 0 auto; align-self: center;
+    width: 44px; height: 4px;
+    /* 20px above (not the original 8px) so the 44px grab zone computed below
+       fits entirely inside .sheet's own scrollport: .sheet clips at its own
+       content-box top (padding-top: 0), and a zone centred on a handle any
+       closer to that edge would have its top slice clipped and unclickable. */
+    margin: 20px 0 4px;
+    border-radius: 2px; background: rgba(255,255,255,.35);
+    /* handle must not scroll sheet while dragging it */
+    touch-action: none; cursor: grab;
+  }
+  /* A 44px grab target around the 4px visual line, centred via translateY.
+     Relies on .sheet-handle's own position: relative above — without it this
+     positions against .sheet instead and lands nowhere near the handle. */
+  .sheet-handle::before {
+    content: ""; position: absolute; left: 0; right: 0;
+    height: 44px; transform: translateY(-20px);
+  }
+
+  /* Panels keep rendering into the same ids; only their box changes now that
+     they live inside the sheet instead of floating over the map. */
+  #sidebar, #panel, #timeline {
+    position: static; width: auto; max-width: none; max-height: none;
+    height: auto; inset: auto; box-shadow: none; background: none;
+    padding: 0; margin: 0;
+  }
+  #sidebar { mask-image: none; }
+  /* #timeline is appended first in sheet.ts's mount order, so it is already
+     first in the DOM; order: -1 makes that a guarantee instead of an
+     incidental side effect, since #timeline must stay above the fold at the
+     peek detent. */
+  #timeline { order: -1; }
+
+  .sheet[data-mode="overview"] #panel { display: none; }
+  /* Hide the layer list/legend, not #sidebar itself: #notice (the compare
+     banner) is a child of #sidebar in index.html, and it must stay visible
+     — even with the rest of the sidebar hidden — while a compare is active,
+     or the user loses the only way out of compare mode. Hiding #sidebar
+     outright would take #notice down with it regardless of #notice's own
+     display value. */
+  .sheet[data-mode="aircraft"] #sidebar > #layers,
+  .sheet[data-mode="aircraft"] #sidebar > #legend { display: none; }
+  .sheet[data-detent="peek"] #sidebar > #layers,
+  .sheet[data-detent="peek"] #sidebar > #legend,
+  .sheet[data-detent="peek"] #panel { display: none; }
+
+  /* Touch targets: 44x44 minimum (Apple HIG / WCAG 2.5.8). */
+  .layer-row { min-height: 44px; align-items: center; }
+  .panel-close, .fc-close, .compare-exit, .scrub-play {
+    min-width: 44px; min-height: 44px;
+  }
+  /* The histogram is ONE 44px+ target, not 30 individually-sized bars — the
+     desktop height: 54px on .tl-bars already clears 44px; this is a floor
+     against that ever shrinking on mobile. */
+  #timeline .tl-bars { min-height: 44px; }
+
+  /* Compare banner: fixed over everything, not dismissible, always shows
+     the way out — sheet.ts collapses to peek on compare:enter, and the
+     sidebar-child hiding rules above keep this reachable even then. */
+  #notice { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9;
+    border-radius: 0; padding: 10px 12px; }
+
+  /* Header badge on one line instead of wrapping/overflowing a narrow viewport. */
+  #header { font-size: 12px; max-width: 92vw; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+}
