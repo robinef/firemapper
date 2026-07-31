@@ -51,8 +51,28 @@ def _get(client, bucket: str, key: str) -> bytes | None:
 
 
 def _keys(client, bucket: str, prefix: str) -> list[str]:
-    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    return [o["Key"] for o in response.get("Contents", [])]
+    """Every key under `prefix`, following pagination.
+
+    S3 and R2 return at most 1000 keys per call and signal more with
+    IsTruncated. A single unpaginated call silently truncated both callers: a
+    generation is ~8000 objects, so hydrate restored an eighth of it (lineage
+    then read a fraction of the tracks), and prune_remote saw only the oldest
+    generation's files, so it never pruned — 21 generations accumulated in
+    production where this keeps 3.
+    """
+    keys: list[str] = []
+    token: str | None = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        response = client.list_objects_v2(**kwargs)
+        keys.extend(o["Key"] for o in response.get("Contents", []))
+        if not response.get("IsTruncated"):
+            return keys
+        token = response.get("NextContinuationToken")
+        if not token:  # defensive: a truncated page with no token cannot advance
+            return keys
 
 
 def hydrate(settings: Settings, client) -> str | None:

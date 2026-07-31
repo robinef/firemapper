@@ -43,9 +43,22 @@ class FakeS3:
         self.put_order.append(Key)
         self.objects[Key] = Body
 
-    def list_objects_v2(self, Bucket, Prefix=""):
+    # S3 and R2 cap a listing at 1000 keys and signal more with IsTruncated +
+    # NextContinuationToken. The fake MUST reproduce that: a fake that returns
+    # everything in one page hides the exact bug this class exists to catch.
+    PAGE = 1000
+
+    def list_objects_v2(self, Bucket, Prefix="", ContinuationToken=None):
         keys = [k for k in sorted(self.objects) if k.startswith(Prefix)]
-        return {"Contents": [{"Key": k} for k in keys]} if keys else {}
+        start = int(ContinuationToken or 0)
+        page = keys[start:start + self.PAGE]
+        if not page:
+            return {}
+        out = {"Contents": [{"Key": k} for k in page]}
+        if start + self.PAGE < len(keys):
+            out["IsTruncated"] = True
+            out["NextContinuationToken"] = str(start + self.PAGE)
+        return out
 
     def delete_object(self, Bucket, Key):
         self.deleted.append(Key)
@@ -206,3 +219,54 @@ def test_hydrate_refuses_a_traversing_key(tmp_path):
     assert (settings.out_dir / "gen-1" / "events.geojson").exists()
     assert not (settings.out_dir.parent / "escaped.json").exists()
     assert not (tmp_path / "escaped.json").exists()
+
+
+def test_keys_pages_past_the_thousand_key_cap(tmp_path):
+    """S3/R2 return at most 1000 keys per call. Without pagination hydrate
+    restored only the first 1000 files of a generation (so lineage read a
+    fraction of the tracks) and prune_remote saw a truncated view of the
+    bucket, so it never pruned — 21 generations accumulated in production
+    where the design keeps 3."""
+    from pipeline.remote import _keys
+
+    settings = _settings(tmp_path)
+    objects = {f"data/gen-1/tracks/e{i:05d}.json": b"{}" for i in range(2500)}
+    fake = FakeS3(objects)
+
+    assert len(_keys(fake, settings.r2_bucket, "data/")) == 2500
+
+
+def test_hydrate_restores_every_file_of_a_large_generation(tmp_path):
+    settings = _settings(tmp_path)
+    objects = {
+        "data/manifest.json": json.dumps({"generation": "gen-1"}).encode(),
+    }
+    for i in range(1500):
+        objects[f"data/gen-1/tracks/e{i:05d}.json"] = b'{"id":"x"}'
+
+    hydrate(settings, FakeS3(objects))
+
+    restored = list((settings.out_dir / "gen-1" / "tracks").glob("*.json"))
+    assert len(restored) == 1500
+
+
+def test_prune_sees_generations_beyond_the_first_page(tmp_path):
+    """The bug in production: every generation's files sort before the next
+    generation's, so a truncated listing showed only the oldest few and prune
+    kept everything else forever."""
+    settings = _settings(tmp_path)
+    objects = {}
+    for g in range(6):
+        for i in range(400):
+            objects[f"data/gen-{g}/tracks/e{i:04d}.json"] = b"{}"
+        objects[archive_key(f"gen-{g}")] = b"P"
+
+    fake = FakeS3(objects)
+    prune_remote(settings, fake, keep=3)
+
+    remaining = sorted({
+        k[len("data/"):].split("/")[0] for k in fake.objects if k.startswith("data/gen-")
+    })
+    assert remaining == ["gen-3", "gen-4", "gen-5"]
+    assert archive_key("gen-0") not in fake.objects
+    assert archive_key("gen-5") in fake.objects
