@@ -27,6 +27,19 @@ function barColor(frac: number): string {
   return "#ffd000";
 }
 
+/**
+ * Which day a pointer at `x` refers to.
+ *
+ * Thirty 44px bars do not fit in a 375px phone, so the chart is ONE target at
+ * least 44px tall and the day is resolved from the x-coordinate instead. Visual
+ * bar width (~11px) and interactive target size are separate concerns.
+ */
+export function binAtX(x: number, width: number, count: number): number {
+  if (count <= 1 || width <= 0) return 0;
+  const index = Math.floor((x / width) * count);
+  return Math.min(count - 1, Math.max(0, index));
+}
+
 export interface TimelineOpts {
   title?: string; // header label
   unit?: string; // what a bar counts (e.g. "detections", "new cells")
@@ -122,14 +135,67 @@ export function mountTimeline(
 
   if (onSelect) {
     barsWrap.style.cursor = "pointer";
-    barsWrap.addEventListener("click", (e) => {
+
+    // Track pointerdown state to guard against drag-selection. Record which
+    // pointer and target started the gesture; only fire onSelect if it ends
+    // on the same pointer without significant movement (mimicking click semantics).
+    let pointerDownState: {
+      pointerId: number;
+      target: EventTarget | null;
+      x: number;
+      y: number;
+    } | null = null;
+
+    barsWrap.addEventListener("pointerdown", (e) => {
+      pointerDownState = {
+        pointerId: e.pointerId,
+        target: e.target,
+        x: e.clientX,
+        y: e.clientY,
+      };
+    });
+
+    // Single unified handler for both mouse (via per-bar precision) and touch
+    // (via x-coordinate binning). Fires onSelect exactly once per press+release,
+    // preventing the double-fire that would occur if we used both click and
+    // pointerup handlers (pointerup fires, browser synthesizes click, both
+    // would call onSelect without this consolidation).
+    barsWrap.addEventListener("pointerup", (e) => {
+      // Validate this is the same pointer gesture (guards against drag-selection).
+      if (!pointerDownState || e.pointerId !== pointerDownState.pointerId) return;
+
+      // Guard against significant pointer movement (drag).
+      const dx = e.clientX - pointerDownState.x;
+      const dy = e.clientY - pointerDownState.y;
+      const dragThreshold = 5;
+      if (Math.sqrt(dx * dx + dy * dy) > dragThreshold) return;
+
       const t = e.target as HTMLElement;
-      if (!t.classList.contains("tl-bar")) return;
-      barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
-      t.classList.add("tl-sel");
-      const i = Number(t.dataset.i);
-      if (readout) readout.textContent = t.dataset.label ?? "";
+      let i: number;
+
+      // If target is a bar, use its exact index (preserves per-bar precision).
+      // Otherwise resolve from x-coordinate (makes the whole chart one target,
+      // including taps in gaps between bars).
+      if (t.classList.contains("tl-bar")) {
+        i = Number(t.dataset.i);
+      } else {
+        const rect = barsWrap.getBoundingClientRect();
+        i = binAtX(e.clientX - rect.left, rect.width, days.length);
+      }
+
+      const bar = barsWrap.children[i] as HTMLElement;
+      if (bar) {
+        barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
+        bar.classList.add("tl-sel");
+        if (readout) readout.textContent = bar.dataset.label ?? "";
+      }
       onSelect(days[i], i);
+
+      pointerDownState = null; // Consumed gesture.
+    });
+
+    barsWrap.addEventListener("pointerleave", () => {
+      pointerDownState = null; // Cancel gesture if pointer leaves container.
     });
   }
 }
