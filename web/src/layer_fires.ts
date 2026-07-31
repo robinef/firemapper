@@ -100,6 +100,18 @@ export function addActiveFires(
     },
   });
 
+  // Invisible 44px tap target under every fire dot, whatever its size class.
+  // MapLibre hit-tests the RENDERED circle, and an 8-16px dot is far below the
+  // touch minimum. Same trick as aircraft-halo (layer_aircraft.ts:79).
+  // Deliberately not in any legend: it is a target, not a symbol.
+  map.addLayer({
+    id: "fire-halo",
+    type: "circle",
+    source: "fires",
+    filter: ["!=", ["get", "status"], "closed"],
+    paint: { "circle-radius": 22, "circle-color": "rgba(0,0,0,0)" },
+  });
+
   // Proportional symbol per size class, each revealed at its own zoom and all
   // gone by z9 where the footprint takes over.
   for (const [cls, minz] of Object.entries(CLASS_MINZOOM)) {
