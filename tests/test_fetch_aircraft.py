@@ -142,3 +142,40 @@ def test_position_inside_the_budget_is_kept():
     rows = _fetch([_plain_state(time_position=EPOCH_NOW - 1199, last_contact=EPOCH_NOW)])
     assert len(rows) == 1
     assert rows[0]["callsign"] == "PELICAN 32"
+
+
+# --- callsign sanitisation: a callsign is attacker-influenced data. Anyone with
+# a transponder can broadcast an arbitrary 8-character string, and it reaches an
+# innerHTML sink in the aircraft panel. ---
+
+def test_classify_rejects_a_callsign_carrying_markup():
+    """`^PELICAN\\s?\\d` anchors the start but not the end, so a spoofed
+    callsign used to classify as a water bomber and carry markup with it."""
+    assert classify("PELICAN1<img src=x onerror=alert(1)>") is None
+    assert classify("MILAN7</b><script>") is None
+    assert classify("DRAG7S\"><svg onload=1>", "3b7b84") is None
+
+
+def test_classify_rejects_callsigns_outside_the_adsb_charset():
+    # A callsign is A-Z, 0-9 and spaces. Nothing else. The charset is the
+    # security property; the length cap is a sanity bound.
+    assert classify("PELICAN​1") is None       # zero-width space
+    assert classify("PELICAN1;DROP") is None        # punctuation
+    assert classify("PELICAN123456789") is None     # implausibly long
+
+
+def test_classify_still_accepts_real_callsigns():
+    assert classify("PELICAN 32") == ("Canadair CL-415", "water bomber")
+    assert classify("PELICAN32") == ("Canadair CL-415", "water bomber")
+    assert classify("MILAN78")[1] == "water bomber"
+    assert classify("DRAG75S", "3b7b98")[1] == "rescue helicopter"
+
+
+def test_fetch_drops_aircraft_with_an_unusable_callsign():
+    """Defence in depth: even if a family pattern ever matched, a row whose
+    callsign is not a legal callsign must not reach the artifact."""
+    rows = _fetch([
+        _plain_state(callsign="PELICAN1<img src=x>", time_position=EPOCH_NOW - 30,
+                     last_contact=EPOCH_NOW),
+    ])
+    assert rows == []

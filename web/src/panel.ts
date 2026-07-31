@@ -1,3 +1,4 @@
+import { escapeHtml, safeHttpUrl } from "./escape";
 import type { EventProps, Track } from "./types";
 
 const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -47,11 +48,14 @@ export function renderPanel(props: EventProps, track: Track, now: Date = new Dat
       ` heading <b>${compass(props.movement.bearing_deg)}</b> in the last 24 h`
     : `<span class="muted">No clear movement</span>`;
 
+  // GeoNames place names and the GDACS feed are third-party text; the GDACS
+  // link is a third-party URL landing in an href, which is a script sink.
   const place = props.place
-    ? `Nearest: <b>${props.place.name}</b> (${props.place.distance_km} km)`
+    ? `Nearest: <b>${escapeHtml(props.place.name)}</b> (${props.place.distance_km} km)`
     : "";
   const gdacs = props.gdacs
-    ? `<a href="${props.gdacs.link}" target="_blank" rel="noopener">${props.gdacs.title} ↗ (GDACS)</a>`
+    ? `<a href="${safeHttpUrl(props.gdacs.link)}" target="_blank" rel="noopener">` +
+      `${escapeHtml(props.gdacs.title)} ↗ (GDACS)</a>`
     : "";
 
   return `
@@ -143,13 +147,13 @@ export function renderAircraftPanel(p: Record<string, unknown>, now: Date = new 
       : `position ${ageMin < 1 ? "just now" : `${ageMin} min ago`}${stale ? " ⚠ may have moved" : ""}`;
   return `
     <button class="panel-close" aria-label="Close">×</button>
-    <div class="badge">AIRBORNE · ${p.role}</div>
-    <div class="panel-row"><b>${p.callsign}</b> · identified as ${p.type}</div>
+    <div class="badge">AIRBORNE · ${escapeHtml(p.role)}</div>
+    <div class="panel-row"><b>${escapeHtml(p.callsign)}</b> · identified as ${escapeHtml(p.type)}</div>
     <div class="panel-row">${spd ?? "?"} km/h · heading <b>${
       hdg === null ? "?" : compass(hdg)
     }</b>${alt !== null ? ` · ${alt} m` : ""}</div>
     <div class="panel-row small ${stale ? "" : "muted"}">${ageLine}</div>
-    <div class="panel-row small muted">${p.country ?? ""} · ADS-B via OpenSky · type inferred from callsign</div>
+    <div class="panel-row small muted">${escapeHtml(p.country)} · ADS-B via OpenSky · type inferred from callsign</div>
     ${SAFETY}
   `;
 }

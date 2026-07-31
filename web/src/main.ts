@@ -10,6 +10,7 @@ import {
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
+import { escapeHtml } from "./escape";
 import { createMap } from "./map";
 import { FIRE_HUE, addActiveFires, fireHaloIds, fireLayerIds } from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
@@ -505,14 +506,6 @@ function setCompareNotice(scar: Scar | null, cfg: ImageryConfig, onExit: () => v
     `</div>`;
   el.style.display = "block";
   el.querySelector(".compare-exit")?.addEventListener("click", onExit);
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
-  );
 }
 
 boot();
