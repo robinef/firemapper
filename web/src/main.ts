@@ -20,6 +20,7 @@ import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
 import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
+import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import { ImagerySwipe, scarTiles, type ImageryConfig, type Scar } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
 import { createSheet } from "./sheet";
@@ -315,6 +316,9 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   if (!cfg) return null;
   const maxzoom = cfg.hd ? 14 : 8;
   let swipe: ImagerySwipe | null = null;
+  // Captured on enter so exit restores exactly what was there before compare
+  // mode touched it, not both handlers unconditionally on (see compare_lock.ts).
+  let locked: HandlerState | null = null;
 
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
   // hexes, heat, hexbins, markers) sits on top of the before/after imagery.
@@ -344,6 +348,11 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     swipe?.destroy();
     swipe = null;
     restoreOverlays();
+    // Restore whatever dragPan/dragRotate were before enter() locked them —
+    // not an unconditional enable, so a future mode that legitimately turns
+    // rotation off survives a compare round-trip.
+    if (locked) unlockMap(map, locked);
+    locked = null;
     setCompareNotice(null, cfg, exit);
     if (wasComparing) emitUi("compare:exit");
   };
@@ -353,6 +362,10 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
 
   const enter = (scar: Scar) => {
     swipe?.destroy();
+    // Guard against re-entry (switching scars while already comparing):
+    // lockMap() again would capture the already-disabled state and corrupt
+    // what exit() restores to, so only capture it the first time in.
+    if (!locked) locked = lockMap(map);
     hideOverlays();
     map.flyTo({ center: [scar.lon, scar.lat], zoom: cfg.hd ? 13 : 10 });
     const t = scarTiles(cfg, scar);

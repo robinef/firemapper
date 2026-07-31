@@ -63,9 +63,12 @@ describe("compare mode enter/exit", () => {
     lngLat: { lng: 1, lat: 2 },
     features: [{ properties: {} }],
   } as unknown as maplibregl.MapLayerMouseEvent;
+  // setupCompareMode now locks/unlocks dragPan+dragRotate on enter/exit (see
+  // compare_lock.ts), so the fake map needs those handlers stubbed too.
+  const handler = () => ({ isEnabled: () => true, enable: () => {}, disable: () => {} });
   const fakeMap = {
     getLayer: () => null, getLayoutProperty: () => "visible", setLayoutProperty: () => {},
-    flyTo: () => {},
+    flyTo: () => {}, dragPan: handler(), dragRotate: handler(),
   } as unknown as maplibregl.Map;
   const manifest = { imagery: { source: "gibs", gibs_layer: "x", hd: null, scars: [] } } as never;
 
