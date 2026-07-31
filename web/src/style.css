@@ -241,9 +241,23 @@ body.fire-focus #timeline { right: 356px; }
   }
 
   /* Panels keep rendering into the same ids; only their box changes now that
-     they live inside the sheet instead of floating over the map. */
+     they live inside the sheet instead of floating over the map.
+     position: relative (not static) — #panel's .panel-close/.fc-close and
+     #timeline's .tl-tip are position: absolute and need their own element
+     back as the containing block. static would hand that role up to .sheet
+     instead: the close buttons would then sit at the top of the whole
+     sheet (overlapping the handle's grab zone) and scroll with .sheet's
+     content rather than staying pinned to their own panel, and .tl-tip's
+     inline `left` (computed in timeline.ts against #timeline's own
+     bounding rect) would be measured from .sheet's edge instead, landing
+     up to 12px (.sheet's left padding) off horizontally. inset: auto keeps
+     this a pure "become a containing block" change with no positional
+     shift: relative honours top/right/bottom/left, unlike static, so
+     without also resetting them here the leftover desktop offsets
+     (#sidebar's top/left, #panel's top/right, #timeline's inset) would
+     have shoved these boxes away from their normal flex-flow position. */
   #sidebar, #panel, #timeline {
-    position: static; width: auto; max-width: none; max-height: none;
+    position: relative; width: auto; max-width: none; max-height: none;
     height: auto; inset: auto; box-shadow: none; background: none;
     padding: 0; margin: 0;
   }
