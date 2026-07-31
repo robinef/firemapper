@@ -267,7 +267,14 @@ async function boot() {
     });
 
     // Cursor feedback stays per-layer; it is desktop-only and harmless on touch.
-    for (const id of [...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft"]) {
+    // aircraft-halo is a visible semi-transparent glow (layer_aircraft.ts:78-87),
+    // so it gets the pointer cursor same as before this change. fire-halo is
+    // fully transparent — a pointer over apparently-empty map would be a false
+    // affordance — so it is deliberately left out here even though it is a
+    // valid click target.
+    for (const id of [
+      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+    ]) {
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
     }
