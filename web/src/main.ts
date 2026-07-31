@@ -266,7 +266,9 @@ interface CompareMode {
   exit: () => void;
 }
 
-function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode | null {
+// Exported (only) so the ui_events wiring test can drive the real enter/exit
+// logic instead of duplicating it — boot() still wires it up the same way.
+export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode | null {
   const cfg = manifest.imagery;
   if (!cfg) return null;
   const maxzoom = cfg.hd ? 14 : 8;
@@ -296,11 +298,12 @@ function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode 
   };
 
   const exit = () => {
+    const wasComparing = swipe != null; // fire-card close also calls exit() unconditionally
     swipe?.destroy();
     swipe = null;
     restoreOverlays();
     setCompareNotice(null, cfg, exit);
-    emitUi("compare:exit");
+    if (wasComparing) emitUi("compare:exit");
   };
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") exit();
