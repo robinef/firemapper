@@ -12,6 +12,7 @@ import {
 import { badgeText } from "./freshness";
 import { createMap } from "./map";
 import { FIRE_HUE, addActiveFires, fireLayerIds } from "./layer_fires";
+import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
 import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
@@ -98,7 +99,9 @@ async function boot() {
         levels: [1, 2] as (1|2)[],
         label: "Active fires",
         question: "Where is fire burning now, and how big?",
-        layerIds: [...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels"],
+        layerIds: [
+          "fire-halo", ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
+        ],
         defaultOn: true,
         legend: {
           title: "Active fires",
@@ -214,27 +217,57 @@ async function boot() {
         shownDay = null;
       },
     );
-    for (const id of [...fireLayerIds, "fire-footprint-fill"]) {
-      map.on("click", id, fireCard.openFire);
-      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
+    // Precedence, highest first. Halos come before their visible layer so the
+    // larger target wins, and fires beat scars where they overlap. A single
+    // map-level click handler (instead of one per layer) is what makes "one
+    // tap, one open" possible: MapLibre invokes a layer-scoped handler once per
+    // matching layer, so a dot sitting under its own halo used to fire twice —
+    // harmless for the idempotent aircraft panel, but for fires it meant two
+    // concurrent `loadTrack` requests racing to render the card.
+    const CLICK_ORDER = [
+      "fire-halo", ...fireLayerIds, "fire-footprint-fill",
+      ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+    ];
+    const HANDLERS: Record<string, (e: maplibregl.MapLayerMouseEvent) => void> = {};
+    for (const id of ["fire-halo", ...fireLayerIds, "fire-footprint-fill"]) {
+      HANDLERS[id] = fireCard.openFire;
     }
-    for (const id of SCAR_LAYER_IDS) {
-      map.on("click", id, fireCard.openScar);
-      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
-    }
-
-    // Click an aircraft → its detail panel. The halo is a larger, easier
-    // hit target than the small plane icon.
-    for (const id of ["aircraft", "aircraft-halo"]) {
-      map.on("click", id, (e) => {
+    for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
+    for (const id of ["aircraft-halo", "aircraft"]) {
+      HANDLERS[id] = (e) => {
         const feat = e.features?.[0];
         if (feat) {
           panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
           emitUi("aircraft:open");
         }
-      });
+      };
+    }
+
+    map.on("click", (e) => {
+      const layers = CLICK_ORDER.filter((id) => map.getLayer(id));
+      const features = map.queryRenderedFeatures(e.point, { layers });
+      const id = dispatchMapClick(features as never, CLICK_ORDER);
+      if (!id) return;
+      // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live
+      // on its class prototype (and behind a private field), so spreading the
+      // instance silently drops them and leaves a plain object that only
+      // looks like the real event. openFire/openScar and the aircraft handler
+      // above only ever read `features` and `lngLat` (the fire card forwards
+      // the same event into compare-mode's scarFromClick, which also only
+      // reads those two), so we carry exactly those real values — features
+      // narrowed to the one layer that won dispatch — plus `point`, since
+      // it's on hand for free and costs nothing to keep faithful.
+      const hit = features.filter((f) => f.layer.id === id);
+      const clickEvent = {
+        features: hit,
+        lngLat: e.lngLat,
+        point: e.point,
+      } as unknown as maplibregl.MapLayerMouseEvent;
+      HANDLERS[id](clickEvent);
+    });
+
+    // Cursor feedback stays per-layer; it is desktop-only and harmless on touch.
+    for (const id of [...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft"]) {
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
     }
@@ -279,7 +312,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
   // hexes, heat, hexbins, markers) sits on top of the before/after imagery.
   const OVERLAY_LAYERS = [
-    ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
+    "fire-halo", ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
     ...VIIRS_LAYER_IDS, ...AIRCRAFT_LAYER_IDS, ...SCAR_LAYER_IDS,
