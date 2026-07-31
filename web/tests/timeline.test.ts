@@ -192,6 +192,46 @@ describe("timeline pointer interactions", () => {
     });
   });
 
+  // Regression: pointerup replaced click with no button check, so a
+  // right-click (button 2, opening the context menu) or middle-click
+  // (button 1) used to select the day and fire onSelect underneath the menu
+  // — click never did that, since it only ever fires for the primary button.
+  it("ignores a non-primary button (right/middle click)", () => {
+    const el = document.createElement("div");
+    const onSelect = { called: 0 };
+    mountTimeline(el, days([1, 2, 3]), {
+      onSelect: () => {
+        onSelect.called++;
+      },
+    });
+
+    const bars = el.querySelector(".tl-bars")!;
+    const bar1 = bars.children[1] as HTMLElement;
+    const rect = bar1.getBoundingClientRect();
+
+    const pointerDownEvent = new PointerEvent("pointerdown", {
+      bubbles: true,
+      pointerId: 5,
+      pointerType: "mouse",
+      button: 2,
+      clientX: rect.left + 5,
+      clientY: rect.top + 5,
+    });
+    const pointerUpEvent = new PointerEvent("pointerup", {
+      bubbles: true,
+      pointerId: 5,
+      pointerType: "mouse",
+      button: 2,
+      clientX: rect.left + 5,
+      clientY: rect.top + 5,
+    });
+
+    bars.dispatchEvent(pointerDownEvent);
+    bar1.dispatchEvent(pointerUpEvent);
+
+    expect(onSelect.called).toBe(0);
+  });
+
   it("guards against drag-selection: significant pointer movement cancels selection", () => {
     const el = document.createElement("div");
     const onSelect = { called: 0 };

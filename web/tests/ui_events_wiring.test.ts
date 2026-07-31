@@ -9,6 +9,15 @@ import type { Switcher } from "../src/registry";
 // pulls the real maplibre-gl package in (firecard.ts, main.ts, layer_imagery.ts).
 window.URL.createObjectURL ??= () => "";
 
+// jsdom has no matchMedia at all (see sheet.ts's own note on this), and
+// compare mode's touch-only lock gate (main.ts) now depends on one. Default
+// to "coarse" (touch) so the pre-existing lock/unlock tests below — written
+// before that gate existed, and asserting on the lock mechanics themselves —
+// keep exercising the locked path unchanged; the desktop test further down
+// overrides this per-call to prove the gate actually excludes a fine pointer.
+(window as unknown as { matchMedia: (q: string) => MediaQueryList }).matchMedia = (q: string) =>
+  ({ matches: q === "(pointer: coarse)" }) as MediaQueryList;
+
 // main.ts calls boot() unconditionally at import time, which would otherwise
 // construct a real maplibregl.Map (needs a WebGL canvas jsdom doesn't have)
 // and, via compare mode, a second one inside ImagerySwipe. Mock just those two
@@ -139,5 +148,46 @@ describe("compare mode enter/exit", () => {
 
     expect(dragPan.isEnabled()).toBe(true);
     expect(dragRotate.isEnabled()).toBe(true);
+  });
+
+  // Regression for capability loss on a live product: the lock existed to
+  // arbitrate a touch-drag ambiguity between the swipe divider and the map
+  // underneath it (see main.ts's comment at the lockMap call). On desktop
+  // the divider is a sibling of MapLibre's own drag-handling subtree, so a
+  // mouse-drag on it never reached MapLibre's pan handler even before this
+  // gate existed — locking there disabled mouse pan/rotate for nothing.
+  it("does not lock the map on desktop (fine pointer)", async () => {
+    const original = window.matchMedia;
+    (window as unknown as { matchMedia: (q: string) => MediaQueryList }).matchMedia = () =>
+      ({ matches: false }) as MediaQueryList; // no media query matches: desktop
+    try {
+      const handler = (on: boolean) => ({
+        _on: on,
+        isEnabled() {
+          return this._on;
+        },
+        enable() {
+          this._on = true;
+        },
+        disable() {
+          this._on = false;
+        },
+      });
+      const dragPan = handler(true);
+      const dragRotate = handler(true);
+      const map = {
+        getLayer: () => null, getLayoutProperty: () => "visible", setLayoutProperty: () => {},
+        flyTo: () => {}, dragPan, dragRotate,
+      } as unknown as maplibregl.Map;
+
+      const { setupCompareMode } = await import("../src/main");
+      const compare = setupCompareMode(map, manifest)!;
+      compare.fromFire(fireClick);
+
+      expect(dragPan.isEnabled()).toBe(true);
+      expect(dragRotate.isEnabled()).toBe(true);
+    } finally {
+      window.matchMedia = original;
+    }
   });
 });
