@@ -248,7 +248,17 @@ async function boot() {
       const layers = CLICK_ORDER.filter((id) => map.getLayer(id));
       const features = map.queryRenderedFeatures(e.point, { layers });
       const id = dispatchMapClick(features as never, CLICK_ORDER);
-      if (!id) return;
+      if (!id) {
+        // Tapping the map away from any fire/scar/aircraft is how a phone user
+        // dismisses a detail card — there's no hardware "back" and the close
+        // button can be a stretch one-handed. Confirmed missing only by
+        // driving a real click in a real browser: jsdom's tests never asserted
+        // a background tap does anything, so this silently regressed to a
+        // no-op. Idempotent when nothing is open (close() just re-hides an
+        // already-hidden panel), so it's safe to call unconditionally here.
+        fireCard.close();
+        return;
+      }
       // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live
       // on its class prototype (and behind a private field), so spreading the
       // instance silently drops them and leaves a plain object that only

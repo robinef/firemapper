@@ -222,6 +222,12 @@ body.fire-focus #timeline { right: 356px; }
   .sheet-handle {
     position: relative; /* containing block for ::before's grab zone below */
     flex: 0 0 auto; align-self: center;
+    /* Must outrank #timeline's order: -1 below, or the handle — default
+       order: 0 otherwise — renders AFTER the histogram in flex-order and is
+       pushed below the peek detent's 100px fold: unreachable and, on a short
+       phone, entirely off-screen. Confirmed only by measuring real layout
+       (getBoundingClientRect) in a browser; jsdom never lays out flex order. */
+    order: -2;
     width: 44px; height: 4px;
     /* 20px above (not the original 8px) so the 44px grab zone computed below
        fits entirely inside .sheet's own scrollport: .sheet clips at its own
@@ -263,9 +269,10 @@ body.fire-focus #timeline { right: 356px; }
   }
   #sidebar { mask-image: none; }
   /* #timeline is appended first in sheet.ts's mount order, so it is already
-     first in the DOM; order: -1 makes that a guarantee instead of an
-     incidental side effect, since #timeline must stay above the fold at the
-     peek detent. */
+     first in the DOM (after .sheet-handle); order: -1 makes that a guarantee
+     instead of an incidental side effect, since #timeline must stay above
+     the fold at the peek detent — second only to .sheet-handle's order: -2
+     above, which the handle needs to remain grabbable at all. */
   #timeline { order: -1; }
 
   .sheet[data-mode="overview"] #panel { display: none; }
