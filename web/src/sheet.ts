@@ -174,7 +174,18 @@ export function createSheet(breakpoint = 640): Sheet {
     };
     const onUp = (e: PointerEvent) => {
       if (e.pointerId !== activePointerId) return;
-      handle.releasePointerCapture?.(e.pointerId);
+      // The browser can implicitly release capture before pointerup fires
+      // (a documented cross-browser Pointer Events quirk, worse on WebKit) —
+      // releasePointerCapture then throws NotFoundError. Confirmed live: an
+      // uncaught throw here aborts the rest of this handler, so
+      // activePointerId never resets to null and the handle stops responding
+      // to every future drag for the rest of the page's life. jsdom's tests
+      // stub both capture methods as no-ops and can never see this.
+      try {
+        handle.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* already released implicitly; state reset below still runs */
+      }
       activePointerId = null;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
@@ -186,7 +197,16 @@ export function createSheet(breakpoint = 640): Sheet {
       if (activePointerId !== null) return; // a drag is already in progress
       activePointerId = e.pointerId;
       e.preventDefault();
-      handle.setPointerCapture?.(e.pointerId);
+      // Same guard as onUp's releasePointerCapture: setPointerCapture can
+      // throw NotFoundError too (e.g. the pointer already went up between
+      // event dispatch and this handler on a slow frame). Without the guard
+      // the throw would abort before the listeners below are attached,
+      // leaving activePointerId stuck non-null with no way to ever clear it.
+      try {
+        handle.setPointerCapture?.(e.pointerId);
+      } catch {
+        /* proceed without native capture; window-level listeners still work */
+      }
       startY = lastY = e.clientY;
       lastT = e.timeStamp;
       velocity = 0;

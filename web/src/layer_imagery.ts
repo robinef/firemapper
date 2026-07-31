@@ -236,7 +236,18 @@ export class ImagerySwipe {
       e.preventDefault();
       const pointerId = e.pointerId;
       activePointerId = pointerId;
-      this.divider.setPointerCapture?.(pointerId);
+      // setPointerCapture/releasePointerCapture can throw NotFoundError if the
+      // browser has already implicitly released capture (a real, documented
+      // cross-browser Pointer Events quirk — see sheet.ts's handle drag for
+      // the same guard and the fuller explanation). An uncaught throw here
+      // would abort before `release` is wired up below, leaving
+      // activePointerId stuck non-null and the divider dead for the rest of
+      // the page's life.
+      try {
+        this.divider.setPointerCapture?.(pointerId);
+      } catch {
+        /* proceed without native capture; window-level listeners still work */
+      }
       const onPointer = (ev: PointerEvent) => {
         if (ev.pointerId === pointerId) move(ev.clientX);
       };
@@ -244,7 +255,11 @@ export class ImagerySwipe {
       // it directly mid-drag — see releaseDrag's field comment for why that
       // third caller matters.
       const release = () => {
-        this.divider.releasePointerCapture?.(pointerId);
+        try {
+          this.divider.releasePointerCapture?.(pointerId);
+        } catch {
+          /* already released implicitly; state reset below still runs */
+        }
         activePointerId = null;
         this.releaseDrag = null;
         window.removeEventListener("pointermove", onPointer);
