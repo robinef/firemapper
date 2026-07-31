@@ -4,7 +4,7 @@ import { loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
 import { SCAR_LAYER_IDS } from "./layer_scars";
-import type { Scar } from "./layer_imagery";
+import type { FeatureSnapshot, Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
 import { emitUi } from "./ui_events";
@@ -123,9 +123,18 @@ function scarCardHtml(s: Scar): string {
   );
 }
 
+/**
+ * Compare mode is entered from a button INSIDE the card, long after the map
+ * click that opened it — so these take a snapshot of the clicked feature, never
+ * the event. MapLibre deletes `event.features` as soon as a delegated layer
+ * handler returns, so an event held in a closure has nothing left on it by the
+ * time the button is pressed: the scar entry did nothing at all, and the fire
+ * entry silently fell back to "ignited yesterday", which then dated the
+ * pre-fire baseline six days off the wrong day.
+ */
 export interface CompareLike {
-  fromFire: (e: maplibregl.MapLayerMouseEvent) => void;
-  fromScar: (e: maplibregl.MapLayerMouseEvent) => void;
+  fromFire: (snap: FeatureSnapshot) => void;
+  fromScar: (snap: FeatureSnapshot) => void;
   exit: () => void;
 }
 
@@ -324,7 +333,8 @@ export function setupFireCard(
     const centroids = bins.map((b) => b.centroid);
     const cellBins = track?.cell_bins ?? null;
     open(fireCardHtml(p, track), lon, lat, p.id, series.length ? series : null,
-      centroids.length ? centroids : null, cellBins, () => compare?.fromFire(e));
+      centroids.length ? centroids : null, cellBins,
+      () => compare?.fromFire({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
 
   const openScar = (e: maplibregl.MapLayerMouseEvent) => {
@@ -332,7 +342,8 @@ export function setupFireCard(
     if (!feat) return;
     const s = feat.properties as unknown as Scar;
     const [lon, lat] = coords(e, feat);
-    open(scarCardHtml(s), lon, lat, String(s.id ?? ""), null, null, null, () => compare?.fromScar(e));
+    open(scarCardHtml(s), lon, lat, String(s.id ?? ""), null, null, null,
+      () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
 
   window.addEventListener("keydown", (e) => {

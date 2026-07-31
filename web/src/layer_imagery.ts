@@ -41,10 +41,262 @@ export function gibsTiles(layer: string, date: string): string[] {
   ];
 }
 
+// GIBS's GoogleMapsCompatible_Level9 matrix set serves 256 px tiles at matrices
+// 0..9 — z10 is an HTTP 400. Both numbers matter: declaring tileSize 512 makes
+// MapLibre stretch the 256 px JPEG over a 512 px slot AND request one matrix
+// coarser than the view needs, which is a 4x blur on top of MODIS's own 250 m.
+export const GIBS_TILE_PX = 256;
+export const GIBS_MAX_Z = 9;
+// CDSE WMS is rendered to whatever size we ask for, and Sentinel-2 is 10 m.
+const HD_TILE_PX = 512;
+const HD_MAX_Z = 14;
+
+/** How to mount a source and where to park the camera, per imagery tier. The
+ * entry zoom never exceeds the deepest tile the source actually has, so the
+ * compare mode opens on real pixels instead of an over-zoomed smear. */
+export interface RasterFit {
+  tileSize: number;
+  maxzoom: number;
+  zoom: number;
+}
+
+export function rasterFit(cfg: ImageryConfig): RasterFit {
+  return cfg.hd
+    ? { tileSize: HD_TILE_PX, maxzoom: HD_MAX_Z, zoom: 13 }
+    : { tileSize: GIBS_TILE_PX, maxzoom: GIBS_MAX_Z, zoom: GIBS_MAX_Z };
+}
+
 /** Shift an ISO day (YYYY-MM-DD) back by N days, staying in UTC. */
 function isoMinusDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** How many neighbouring days to weigh alongside the requested one. Every extra
+ * day costs one small probe tile per sensor, and gaps plus cloud rarely run
+ * longer than this. */
+export const MAX_DAY_RETRIES = 3;
+
+/** Per-day pull back toward the date actually asked for, so a marginally better
+ * image several days off does not quietly replace the one that was requested. */
+const RECENCY_DECAY = 0.9;
+
+/** Slippy-map tile covering a lon/lat at zoom z (the GIBS Level9 matrix set is
+ * the standard Google/OSM grid, so this indexes it directly). */
+export function tileXY(lon: number, lat: number, z: number): { x: number; y: number } {
+  const n = 2 ** z;
+  const rad = (lat * Math.PI) / 180;
+  return {
+    x: Math.floor(((lon + 180) / 360) * n),
+    y: Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n),
+  };
+}
+
+/** One concrete tile URL from a {z}/{y}/{x} template, over a given point. */
+export function probeUrl(template: string, lon: number, lat: number, z: number): string {
+  const { x, y } = tileXY(lon, lat, z);
+  return template
+    .replace("{z}", String(z))
+    .replace("{x}", String(x))
+    .replace("{y}", String(y));
+}
+
+/**
+ * The keyless true-colour layers worth trying for one day. Both are MODIS
+ * corrected reflectance at 250 m, but Terra crosses in the morning and Aqua in
+ * the afternoon, so on any given day one of them is nearer nadir over a given
+ * place — and MODIS pixels grow fast off-nadir (the bowtie effect), which is
+ * the difference between a legible scar and a smear. Measured over Basilicata:
+ * Aqua scored 28.4 vs Terra's 19.2 on 2026-07-30 and 32.4 vs 26.4 on 07-23.
+ * Neither wins in general, so we measure per capture instead of guessing.
+ */
+export const GIBS_TRUE_COLOR_LAYERS = [
+  "MODIS_Terra_CorrectedReflectance_TrueColor",
+  "MODIS_Aqua_CorrectedReflectance_TrueColor",
+];
+
+/** A decoded probe tile, or null when the day/layer has no data. */
+export type ProbeTile = { data: Uint8ClampedArray; width: number; height: number } | null;
+export type TileProbe = (url: string) => Promise<ProbeTile>;
+
+/** Pixels this bright in all three channels are cloud, not ground. Snow would
+ * fool it, which for a summer burn-scar comparison is not a real case. */
+const CLOUD_LEVEL = 155;
+
+/**
+ * How usable a capture is, in one number: ground detail discounted by how much
+ * of the frame is cloud.
+ *
+ * Detail alone is mean absolute luma step between horizontal neighbours — a
+ * crisp near-nadir pass has structure at pixel scale and scores high, a smeared
+ * off-nadir pass scores low. But detail alone also rewards cloud, because cloud
+ * edges are edges: over Basilicata on 2026-07-22, Aqua scored 6.24 on detail
+ * while a quarter of the tile was overcast. Discounting by the cloud fraction
+ * puts that behind the 5.09 of a clear Terra pass, which is the honest ranking.
+ */
+export function tileScore(t: NonNullable<ProbeTile>): number {
+  const { data, width, height } = t;
+  let detail = 0;
+  let steps = 0;
+  let cloudy = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (Math.min(data[i], data[i + 1], data[i + 2]) > CLOUD_LEVEL) cloudy++;
+      if (x === 0) continue;
+      const p = i - 4;
+      const a = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      const b = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+      detail += Math.abs(a - b);
+      steps++;
+    }
+  }
+  const px = width * height;
+  return steps ? (detail / steps) * (1 - (px ? cloudy / px : 0)) : 0;
+}
+
+/** A probe that never settles would wedge compare mode open on a blank map,
+ * since nothing mounts until the probes resolve. Any environment that does not
+ * actually load images (jsdom, a hung connection) must therefore time out. */
+const PROBE_TIMEOUT_MS = 8000;
+
+/** Decode one tile in the browser so it can be scored. Returns null on any
+ * failure (404, CORS, no DOM, no answer) — every caller treats that as "no
+ * data" and falls back to mounting what it was asked for. */
+export const domTileProbe: TileProbe = (url) =>
+  new Promise((resolve) => {
+    if (typeof document === "undefined") return resolve(null);
+    let done = false;
+    const settle = (v: ProbeTile) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => settle(null), PROBE_TIMEOUT_MS);
+    const img = new Image();
+    img.crossOrigin = "anonymous"; // GIBS sends Access-Control-Allow-Origin: *
+    img.onerror = () => settle(null);
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return settle(null);
+        ctx.drawImage(img, 0, 0);
+        const d = ctx.getImageData(0, 0, c.width, c.height);
+        settle({ data: d.data, width: c.width, height: c.height });
+      } catch {
+        settle(null); // tainted canvas — treat as unusable rather than throw
+      }
+    };
+    img.src = url;
+  });
+
+export interface Capture {
+  date: string;
+  layer: string;
+}
+
+/**
+ * Choose what to actually mount for one half of the comparison.
+ *
+ * Three failures, one probe pass over the tile that actually covers the scar.
+ *
+ * GIBS 404s a day it does not hold — MODIS Terra drops whole days, and the
+ * layer's own capabilities list the gaps — and MapLibre discards a 404 raster
+ * tile WITHOUT firing `error`, so an unlucky date renders as an empty half with
+ * nothing to explain it. A day that does exist may have been caught far
+ * off-nadir and be too smeared to read. And it may simply be under cloud.
+ *
+ * So score every (day, sensor) in a small window around the requested date and
+ * mount the best, pulled back toward the date asked for so a marginal gain
+ * several days away does not silently win. Note this is NOT first-hit: a day
+ * that answers but scores badly still loses to a better neighbour.
+ *
+ * Falls back to the requested date and `fallbackLayer` whenever nothing can be
+ * probed (offline, blocked, no DOM), so this can only improve on mounting blind.
+ */
+export async function pickCapture(
+  date: string,
+  lon: number,
+  lat: number,
+  z: number,
+  fallbackLayer: string,
+  /** Which way the window extends. -1 (earlier) suits a baseline or a settled
+   * scar; +1 suits stepping forward through cloud. */
+  dir: 1 | -1 = -1,
+  probe: TileProbe = domTileProbe,
+  layers: string[] = GIBS_TRUE_COLOR_LAYERS,
+): Promise<Capture> {
+  const days = Array.from({ length: MAX_DAY_RETRIES + 1 }, (_, i) => i);
+  const scored = await Promise.all(
+    days.flatMap((i) =>
+      layers.map(async (layer) => {
+        const day = isoMinusDays(date, -dir * i);
+        const t = await probe(probeUrl(gibsTiles(layer, day)[0], lon, lat, z));
+        return t ? { date: day, layer, score: tileScore(t) * RECENCY_DECAY ** i } : null;
+      }),
+    ),
+  );
+  const best = scored
+    .filter((s): s is { date: string; layer: string; score: number } => s !== null)
+    .sort((a, b) => b.score - a.score)[0];
+  return best ? { date: best.date, layer: best.layer } : { date, layer: fallbackLayer };
+}
+
+/**
+ * Step the "after" capture by `days`, clamped to [fire start, today].
+ *
+ * The keyless GIBS tier has no cloud filter: it hands back that exact day's
+ * swath, clouds and all, and over Atlantic Europe roughly half of them are
+ * overcast. Rather than pretend otherwise, the compare banner lets the reader
+ * walk day by day until a clear pass shows up. (The HD tier searches a window
+ * server-side, so there stepping just re-centres that window.)
+ */
+export function shiftAfter(scar: Scar, days: number, today?: string): Scar {
+  const cap = today ?? new Date().toISOString().slice(0, 10);
+  const next = isoMinusDays(scar.after, -days);
+  if (next < scar.started || next > cap) return scar;
+  return { ...scar, after: next };
+}
+
+/** Build a scar (location + before/after dates) from a clicked fire feature.
+ * Uses the click point, so it works whether a proportional dot or the footprint
+ * polygon was hit, and falls back to sensible active-fire dates when a footprint
+ * feature carries no lifecycle props. */
+export function scarFromClick(snap: FeatureSnapshot): Scar {
+  const p = snap.props;
+  const day = 86_400_000;
+  const now = Date.now();
+  const yesterday = new Date(now - day);
+  const parsed = typeof p.started === "string" ? new Date(p.started) : null;
+  const start = parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date(now - day);
+  const past = typeof p.status === "string" ? p.status !== "active" : false;
+  const before = new Date(start.getTime() - 6 * day);
+  let after = past
+    ? new Date(Math.min(start.getTime() + 14 * day, yesterday.getTime()))
+    : yesterday;
+  if (after.getTime() < start.getTime()) after = new Date(start.getTime());
+  const label =
+    (typeof p.name === "string" && p.name) ||
+    (typeof p.place === "string" && p.place) ||
+    (past ? "Burn scar" : "Active fire");
+  return {
+    id: typeof p.id === "string" ? p.id : "",
+    label,
+    kind: past ? "past" : "active",
+    lon: snap.lon,
+    lat: snap.lat,
+    started: isoDay(start),
+    before: isoDay(before),
+    after: isoDay(after),
+  };
+}
+
+function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
@@ -98,7 +350,13 @@ export function wmsTiles(
  * Before is always the clearest pre-fire baseline. After depends on the fire:
  * an ACTIVE fire wants its current state (newest pass under a looser cloud cap,
  * so smoke/fresh burn shows), a PAST scar wants the clearest settled image. */
-export function scarTiles(cfg: ImageryConfig, scar: Scar): { before: string[]; after: string[] } {
+export function scarTiles(
+  cfg: ImageryConfig,
+  scar: Scar,
+  /** Per-side layer chosen by pickCapture, when one was measured. Ignored on
+   * the HD tier, which has a single configured layer. */
+  picked?: { before?: Capture; after?: Capture },
+): { before: string[]; after: string[] } {
   if (cfg.hd) {
     const { wms_base, layer } = cfg.hd;
     const afterOpts: TileOpts =
@@ -111,13 +369,26 @@ export function scarTiles(cfg: ImageryConfig, scar: Scar): { before: string[]; a
     };
   }
   return {
-    before: gibsTiles(cfg.gibs_layer, scar.before),
-    after: gibsTiles(cfg.gibs_layer, scar.after),
+    before: gibsTiles(picked?.before?.layer ?? cfg.gibs_layer, scar.before),
+    after: gibsTiles(picked?.after?.layer ?? cfg.gibs_layer, scar.after),
   };
 }
 
 const BEFORE_SRC = "imagery-before";
 const BEFORE_LAYER = "imagery-before";
+const AFTER_SRC = "after";
+const AFTER_LAYER = "after";
+
+export type Side = "before" | "after";
+
+/** A clicked map feature, captured at click time. MapLibre deletes
+ * `event.features` as soon as a delegated layer handler returns, so anything
+ * read later must come from a snapshot like this, never from the event. */
+export interface FeatureSnapshot {
+  props: Record<string, unknown>;
+  lon: number;
+  lat: number;
+}
 
 export class ImagerySwipe {
   private after: maplibregl.Map;
@@ -134,23 +405,26 @@ export class ImagerySwipe {
   // `window` forever, leaking the whole second maplibregl.Map in this.after.
   private releaseDrag: (() => void) | null = null;
   private destroyed = false;
+  private afterTiles: string[];
+  private afterReady = false;
 
   constructor(
     private main: maplibregl.Map,
     beforeTiles: string[],
     afterTiles: string[],
-    // GIBS true-colour tops out at ~250 m (z8): cap so MapLibre over-zooms the
-    // deepest tile instead of requesting z9+ and getting blank 404s. CDSE
-    // Sentinel-2 is 10 m, so HD passes a deeper cap for crisp close-ups.
-    private maxzoom = 8,
+    // Mount geometry for the tier in play (see rasterFit): GIBS is 256 px tiles
+    // capped at z9, CDSE Sentinel-2 is 512 px and goes far deeper.
+    private fit: RasterFit = { tileSize: GIBS_TILE_PX, maxzoom: GIBS_MAX_Z, zoom: GIBS_MAX_Z },
   ) {
-    // "Before" raster on the main map, just above the basemap.
-    const firstSymbol = main.getStyle().layers?.find((l) => l.type !== "background")?.id;
-    main.addSource(BEFORE_SRC, { type: "raster", tiles: beforeTiles, tileSize: 512, maxzoom });
-    main.addLayer(
-      { id: BEFORE_LAYER, type: "raster", source: BEFORE_SRC, paint: { "raster-opacity": 1 } },
-      firstSymbol,
-    );
+    // "Before" raster goes on TOP of the whole basemap, not under it. The dark
+    // basemap is opaque all the way down — its `landcover` fill is #0e0e0e and
+    // its `water` fill is #2C353C at full opacity — so a raster inserted above
+    // only the `background` layer is painted over completely and the before
+    // side reads as an empty map. Topmost also matches the after map, which is
+    // a bare raster with no basemap under it: both halves show pixels alone.
+    // Every data overlay is hidden for the duration of compare mode, so there
+    // is nothing left that this could cover up.
+    this.mountBefore(beforeTiles);
 
     // "After" on a second map stacked over the main one.
     const parent = main.getContainer();
@@ -172,14 +446,10 @@ export class ImagerySwipe {
       interactive: false,
       attributionControl: false,
     });
+    this.afterTiles = afterTiles;
     this.after.on("load", () => {
-      this.after.addSource("after", {
-        type: "raster",
-        tiles: afterTiles,
-        tileSize: 512,
-        maxzoom: this.maxzoom,
-      });
-      this.after.addLayer({ id: "after", type: "raster", source: "after" });
+      this.afterReady = true;
+      this.mountAfter();
     });
 
     // Divider handle. Class carries only touch-action (style.css) — layout,
@@ -200,6 +470,51 @@ export class ImagerySwipe {
     main.on("move", this.onMove);
     this.attachDrag(parent);
     this.setRatio(0.5);
+  }
+
+  /** (Re)mount the before raster on TOP of the whole basemap. */
+  private mountBefore(tiles: string[]) {
+    if (this.main.getLayer(BEFORE_LAYER)) this.main.removeLayer(BEFORE_LAYER);
+    if (this.main.getSource(BEFORE_SRC)) this.main.removeSource(BEFORE_SRC);
+    this.main.addSource(BEFORE_SRC, {
+      type: "raster",
+      tiles,
+      tileSize: this.fit.tileSize,
+      maxzoom: this.fit.maxzoom,
+    });
+    this.main.addLayer({
+      id: BEFORE_LAYER,
+      type: "raster",
+      source: BEFORE_SRC,
+      paint: { "raster-opacity": 1 },
+    });
+  }
+
+  /** Swap the before image for a different pre-fire capture day. */
+  setBeforeTiles(tiles: string[]) {
+    this.mountBefore(tiles);
+  }
+
+  /** (Re)mount the after raster from the current tile template. */
+  private mountAfter() {
+    if (!this.afterReady) return;
+    if (this.after.getLayer(AFTER_LAYER)) this.after.removeLayer(AFTER_LAYER);
+    if (this.after.getSource(AFTER_SRC)) this.after.removeSource(AFTER_SRC);
+    this.after.addSource(AFTER_SRC, {
+      type: "raster",
+      tiles: this.afterTiles,
+      tileSize: this.fit.tileSize,
+      maxzoom: this.fit.maxzoom,
+    });
+    this.after.addLayer({ id: AFTER_LAYER, type: "raster", source: AFTER_SRC });
+  }
+
+  /** Swap the after image for a different capture day, keeping the camera, the
+   * divider position and the before image exactly where they are — the reader
+   * is stepping past a cloudy pass, not restarting the comparison. */
+  setAfterTiles(tiles: string[]) {
+    this.afterTiles = tiles;
+    this.mountAfter();
   }
 
   private syncAfter() {

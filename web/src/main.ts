@@ -22,7 +22,18 @@ import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircra
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
-import { ImagerySwipe, scarTiles, type ImageryConfig, type Scar } from "./layer_imagery";
+import {
+  ImagerySwipe,
+  pickCapture,
+  rasterFit,
+  scarFromClick,
+  scarTiles,
+  shiftAfter,
+  type Capture,
+  type FeatureSnapshot,
+  type ImageryConfig,
+  type Scar,
+} from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
 import { createSheet } from "./sheet";
 import { mountPanel, renderAircraftPanel } from "./panel";
@@ -324,9 +335,9 @@ async function boot() {
  */
 interface CompareMode {
   /** Enter from a live fire click — dates synthesised from the fire. */
-  fromFire: (e: maplibregl.MapLayerMouseEvent) => void;
+  fromFire: (snap: FeatureSnapshot) => void;
   /** Enter from a past-scar marker click — uses the scar's stored dates. */
-  fromScar: (e: maplibregl.MapLayerMouseEvent) => void;
+  fromScar: (snap: FeatureSnapshot) => void;
   /** Leave compare mode (destroy the swipe, clear the banner). */
   exit: () => void;
 }
@@ -336,11 +347,22 @@ interface CompareMode {
 export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode | null {
   const cfg = manifest.imagery;
   if (!cfg) return null;
-  const maxzoom = cfg.hd ? 14 : 8;
+  const fit = rasterFit(cfg);
   let swipe: ImagerySwipe | null = null;
   // Captured on enter so exit restores exactly what was there before compare
   // mode touched it, not both handlers unconditionally on (see compare_lock.ts).
   let locked: HandlerState | null = null;
+  let current: Scar | null = null;
+  // What pickCapture settled on for each half — the banner names the sensor it
+  // actually mounted, and a re-tile keeps the other half's choice.
+  let picked: { before?: Capture; after?: Capture } = {};
+  // Entering is async (it probes tiles first). A second click must not let a
+  // stale probe mount its swipe over the newer one.
+  let entry = 0;
+  // Tracks compare:enter/compare:exit balance. NOT `swipe != null`: entering
+  // now awaits tile probes, so an exit during that window would otherwise skip
+  // compare:exit and leave the mobile sheet collapsed for good.
+  let comparing = false;
 
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
   // hexes, heat, hexbins, markers) sits on top of the before/after imagery.
@@ -366,24 +388,75 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   };
 
   const exit = () => {
-    const wasComparing = swipe != null; // fire-card close also calls exit() unconditionally
+    const wasComparing = comparing; // fire-card close also calls exit() unconditionally
+    comparing = false;
+    entry++; // invalidate any probe still in flight
     swipe?.destroy();
     swipe = null;
+    current = null;
     restoreOverlays();
     // Restore whatever dragPan/dragRotate were before enter() locked them —
     // not an unconditional enable, so a future mode that legitimately turns
     // rotation off survives a compare round-trip.
     if (locked) unlockMap(map, locked);
     locked = null;
-    setCompareNotice(null, cfg, exit);
+    setCompareNotice(null, cfg, exit, step, picked);
     if (wasComparing) emitUi("compare:exit");
+  };
+
+  // Keyless GIBS hands back one exact day's swath, clouds included. Stepping
+  // the after date re-tiles only the right half; the camera and the pre-fire
+  // baseline stay put, so the comparison survives the search for a clear pass.
+  const step = async (days: number) => {
+    if (!swipe || !current) return;
+    const moved = shiftAfter(current, days);
+    if (moved.after === current.after) return; // already at a clamp
+    // Keep walking the same way past any day GIBS does not hold, so one click
+    // never lands the reader on a blank half.
+    let landed = moved;
+    if (!cfg.hd) {
+      const c = await pickCapture(
+        moved.after, moved.lon, moved.lat, fit.maxzoom, cfg.gibs_layer, days < 0 ? -1 : 1,
+      );
+      if (!swipe || !current) return; // exited while probing
+      picked = { ...picked, after: c };
+      landed = shiftAfter(current, dayDelta(current.after, c.date));
+    }
+    if (landed.after === current.after) return;
+    current = landed;
+    swipe.setAfterTiles(scarTiles(cfg, landed, picked).after);
+    setCompareNotice(landed, cfg, exit, step, picked);
+  };
+
+  // GIBS 404s a day it does not hold, and MODIS Terra drops whole days now and
+  // then — the layer's own capabilities list the gaps. MapLibre drops a 404
+  // raster tile without firing `error`, so an unlucky baseline date renders as
+  // an empty half with nothing to explain it. Probing each half over the scar
+  // before mounting settles that, the off-nadir smear, and the cloud in one
+  // pass. The HD tier searches a window server-side, so it needs none of it.
+  const settle = async (scar: Scar): Promise<Scar> => {
+    if (cfg.hd) return scar;
+    const [b, a] = await Promise.all([
+      pickCapture(scar.before, scar.lon, scar.lat, fit.maxzoom, cfg.gibs_layer, -1),
+      pickCapture(scar.after, scar.lon, scar.lat, fit.maxzoom, cfg.gibs_layer, -1),
+    ]);
+    picked = { before: b, after: a };
+    // Never let the after image slide back past ignition — a pre-fire frame on
+    // both halves reads as "the fire did nothing".
+    return { ...scar, before: b.date, after: a.date < scar.started ? scar.after : a.date };
   };
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") exit();
   });
 
-  const enter = (scar: Scar) => {
+  const enter = async (scar: Scar) => {
+    const mine = ++entry;
     swipe?.destroy();
+    swipe = null;
+    // Announced on intent, not on arrival: probing the tiles takes seconds, and
+    // the sheet must collapse the moment the reader asks to compare.
+    comparing = true;
+    emitUi("compare:enter");
     // Guard against re-entry (switching scars while already comparing):
     // lockMap() again would capture the already-disabled state and corrupt
     // what exit() restores to, so only capture it the first time in.
@@ -399,18 +472,22 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // drag), not the viewport size the mobile sheet happens to use.
     if (!locked && window.matchMedia?.("(pointer: coarse)").matches) locked = lockMap(map);
     hideOverlays();
-    map.flyTo({ center: [scar.lon, scar.lat], zoom: cfg.hd ? 13 : 10 });
-    const t = scarTiles(cfg, scar);
-    swipe = new ImagerySwipe(map, t.before, t.after, maxzoom);
-    setCompareNotice(scar, cfg, exit);
-    emitUi("compare:enter");
+    // Never past the deepest tile the source has: over-zooming a 250 m MODIS
+    // pixel does not add detail, it just smears it.
+    map.flyTo({ center: [scar.lon, scar.lat], zoom: fit.zoom });
+    const settled = await settle(scar);
+    if (mine !== entry) return; // a newer click won while we were probing
+    const t = scarTiles(cfg, settled, picked);
+    current = settled;
+    swipe = new ImagerySwipe(map, t.before, t.after, fit);
+    setCompareNotice(settled, cfg, exit, step, picked);
   };
 
   return {
-    fromFire: (e) => enter(scarFromClick(e)),
-    fromScar: (e) => {
-      const s = scarFromProps(e.features?.[0]?.properties ?? {});
-      if (s) enter(s);
+    fromFire: (snap) => void enter(scarFromClick(snap)),
+    fromScar: (snap) => {
+      const s = scarFromProps(snap.props);
+      if (s) void enter(s);
     },
     exit,
   };
@@ -435,46 +512,20 @@ function scarFromProps(p: Record<string, unknown>): Scar | null {
   };
 }
 
-/** Build a scar (location + before/after dates) from a clicked fire feature.
- * Uses the click point, so it works whether a proportional dot or the footprint
- * polygon was hit, and falls back to sensible active-fire dates when a footprint
- * feature carries no lifecycle props. */
-function scarFromClick(e: maplibregl.MapLayerMouseEvent): Scar {
-  const p = (e.features?.[0]?.properties ?? {}) as Record<string, unknown>;
-  const day = 86_400_000;
-  const now = Date.now();
-  const yesterday = new Date(now - day);
-  const parsed = typeof p.started === "string" ? new Date(p.started) : null;
-  const start = parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date(now - day);
-  const past = typeof p.status === "string" ? p.status !== "active" : false;
-  const before = new Date(start.getTime() - 6 * day);
-  let after = past
-    ? new Date(Math.min(start.getTime() + 14 * day, yesterday.getTime()))
-    : yesterday;
-  if (after.getTime() < start.getTime()) after = new Date(start.getTime());
-  const label =
-    (typeof p.name === "string" && p.name) ||
-    (typeof p.place === "string" && p.place) ||
-    (past ? "Burn scar" : "Active fire");
-  return {
-    id: typeof p.id === "string" ? p.id : "",
-    label,
-    kind: past ? "past" : "active",
-    lon: e.lngLat.lng,
-    lat: e.lngLat.lat,
-    started: isoDay(start),
-    before: isoDay(before),
-    after: isoDay(after),
-  };
-}
-
-function isoDay(d: Date): string {
-  return d.toISOString().slice(0, 10);
+/** Whole days from ISO day `a` to ISO day `b` (negative when b is earlier). */
+function dayDelta(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
 }
 
 /** Compare-mode banner: fire label, the two capture dates, source note, and an
  * exit control. Passing null clears it (mode off). */
-function setCompareNotice(scar: Scar | null, cfg: ImageryConfig, onExit: () => void) {
+function setCompareNotice(
+  scar: Scar | null,
+  cfg: ImageryConfig,
+  onExit: () => void,
+  onStep: (days: number) => void | Promise<void>,
+  picked?: { before?: Capture; after?: Capture },
+) {
   const el = document.getElementById("notice");
   if (!el) return;
   if (!scar) {
@@ -482,7 +533,13 @@ function setCompareNotice(scar: Scar | null, cfg: ImageryConfig, onExit: () => v
     el.style.display = "none";
     return;
   }
-  const src = cfg.hd ? "Sentinel-2 · 10 m" : "MODIS · 250 m, coarse (regional scars only)";
+  // Name the sensor actually mounted: Terra and Aqua trade places depending on
+  // which crossed nearer nadir, and a caption that lies about the source is
+  // worse than no caption.
+  const sensor = /Aqua/.test(picked?.after?.layer ?? "") ? "MODIS Aqua" : "MODIS Terra";
+  const src = cfg.hd
+    ? "Sentinel-2 · 10 m"
+    : `${sensor} · 250 m, coarse (regional scars only)`;
   // A burn scar only shows once the fire has burned for days and the sky has
   // cleared. When "after" is within a few days of ignition, say so plainly —
   // otherwise the two images look identical and the mode seems broken.
@@ -499,13 +556,25 @@ function setCompareNotice(scar: Scar | null, cfg: ImageryConfig, onExit: () => v
     `<span class="compare-dates">` +
     `<b>Before</b> pre-fire · ${scar.before}<br>` +
     `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ${scar.after}` +
+    `<span class="compare-step">` +
+    `<button class="compare-day" type="button" data-days="-1" ` +
+    `title="Previous capture day">&#9664;</button>` +
+    `<button class="compare-day" type="button" data-days="1" ` +
+    `title="Next capture day">&#9654;</button>` +
+    `</span>` +
     `</span>` +
     hint +
+    // Clouds are the norm, not a fault: say so once rather than letting a white
+    // frame read as a broken image.
+    `<span class="compare-hint">Cloudy? Step the after day.</span>` +
     `<span class="compare-src">${src}</span>` +
     `<button class="compare-exit" type="button">&times; Exit compare</button>` +
     `</div>`;
   el.style.display = "block";
   el.querySelector(".compare-exit")?.addEventListener("click", onExit);
+  for (const b of el.querySelectorAll<HTMLButtonElement>(".compare-day")) {
+    b.addEventListener("click", () => void onStep(Number(b.dataset.days)));
+  }
 }
 
 boot();
