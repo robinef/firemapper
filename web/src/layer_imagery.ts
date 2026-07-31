@@ -126,6 +126,14 @@ export class ImagerySwipe {
   private ratio = 0.5;
   private syncing = false;
   private onMove: () => void;
+  // Set while a drag is in flight, cleared by pointerup/pointercancel/destroy.
+  // destroy() needs this to tear down an in-progress drag itself — otherwise
+  // a destroy() mid-gesture (Escape, a second finger tapping .compare-exit,
+  // or enter()'s swipe?.destroy() re-entering while a drag is live) leaves
+  // the closure's pointermove/pointerup/pointercancel listeners bound to
+  // `window` forever, leaking the whole second maplibregl.Map in this.after.
+  private releaseDrag: (() => void) | null = null;
+  private destroyed = false;
 
   constructor(
     private main: maplibregl.Map,
@@ -226,19 +234,28 @@ export class ImagerySwipe {
     const onDown = (e: PointerEvent) => {
       if (activePointerId !== null) return; // a drag is already in progress
       e.preventDefault();
-      activePointerId = e.pointerId;
-      this.divider.setPointerCapture?.(e.pointerId);
+      const pointerId = e.pointerId;
+      activePointerId = pointerId;
+      this.divider.setPointerCapture?.(pointerId);
       const onPointer = (ev: PointerEvent) => {
-        if (ev.pointerId === activePointerId) move(ev.clientX);
+        if (ev.pointerId === pointerId) move(ev.clientX);
       };
-      const onUp = (ev: PointerEvent) => {
-        if (ev.pointerId !== activePointerId) return;
-        this.divider.releasePointerCapture?.(ev.pointerId);
+      // Shared teardown for pointerup, pointercancel, AND destroy() calling
+      // it directly mid-drag — see releaseDrag's field comment for why that
+      // third caller matters.
+      const release = () => {
+        this.divider.releasePointerCapture?.(pointerId);
         activePointerId = null;
+        this.releaseDrag = null;
         window.removeEventListener("pointermove", onPointer);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
       };
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        release();
+      };
+      this.releaseDrag = release;
       window.addEventListener("pointermove", onPointer);
       window.addEventListener("pointerup", onUp);
       // Without pointercancel, an interrupted gesture (incoming call, OS
@@ -250,6 +267,15 @@ export class ImagerySwipe {
   }
 
   destroy() {
+    // Idempotent: main.ts only ever destroy()s a swipe once today, but this
+    // was cheap insurance against a future double call re-removing the
+    // (already-detached) MapLibre sub-map or double-releasing pointer capture.
+    if (this.destroyed) return;
+    this.destroyed = true;
+    // Tear down an in-flight drag before anything else — otherwise the
+    // window listeners captured in this.releaseDrag would outlive the
+    // divider they move (see the field's comment).
+    this.releaseDrag?.();
     this.main.off("move", this.onMove);
     if (this.main.getLayer(BEFORE_LAYER)) this.main.removeLayer(BEFORE_LAYER);
     if (this.main.getSource(BEFORE_SRC)) this.main.removeSource(BEFORE_SRC);
