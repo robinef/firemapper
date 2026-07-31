@@ -274,6 +274,30 @@ body.fire-focus #timeline { right: 356px; }
      the fold at the peek detent — second only to .sheet-handle's order: -2
      above, which the handle needs to remain grabbable at all. */
   #timeline { order: -1; }
+  /* body.fire-focus #timeline { right: 356px } above is a desktop-only rule
+     (shrinks the histogram to make room for the fixed-position #sidebar
+     panel it floats beside) but has no media guard of its own, and its
+     selector — one class + one id — is exactly as specific as the mobile
+     reset a few lines up that sets `inset: auto`. Equal specificity means
+     source order decides, and that desktop rule sits earlier in the file,
+     so it loses here anyway — but only by accident of file order. Restating
+     it explicitly, same selector, same specificity, guarantees the win
+     regardless of future reordering: without it, opening a fire card on a
+     375px phone left `right: 356px` in effect and squeezed the whole
+     histogram into the left ~19px of the screen (this is what actually
+     produced the clipped red bar and truncated label in the original
+     fire-detail screenshot). */
+  body.fire-focus #timeline { right: auto; }
+  /* Spec: detail mode is "fire card, then level-2 toggles, then active
+     legends" — #panel must outrank #sidebar, or the flex default (order: 0
+     for both) falls back to DOM order (#sidebar mounted before #panel in
+     sheet.ts), putting the fire's own card LAST and pushed to the bottom
+     edge, cut off, behind the layer toggles the user didn't tap for.
+     #timeline keeps its own order: -1 above in every mode, including
+     detail — the peek detent must still show the histogram before a fire
+     is ever opened, and detail only reorders #panel vs #sidebar. */
+  .sheet[data-mode="detail"] #panel { order: -1; }
+  .sheet[data-mode="detail"] #sidebar { order: 0; }
 
   .sheet[data-mode="overview"] #panel { display: none; }
   /* Hide the layer list/legend, not #sidebar itself: #notice (the compare

@@ -183,8 +183,14 @@ export function createSheet(breakpoint = 640): Sheet {
       // stub both capture methods as no-ops and can never see this.
       try {
         handle.releasePointerCapture?.(e.pointerId);
-      } catch {
-        /* already released implicitly; state reset below still runs */
+      } catch (err) {
+        // NotFoundError = already released implicitly; state reset below
+        // still runs. Anything else (e.g. SecurityError) is unexpected —
+        // surface it instead of going silent, so a new failure mode isn't
+        // invisible the way this one originally was.
+        if (!(err instanceof DOMException) || err.name !== "NotFoundError") {
+          console.warn("sheet: releasePointerCapture failed unexpectedly", err);
+        }
       }
       activePointerId = null;
       window.removeEventListener("pointermove", onMove);
@@ -204,8 +210,12 @@ export function createSheet(breakpoint = 640): Sheet {
       // leaving activePointerId stuck non-null with no way to ever clear it.
       try {
         handle.setPointerCapture?.(e.pointerId);
-      } catch {
-        /* proceed without native capture; window-level listeners still work */
+      } catch (err) {
+        // NotFoundError = proceed without native capture; window-level
+        // listeners still work. Anything else is unexpected — surface it.
+        if (!(err instanceof DOMException) || err.name !== "NotFoundError") {
+          console.warn("sheet: setPointerCapture failed unexpectedly", err);
+        }
       }
       startY = lastY = e.clientY;
       lastT = e.timeStamp;

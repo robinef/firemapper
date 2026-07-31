@@ -245,8 +245,12 @@ export class ImagerySwipe {
       // the page's life.
       try {
         this.divider.setPointerCapture?.(pointerId);
-      } catch {
-        /* proceed without native capture; window-level listeners still work */
+      } catch (err) {
+        // NotFoundError = proceed without native capture; window-level
+        // listeners still work. Anything else is unexpected — surface it.
+        if (!(err instanceof DOMException) || err.name !== "NotFoundError") {
+          console.warn("layer_imagery: setPointerCapture failed unexpectedly", err);
+        }
       }
       const onPointer = (ev: PointerEvent) => {
         if (ev.pointerId === pointerId) move(ev.clientX);
@@ -257,8 +261,12 @@ export class ImagerySwipe {
       const release = () => {
         try {
           this.divider.releasePointerCapture?.(pointerId);
-        } catch {
-          /* already released implicitly; state reset below still runs */
+        } catch (err) {
+          // NotFoundError = already released implicitly; state reset below
+          // still runs. Anything else is unexpected — surface it.
+          if (!(err instanceof DOMException) || err.name !== "NotFoundError") {
+            console.warn("layer_imagery: releasePointerCapture failed unexpectedly", err);
+          }
         }
         activePointerId = null;
         this.releaseDrag = null;
