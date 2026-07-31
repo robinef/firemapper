@@ -12,10 +12,10 @@
  * firecard.ts re-renders that same element per fire, so moving it on every
  * detail:open/close would break its per-fire history.
  *
- * Drag gestures and the breakpoint that decides whether the sheet is active at
- * all are not this module's job — they land in the next task. This module just
- * needs to exist and behave correctly once driven externally (tests, or later,
- * a gesture handler).
+ * Below the mobile breakpoint (max-width: 640px) the sheet mounts itself via a
+ * matchMedia watcher and the handle responds to Pointer Events for drag-to-
+ * resize; above it, the sheet does not exist and the three panels sit wherever
+ * index.html put them.
  */
 import { onUi } from "./ui_events";
 
@@ -123,6 +123,7 @@ export function createSheet(breakpoint = 640): Sheet {
         }),
         onUi("compare:exit", () => api.snapTo(beforeCompare)),
       );
+      attachDrag();
     },
 
     setContent(m: SheetMode) {
@@ -147,6 +148,67 @@ export function createSheet(breakpoint = 640): Sheet {
       container = null;
     },
   };
+
+  // Pointer drag on the handle. Pointer Events cover touch and mouse alike, so
+  // there is one code path; see layer_imagery.ts for the same choice.
+  const attachDrag = () => {
+    const handle = container?.querySelector(".sheet-handle") as HTMLElement | null;
+    if (!handle) return;
+    // A single tracked pointerId means a second finger landing mid-drag is
+    // ignored rather than hijacking (and corrupting) the in-progress gesture.
+    let activePointerId: number | null = null;
+    let startY = 0;
+    let startHeight = 0;
+    let lastY = 0;
+    let lastT = 0;
+    let velocity = 0;
+
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerId !== activePointerId) return;
+      const dt = e.timeStamp - lastT;
+      if (dt > 0) velocity = (lastY - e.clientY) / dt; // upward = positive
+      lastY = e.clientY;
+      lastT = e.timeStamp;
+      const height = startHeight + (startY - e.clientY);
+      if (container) container.style.height = `${Math.max(60, height)}px`;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (e.pointerId !== activePointerId) return;
+      handle.releasePointerCapture?.(e.pointerId);
+      activePointerId = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      const height = container ? parseFloat(container.style.height) : 0;
+      api.snapTo(projectDetent(height, velocity, detentHeights()));
+    };
+    handle.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (activePointerId !== null) return; // a drag is already in progress
+      activePointerId = e.pointerId;
+      e.preventDefault();
+      handle.setPointerCapture?.(e.pointerId);
+      startY = lastY = e.clientY;
+      lastT = e.timeStamp;
+      velocity = 0;
+      startHeight = container ? container.getBoundingClientRect().height : 0;
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      // Without pointercancel the sheet keeps following a finger that the OS
+      // took away (incoming call, system gesture) — pointerup never fires.
+      window.addEventListener("pointercancel", onUp);
+    });
+  };
+
+  // The sheet only exists below the mobile breakpoint. Read matchMedia at
+  // call time (not module load) so tests can stub it, and guard its absence
+  // so callers that don't stub it (desktop-only tests) are unaffected.
+  const query = window.matchMedia?.(`(max-width: ${breakpoint}px)`);
+  if (query) {
+    const sync = (matches: boolean) => (matches ? api.mount() : api.destroy());
+    query.addEventListener?.("change", (e) => sync(e.matches));
+    // Callers get an already-correct sheet without repeating the check.
+    if (query.matches) queueMicrotask(() => api.mount());
+  }
 
   return api;
 }

@@ -21,6 +21,7 @@ import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
 import { ImagerySwipe, scarTiles, type ImageryConfig, type Scar } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
+import { createSheet } from "./sheet";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
@@ -177,6 +178,7 @@ async function boot() {
       map,
       manifest,
     );
+    createSheet(); // no-op above 640px; re-parents the panels below it
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
