@@ -73,3 +73,31 @@ def test_carried_entry_keeps_the_original_data_age():
     assert carried["observed_at"] == previous["observed_at"]
     assert carried["fetched_at"] == previous["fetched_at"]
     assert carried["attempted_at"] == NOW.isoformat()
+
+
+def test_never_carries_from_a_previous_layer_that_itself_failed():
+    """A failed layer holds no data and wrote no file, so there is nothing to
+    copy. Treating one as carryable is what broke prod on 2026-07-31: the
+    16:05 refresh saw the 13:59 generation's failed wind layer, judged it
+    carryable off its `attempted_at`, found no wind.geojson to copy, and
+    validate_generation then refused to publish ANY layer — so the whole map
+    froze at 13:59 over one upstream 400."""
+    previous = _entry("wind", 30, status="failed")
+    previous["fetched_at"] = None  # a failed fetch never stamps one
+    assert should_carry("wind", FetchResult("failed", [], NOW), previous, NOW) is False
+
+
+def test_still_carries_a_chain_of_carries():
+    """carried_entry keeps the original fetched_at, so a carry of a carry stays
+    legal until the DATA (not the attempt) ages out."""
+    carried = carried_entry(_entry("wind", 30), now=NOW)
+    assert carried["status"] == "carried"
+    assert should_carry("wind", FetchResult("failed", [], NOW), carried, NOW) is True
+
+
+def test_carry_expiry_measures_the_data_not_the_attempt():
+    """A carried entry re-stamps attempted_at to now every run. If expiry read
+    that, a layer could be carried forever; it must read fetched_at."""
+    stale = carried_entry(_entry("wind", 7 * 60), now=NOW)  # data 7 h old, budget 3 h x2
+    assert stale["attempted_at"] == NOW.isoformat()
+    assert should_carry("wind", FetchResult("failed", [], NOW), stale, NOW) is False

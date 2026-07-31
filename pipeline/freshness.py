@@ -61,7 +61,15 @@ def should_carry(key: str, result: FetchResult, previous: dict | None, now: date
         return False
     if result.status != "failed":
         return False
-    stamp = previous.get("fetched_at") or previous.get("attempted_at")
+    # fetched_at ONLY — never fall back to attempted_at. attempted_at is when we
+    # last tried, which a failed layer also has; fetched_at is when we last held
+    # data, which only a layer with data (or a carry of one) has. Reading the
+    # attempt made a previously-failed layer look carryable, so export added it
+    # to carry_available, found no file to copy, and validate_generation then
+    # refused to publish anything at all — one upstream 400 froze the whole map.
+    # Using fetched_at also keeps expiry measured against the DATA's age, which
+    # matters because carried_entry re-stamps attempted_at every single run.
+    stamp = previous.get("fetched_at")
     if not stamp:
         return False
     try:
