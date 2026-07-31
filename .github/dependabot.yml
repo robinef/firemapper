@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # The pipeline pulls satellite data over HTTP and parses it; keeping requests,
+  # pyarrow and duckdb current is the cheapest security work available.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Vite, vitest and their plugins move together; separate PRs for each
+      # just means the same test run three times.
+      build-tooling:
+        patterns:
+          - vite
+          - vitest
+          - "@vitest/*"
+          - typescript
+
+  # Pinned action SHAs go stale silently otherwise.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

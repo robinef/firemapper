@@ -68,7 +68,8 @@ layers and never needs a key.
 ## Contributing
 
 Issues and pull requests are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+[CONTRIBUTING.md](CONTRIBUTING.md) to get started, and the
+[Code of Conduct](CODE_OF_CONDUCT.md) for the ground rules.
 
 Good first contributions: more curated historical fires
 ([`pipeline/notable_scars.json`](pipeline/notable_scars.json) is plain data),

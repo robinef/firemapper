@@ -17,6 +17,8 @@ web/public/data/
 .lean-ctx/
 scratch/
 docs/superpowers/
+.superpowers/
+.superset/
 *.bak
 .DS_Store
 web/dist/

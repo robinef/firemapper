@@ -66,3 +66,13 @@ JSON
 
 That blocks force-pushes and deletion of `main` and requires both CI jobs to pass.
 Deliberately no required review count, so a solo maintainer isn't blocked.
+
+## Code of Conduct
+
+By participating you agree to abide by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Please do not report security problems in a public issue — see
+[SECURITY.md](SECURITY.md) for how to report them privately.
