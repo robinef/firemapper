@@ -7,6 +7,7 @@ import { SCAR_LAYER_IDS } from "./layer_scars";
 import type { Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
+import { emitUi } from "./ui_events";
 
 /**
  * Level 2 — the fire card. Clicking a fire (active dot, footprint, or past-scar
@@ -177,6 +178,7 @@ export function setupFireCard(
     compare?.exit();
     switcher.setLevel(1); // back to the overview layer set
     document.body.classList.remove("fire-focus");
+    emitUi("detail:close");
   };
 
   // Clicking a histogram bin paints the fire's footprint AS OF that bin (the
@@ -250,6 +252,7 @@ export function setupFireCard(
     panel.classList.remove("hidden");
     document.body.classList.add("fire-focus");
     switcher.setLevel(2); // swap the panel to this fire's detail layers
+    emitUi("detail:open");
     map.flyTo({ center: [lon, lat], zoom: 10.5 });
     dim(id);
     if (fireSeries) {

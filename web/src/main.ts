@@ -24,6 +24,7 @@ import { mountSwitcher, type LayerModule } from "./registry";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
+import { emitUi } from "./ui_events";
 import type { Manifest } from "./types";
 
 const BASE = "/data";
@@ -227,7 +228,10 @@ async function boot() {
     for (const id of ["aircraft", "aircraft-halo"]) {
       map.on("click", id, (e) => {
         const feat = e.features?.[0];
-        if (feat) panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
+        if (feat) {
+          panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
+          emitUi("aircraft:open");
+        }
       });
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
@@ -296,6 +300,7 @@ function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode 
     swipe = null;
     restoreOverlays();
     setCompareNotice(null, cfg, exit);
+    emitUi("compare:exit");
   };
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") exit();
@@ -308,6 +313,7 @@ function setupCompareMode(map: maplibregl.Map, manifest: Manifest): CompareMode 
     const t = scarTiles(cfg, scar);
     swipe = new ImagerySwipe(map, t.before, t.after, maxzoom);
     setCompareNotice(scar, cfg, exit);
+    emitUi("compare:enter");
   };
 
   return {
