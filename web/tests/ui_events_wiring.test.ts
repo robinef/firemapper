@@ -71,10 +71,10 @@ describe("ui event wiring", () => {
 // collapses on enter and restores height on exit) doesn't restore a stale
 // height on an ordinary fire-card dismissal.
 describe("compare mode enter/exit", () => {
-  const fireClick = {
-    lngLat: { lng: 1, lat: 2 },
-    features: [{ properties: {} }],
-  } as unknown as maplibregl.MapLayerMouseEvent;
+  // fromFire/fromScar take a snapshot of the clicked feature, not the event:
+  // MapLibre deletes event.features once a delegated handler returns, and the
+  // card's compare button fires long after that.
+  const fireClick = { props: {}, lon: 1, lat: 2 };
   // setupCompareMode now locks/unlocks dragPan+dragRotate on enter/exit (see
   // compare_lock.ts), so the fake map needs those handlers stubbed too.
   const handler = () => ({ isEnabled: () => true, enable: () => {}, disable: () => {} });
