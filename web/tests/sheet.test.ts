@@ -92,4 +92,50 @@ describe("sheet", () => {
     emitUi("detail:open");
     expect(document.getElementById("timeline")!.parentElement).toBe(slot);
   });
+
+  it("mounts below the breakpoint and unmounts above it", () => {
+    mobileDom();
+    const listeners: Array<(e: { matches: boolean }) => void> = [];
+    // jsdom has no matchMedia; provide one whose matches we control
+    (window as unknown as { matchMedia: unknown }).matchMedia = (q: string) => ({
+      matches: true,
+      media: q,
+      addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => listeners.push(fn),
+      removeEventListener: () => {},
+    });
+
+    const sheet = createSheet(640);
+    sheet.mount();
+    expect(document.querySelector(".sheet")).not.toBeNull();
+
+    listeners.forEach((fn) => fn({ matches: false })); // viewport grew past 640
+    expect(document.querySelector(".sheet")).toBeNull();
+    expect(document.getElementById("sidebar")!.parentElement).toBe(document.body);
+  });
+
+  it("drags the handle, ignores a second pointer, and snaps on a fast flick", () => {
+    const sheet = createSheet(640);
+    sheet.mount();
+    const handle = document.querySelector(".sheet-handle") as HTMLElement;
+    handle.setPointerCapture = () => undefined;
+    handle.releasePointerCapture = () => undefined;
+
+    const dispatch = (target: EventTarget, type: string, id: number, y: number, t: number) => {
+      const e = new PointerEvent(type, { pointerId: id, clientY: y, bubbles: true });
+      Object.defineProperty(e, "timeStamp", { value: t });
+      target.dispatchEvent(e);
+    };
+
+    dispatch(handle, "pointerdown", 1, 500, 0);
+    // a second finger lands mid-drag; it must not steal the gesture (jsdom
+    // getBoundingClientRect() is always 0, so startHeight is 0 and the moved
+    // distance becomes the sheet's new height directly)
+    dispatch(handle, "pointerdown", 2, 100, 4);
+    dispatch(window, "pointermove", 1, 400, 16); // 100px up in 16ms: a hard flick
+    dispatch(window, "pointerup", 1, 400, 32);
+
+    // height landed at 100px, but the flick's projected position lands next
+    // to "full" — the drag traveled, it did not just snap to where it started
+    expect(sheet.detent).toBe("full");
+  });
 });
