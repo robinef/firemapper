@@ -25,6 +25,8 @@ MANIFEST_KEY = f"{DATA_PREFIX}manifest.json"
 # botocore clients are thread-safe for API calls; the ceiling here is R2's
 # per-connection round trip, not local CPU.
 UPLOAD_WORKERS = 16
+# S3/R2 cap a batch delete at 1000 keys per call.
+DELETE_BATCH = 1000
 
 
 def archive_key(generation: str) -> str:
@@ -161,16 +163,64 @@ def publish(settings: Settings, generation_dir: Path, client) -> None:
     prune_remote(settings, client)
 
 
+def _generation_names(client, bucket: str) -> list[str]:
+    """Generation names, from a DELIMITED listing.
+
+    Listing every key under data/ just to read the first path segment meant
+    walking every object in every generation — ~168k keys in production, on
+    every publish. A delimiter makes S3 roll each generation up into one
+    CommonPrefixes entry, so this costs a couple of calls regardless of size.
+    """
+    names: list[str] = []
+    token: str | None = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": DATA_PREFIX, "Delimiter": "/"}
+        if token:
+            kwargs["ContinuationToken"] = token
+        response = client.list_objects_v2(**kwargs)
+        for entry in response.get("CommonPrefixes", []):
+            name = entry["Prefix"][len(DATA_PREFIX):].rstrip("/")
+            if name.startswith("gen-"):
+                names.append(name)
+        if not response.get("IsTruncated"):
+            return sorted(names)
+        token = response.get("NextContinuationToken")
+        if not token:
+            return sorted(names)
+
+
+def _delete_keys(client, bucket: str, keys: list[str]) -> None:
+    """Delete in batches of DELETE_BATCH.
+
+    R2 implements DeleteObjects, but pruning is the last step of publish() and
+    runs after the manifest is already committed — so a batch call that the
+    endpoint rejects must degrade to one-by-one rather than take the run down
+    with it. Falling behind on pruning is recoverable; failing the publish that
+    just succeeded is not.
+    """
+    for i in range(0, len(keys), DELETE_BATCH):
+        chunk = keys[i : i + DELETE_BATCH]
+        try:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]})
+        except Exception as exc:  # noqa: BLE001 - any batch failure falls back
+            print(f"[warn] batch delete unavailable ({exc}); deleting one at a time")
+            for key in chunk:
+                client.delete_object(Bucket=bucket, Key=key)
+
+
 def prune_remote(settings: Settings, client, keep: int = 3) -> None:
     """Keep the newest `keep` generations and their archives. Generation names
-    are UTC timestamps, so lexicographic order is chronological order."""
+    are UTC timestamps, so lexicographic order is chronological order.
+
+    Cost is what matters here, not correctness alone. Deleting one key per round
+    trip ran a backlog of 18 generations (~8000 objects each) past the job
+    timeout on EVERY refresh once 4da4f13 let prune see the whole bucket: the
+    manifest had already been written, so the site advanced, but the job always
+    died mid-prune and the backlog never shrank. Batching turns ~144k round
+    trips into ~150.
+    """
     bucket = settings.r2_bucket
-    generations = sorted({
-        key[len(DATA_PREFIX):].split("/")[0]
-        for key in _keys(client, bucket, DATA_PREFIX)
-        if key[len(DATA_PREFIX):].startswith("gen-")
-    })
+    generations = _generation_names(client, bucket)
     for old in generations[:-keep] if len(generations) > keep else []:
-        for key in _keys(client, bucket, f"{DATA_PREFIX}{old}/"):
-            client.delete_object(Bucket=bucket, Key=key)
-        client.delete_object(Bucket=bucket, Key=archive_key(old))
+        _delete_keys(client, bucket, _keys(client, bucket, f"{DATA_PREFIX}{old}/"))
+        _delete_keys(client, bucket, [archive_key(old)])

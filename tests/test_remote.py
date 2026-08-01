@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.config import load_settings
-from pipeline.remote import archive_key, hydrate, prune_remote, publish
+from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
 
 
 class _Body:
@@ -31,6 +31,10 @@ class FakeS3:
         self.fail_on = fail_on
         self.put_order: list[str] = []
         self.deleted: list[str] = []
+        # Round-trip counters: the prune backlog blew the job timeout because
+        # of call COUNT, not bytes, so that is what the tests assert on.
+        self.delete_calls = 0
+        self.list_calls = 0
 
     def get_object(self, Bucket, Key):
         if Key not in self.objects:
@@ -48,8 +52,27 @@ class FakeS3:
     # everything in one page hides the exact bug this class exists to catch.
     PAGE = 1000
 
-    def list_objects_v2(self, Bucket, Prefix="", ContinuationToken=None):
+    def list_objects_v2(self, Bucket, Prefix="", ContinuationToken=None, Delimiter=None):
         keys = [k for k in sorted(self.objects) if k.startswith(Prefix)]
+        self.list_calls += 1
+        if Delimiter:
+            # Real S3 rolls every key sharing a prefix up to the next delimiter
+            # into CommonPrefixes and omits it from Contents — that is what
+            # makes "list the generation names" one cheap call instead of a
+            # walk over every object in every generation.
+            prefixes, contents = [], []
+            for k in keys:
+                rest = k[len(Prefix):]
+                if Delimiter in rest:
+                    cp = Prefix + rest.split(Delimiter)[0] + Delimiter
+                    if cp not in prefixes:
+                        prefixes.append(cp)
+                else:
+                    contents.append(k)
+            return {
+                "CommonPrefixes": [{"Prefix": p} for p in prefixes],
+                "Contents": [{"Key": k} for k in contents],
+            }
         start = int(ContinuationToken or 0)
         page = keys[start:start + self.PAGE]
         if not page:
@@ -62,7 +85,22 @@ class FakeS3:
 
     def delete_object(self, Bucket, Key):
         self.deleted.append(Key)
+        self.delete_calls += 1
         self.objects.pop(Key, None)
+
+    # S3/R2 batch delete: up to 1000 keys per call. Refuses more, like the real
+    # API, so a test cannot pass by sending an impossible batch.
+    DELETE_BATCH = 1000
+
+    def delete_objects(self, Bucket, Delete):
+        keys = [o["Key"] for o in Delete["Objects"]]
+        if len(keys) > self.DELETE_BATCH:
+            raise ValueError(f"too many keys in one delete: {len(keys)}")
+        self.delete_calls += 1
+        for k in keys:
+            self.deleted.append(k)
+            self.objects.pop(k, None)
+        return {"Deleted": [{"Key": k} for k in keys]}
 
 
 def _settings(tmp_path: Path):
@@ -270,3 +308,71 @@ def test_prune_sees_generations_beyond_the_first_page(tmp_path):
     assert remaining == ["gen-3", "gen-4", "gen-5"]
     assert archive_key("gen-0") not in fake.objects
     assert archive_key("gen-5") in fake.objects
+
+
+def test_prune_backlog_stays_within_a_sane_round_trip_budget(tmp_path):
+    """Pruning a backlog must cost calls proportional to BATCHES, not objects.
+
+    Deleting one key per call is what broke prod on 2026-08-01: paginating the
+    listings (4da4f13) let prune finally see the 21 accumulated generations, and
+    deleting ~8000 objects each, one round trip at a time, ran past the job
+    timeout on every single refresh. The manifest was written first, so the site
+    still advanced, but the job always died in prune and the backlog never
+    shrank — every run since that commit was cancelled.
+    """
+    settings = _settings(tmp_path)
+    objects = {MANIFEST_KEY: json.dumps({"generation": "gen-9"}).encode()}
+    for g in range(6):  # 6 generations, 3 kept -> 3 pruned
+        for i in range(2500):  # each bigger than one list page and one delete batch
+            objects[f"data/gen-{g}/tracks/{i:05d}.json"] = b"{}"
+        objects[f"archive/hotspots-gen-{g}.parquet"] = b""
+    client = FakeS3(objects)
+
+    prune_remote(settings, client, keep=3)
+
+    for g in range(3):
+        assert not [k for k in client.objects if k.startswith(f"data/gen-{g}/")]
+        assert f"archive/hotspots-gen-{g}.parquet" not in client.objects
+    for g in range(3, 6):
+        assert len([k for k in client.objects if k.startswith(f"data/gen-{g}/")]) == 2500
+
+    # 7500 objects + 3 archives. One-per-call would be 7503; batching at 1000
+    # is ~11. Leave headroom but keep the assertion meaningful.
+    assert client.delete_calls < 40, f"{client.delete_calls} delete round trips"
+
+
+def test_prune_finds_generations_without_walking_every_object(tmp_path):
+    """Generation NAMES come from a delimited listing, so discovering them costs
+    a couple of calls rather than a walk over every object in every generation
+    (which was ~168k keys in prod, on every publish)."""
+    settings = _settings(tmp_path)
+    objects = {MANIFEST_KEY: json.dumps({"generation": "gen-3"}).encode()}
+    for g in range(4):
+        for i in range(2500):
+            objects[f"data/gen-{g}/tracks/{i:05d}.json"] = b"{}"
+    client = FakeS3(objects)
+
+    prune_remote(settings, client, keep=4)  # nothing to delete: discovery only
+
+    assert client.delete_calls == 0
+    assert client.list_calls <= 3, f"{client.list_calls} list calls to find 4 names"
+
+
+def test_prune_falls_back_when_batch_delete_is_rejected(tmp_path):
+    """Pruning is the last step of publish(), after the manifest is committed.
+    A batch delete the endpoint refuses must not take down a run that already
+    published successfully."""
+    class NoBatch(FakeS3):
+        def delete_objects(self, Bucket, Delete):
+            raise RuntimeError("NotImplemented")
+
+    settings = _settings(tmp_path)
+    objects = {MANIFEST_KEY: json.dumps({"generation": "gen-1"}).encode()}
+    for g in range(2):
+        objects[f"data/gen-{g}/events.geojson"] = b"{}"
+    client = NoBatch(objects)
+
+    prune_remote(settings, client, keep=1)
+
+    assert not [k for k in client.objects if k.startswith("data/gen-0/")]
+    assert "data/gen-1/events.geojson" in client.objects
