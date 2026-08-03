@@ -41,7 +41,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     index = clamp(i);
     range.value = String(index);
     const text = opts.labelFor(index);
-    // Screen readers announce aria-valuetext in preference to the raw num,
+    // Screen readers announce aria-valuetext in preference to the raw number,
     // so a listener hears "Jul 29 · 0 new cells" instead of "7".
     range.setAttribute("aria-valuetext", text);
     label.textContent = text;
@@ -65,6 +65,10 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   };
 
   play.addEventListener("click", () => {
+    if (timer) {
+      stop();
+      return;
+    }
     // Playing from the end would otherwise do nothing at all.
     if (index >= last) {
       show(0);

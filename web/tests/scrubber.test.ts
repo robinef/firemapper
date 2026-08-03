@@ -27,7 +27,7 @@ describe("scrubber", () => {
     expect(h.querySelector(".scrub-label")!.textContent).toBe("bin 0");
   });
 
-  it("reports the val the user drags to", () => {
+  it("reports the value the user drags to", () => {
     const h = host();
     const seen: number[] = [];
     mountScrubber(h, { count: 10, labelFor: label, onScrub: (i) => seen.push(i) });
@@ -95,8 +95,8 @@ describe("scrubber", () => {
     expect(s.playing).toBe(false);
   });
 
-  it("destroy stops a run playback", () => {
-    // Otherwise the timer keeps firing against det DOM after the fire card
+  it("destroy stops running playback", () => {
+    // Otherwise the timer keeps firing against detached DOM after the fire card
     // closes, calling onScrub for a fire that is no longer open.
     vi.useFakeTimers();
     const h = host();
@@ -111,12 +111,48 @@ describe("scrubber", () => {
     expect(h.querySelector(".scrub-range")).toBeNull();
   });
 
-  it("announces the label to assistive tech, not the raw num", () => {
+  it("announces the label to assistive tech, not the raw number", () => {
     const h = host();
     const s = mountScrubber(h, { count: 5, labelFor: (i) => `Jul ${i + 1} · 0 new cells`, onScrub: () => {} });
     s.setIndex(2);
     const range = h.querySelector<HTMLInputElement>(".scrub-range")!;
     expect(range.getAttribute("aria-label")).toBe("Fire history position");
     expect(range.getAttribute("aria-valuetext")).toBe("Jul 3 · 0 new cells");
+  });
+
+  it("clicking play twice pauses without starting a second timer chain", () => {
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    const s = mountScrubber(h, { count: 20, labelFor: label, onScrub: (i) => seen.push(i) });
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    vi.advanceTimersByTime(STEP_MS);
+    expect(s.playing).toBe(true);
+    // Second click pauses
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    expect(s.playing).toBe(false);
+    const countAtPause = seen.length;
+    // Advance timers: if a second chain were running, onScrub would fire again
+    vi.advanceTimersByTime(STEP_MS * 10);
+    expect(seen.length).toBe(countAtPause);
+  });
+
+  it("destroy after multiple play clicks stops all timer chains", () => {
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    const s = mountScrubber(h, { count: 50, labelFor: label, onScrub: (i) => seen.push(i) });
+    const play = h.querySelector(".scrub-play") as HTMLButtonElement;
+    // Simulate rapid clicks that would trigger the bug
+    play.click();
+    vi.advanceTimersByTime(STEP_MS);
+    play.click();
+    play.click();
+    vi.advanceTimersByTime(STEP_MS);
+    const before = seen.length;
+    s.destroy();
+    vi.advanceTimersByTime(STEP_MS * 10);
+    // No additional calls should have fired
+    expect(seen.length).toBe(before);
   });
 });
