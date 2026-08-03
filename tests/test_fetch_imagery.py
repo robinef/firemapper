@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from pipeline.fetch_imagery import BASELINE_LEAD_DAYS, build_imagery, build_scars
+from pipeline.fetch_imagery import (
+    BASELINE_LEAD_DAYS,
+    MAX_SCARS,
+    build_imagery,
+    build_scars,
+)
 
 
 class _Settings:
@@ -93,3 +98,39 @@ def test_build_imagery_always_has_notable_scars():
 
 def test_baseline_lead_reasonable():
     assert 3 <= BASELINE_LEAD_DAYS <= 14
+
+
+def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
+    """A significant fire must survive a flurry of small fresh ones.
+
+    Live on 2026-08-03 the past section held fifteen scars, all started within
+    two days, and a large Bordeaux fire from the week before was nowhere in it:
+    the cap was filled by recency, so the only way to reach that fire's card had
+    silently disappeared. Size is the proxy for "worth comparing" — that is what
+    the docstring always claimed this did.
+    """
+    events = {"big": _fire(-0.6, 44.8, 20, "Bordeaux", n=40, start_day=18)}
+    for i in range(MAX_SCARS + 5):  # newer, but each tiny
+        events[f"small{i}"] = _fire(10.0 + i, 40.0, 24, f"Small{i}", n=5, start_day=24)
+
+    past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
+
+    assert len(past) <= MAX_SCARS
+    assert past[0]["place"] == "Bordeaux", "biggest past scar must rank first"
+    assert any(s["place"] == "Bordeaux" for s in past), "big fire must not be crowded out"
+
+
+def test_scars_carry_their_size():
+    """The cell count is what the ranking sorts on, and what a fire list needs
+    to show how big a burn was."""
+    events = {"e1": _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18)}
+    assert build_scars(events, NOW)[0]["cells"] == 9
+
+
+def test_equal_size_past_scars_fall_back_to_recency():
+    events = {
+        "older": _fire(-1.0, 44.8, 18, "Older", n=8, start_day=17),
+        "newer": _fire(5.0, 44.8, 22, "Newer", n=8, start_day=21),
+    }
+    past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
+    assert [s["place"] for s in past] == ["Newer", "Older"]
