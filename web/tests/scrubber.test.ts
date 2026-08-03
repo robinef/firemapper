@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mountScrubber, STEP_MS } from "../src/scrubber";
-import { emitUi } from "../src/ui_events";
+import { emitUi, uiSubscriberCount } from "../src/ui_events";
 
 function host() {
   const el = document.createElement("div");
@@ -214,11 +214,16 @@ describe("scrubber", () => {
   it("destroy unsubscribes from compare:enter", () => {
     // Otherwise a destroyed scrubber's stop() (closed over removed DOM) keeps
     // firing for every future compare:enter, and the subscriber set leaks one
-    // entry per fire card opened and closed.
+    // entry per fire card opened and closed. `not.toThrow()` alone can't catch
+    // that leak: emitUi try/catches every subscriber and a destroyed
+    // scrubber's stop() can't throw anyway, so that assertion passes whether
+    // or not the unsubscribe actually happens.
+    const before = uiSubscriberCount("compare:enter");
     const h = host();
     const s = mountScrubber(h, { count: 20, labelFor: label, onScrub: () => {} });
+    expect(uiSubscriberCount("compare:enter")).toBe(before + 1);
     s.destroy();
-    expect(() => emitUi("compare:enter")).not.toThrow();
+    expect(uiSubscriberCount("compare:enter")).toBe(before);
   });
 
   it("destroy after multiple play clicks stops all timer chains", () => {
