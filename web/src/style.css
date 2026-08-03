@@ -339,12 +339,35 @@ body.fire-focus #timeline { right: 356px; }
      reachable regardless of its bar's height, so the control itself must not
      be the thing that is too small to hit. */
   .scrub-play { width: 44px; height: 44px; font-size: 15px; }
-  .scrub-range { height: 44px; }
-  .scrub-range::-webkit-slider-thumb { width: 28px; height: 28px; }
-  .scrub-range::-moz-range-thumb { width: 28px; height: 28px; }
+  /* WebKit/Blink ignore width/height on ::-webkit-slider-thumb unless
+     -webkit-appearance: none is set on BOTH the input and the thumb — without
+     it the native thumb wins and stays ~12px on iOS Safari / Chrome Android,
+     the two mobile engines that matter most here. Resetting appearance also
+     drops the native track, so the track is restyled by hand below or the
+     slider becomes an invisible line. Scoped to mobile only: the desktop rule
+     above 640px is untouched and keeps the native (lower-risk) slider. */
+  .scrub-range {
+    -webkit-appearance: none; appearance: none; height: 44px; background: transparent;
+  }
+  .scrub-range::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px; background: rgba(255,255,255,.25);
+  }
+  .scrub-range::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 28px; height: 28px;
+    border-radius: 50%; background: #ff6b00; margin-top: -12px;
+  }
+  .scrub-range::-moz-range-track {
+    height: 4px; border-radius: 2px; background: rgba(255,255,255,.25);
+  }
+  .scrub-range::-moz-range-thumb {
+    width: 28px; height: 28px; border: none; border-radius: 50%; background: #ff6b00;
+  }
   /* The label competes with the slider for width on a 375px screen; the slider
-     matters more, so the label gives up its floor. */
-  .scrub-label { min-width: 0; font-size: 11px; }
+     matters more, so the label gives up its floor. flex-shrink is 0 in the
+     base rule above (:216), so min-width alone is inert here — flex: 0 1 auto
+     is what actually lets the label shrink instead of just being allowed to
+     stop at 0 width it never reaches. */
+  .scrub-label { flex: 0 1 auto; min-width: 0; font-size: 11px; }
 
   /* Compare banner: fixed over everything, not dismissible, always shows
      the way out — sheet.ts collapses to peek on compare:enter, and the
