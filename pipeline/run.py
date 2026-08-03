@@ -80,6 +80,10 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     liveness = liveness_for_events(events, met_rows)
     places_file = settings.data_dir / "places" / "cities15000.txt"
     places = load_places(places_file) if places_file.exists() else []
+    # Say so. A missing gazetteer degrades silently — every fire and scar just
+    # loses its place name and gets called "Burn scar · <date>" — which is how
+    # the refresh workflows ran without it for a long time unnoticed.
+    print(f"[{'info' if places else 'warn'}] places: {len(places)} loaded from {places_file}")
     alerts = _safe(lambda: fetch_gdacs(), default=[], label="gdacs")
 
     extent = _safe(mtg_frp_extent, default=None, label="mtg-frp-extent")
