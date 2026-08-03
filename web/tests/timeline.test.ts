@@ -304,3 +304,46 @@ describe("timeline pointer interactions", () => {
     expect(onSelect.lastIndex).toBe(0);
   });
 });
+
+describe("timeline scrubber wiring", () => {
+  it("renders a scrubber when the caller can select", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4]), { onSelect: () => {} });
+    expect(el.querySelector(".scrub-range")).not.toBeNull();
+  });
+
+  it("renders no scrubber when there is nothing to select", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3]), {}); // no onSelect
+    expect(el.querySelector(".scrub-range")).toBeNull();
+  });
+
+  it("moves the slider when a bar is clicked", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: () => {} });
+    const bars = el.querySelector(".tl-bars")!;
+    const bar = bars.children[3] as HTMLElement;
+    bar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    bar.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10, button: 0 }));
+    expect(el.querySelector<HTMLInputElement>(".scrub-range")!.value).toBe("3");
+  });
+
+  it("highlights the bar when the slider moves, and selects exactly once", () => {
+    const el = document.createElement("div");
+    const seen: number[] = [];
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: (_d, i) => seen.push(i) });
+    const range = el.querySelector<HTMLInputElement>(".scrub-range")!;
+    range.value = "2";
+    range.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(seen).toEqual([2]); // once, not twice via re-entry
+    expect((el.querySelector(".tl-bars")!.children[2] as HTMLElement).classList.contains("tl-sel")).toBe(true);
+  });
+
+  it("re-mounting replaces the scrubber rather than stacking one per render", () => {
+    // firecard.ts re-renders this same element on every fire card open.
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3]), { onSelect: () => {} });
+    mountTimeline(el, days([4, 5, 6]), { onSelect: () => {} });
+    expect(el.querySelectorAll(".scrub-range").length).toBe(1);
+  });
+});

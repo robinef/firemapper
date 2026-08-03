@@ -1,3 +1,4 @@
+import { mountScrubber, type Scrubber } from "./scrubber";
 import type { TimelineDay } from "./types";
 
 /**
@@ -136,6 +137,31 @@ export function mountTimeline(
   if (onSelect) {
     barsWrap.style.cursor = "pointer";
 
+    let scrubber: Scrubber | null = null;
+
+    /** The single place a selection happens. Bar clicks and slider input both
+     *  land here, which is what keeps the two controls in agreement — rather
+     *  than two listeners each trying to mirror the other. */
+    const select = (i: number, fromScrubber = false) => {
+      const bar = barsWrap.children[i] as HTMLElement | undefined;
+      if (bar) {
+        barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
+        bar.classList.add("tl-sel");
+        if (readout) readout.textContent = bar.dataset.label ?? "";
+      }
+      // setIndex moves the control without calling back, so this cannot loop.
+      if (!fromScrubber) scrubber?.setIndex(i);
+      onSelect(days[i], i);
+    };
+
+    if (days.length > 1) {
+      scrubber = mountScrubber(el, {
+        count: days.length,
+        labelFor: (i) => (barsWrap.children[i] as HTMLElement | undefined)?.dataset.label ?? "",
+        onScrub: (i) => select(i, true),
+      });
+    }
+
     // Track pointerdown state to guard against drag-selection. Record which
     // pointer and target started the gesture; only fire onSelect if it ends
     // on the same pointer without significant movement (mimicking click semantics).
@@ -188,13 +214,7 @@ export function mountTimeline(
         i = binAtX(e.clientX - rect.left, rect.width, days.length);
       }
 
-      const bar = barsWrap.children[i] as HTMLElement;
-      if (bar) {
-        barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
-        bar.classList.add("tl-sel");
-        if (readout) readout.textContent = bar.dataset.label ?? "";
-      }
-      onSelect(days[i], i);
+      select(i);
 
       pointerDownState = null; // Consumed gesture.
     });
