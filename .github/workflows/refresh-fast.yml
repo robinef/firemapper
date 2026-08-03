@@ -25,6 +25,28 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
+      # Reverse-geocoding source for fire and scar labels. Without it run.py
+      # falls back to places=[] and every derived scar is named
+      # "Burn scar · <date>" with place=null, which makes the past-scar list
+      # useless for finding one particular fire. Cached because the file
+      # changes rarely and the fast tier runs every 15 minutes.
+      - uses: actions/cache@v4
+        with:
+          path: data/places
+          key: geonames-cities15000-v1
+      - name: Ensure the places gazetteer is present
+        run: |
+          test -f data/places/cities15000.txt || {
+            mkdir -p data/places
+            curl -sSfL https://download.geonames.org/export/dump/cities15000.zip -o /tmp/cities.zip
+            unzip -o /tmp/cities.zip -d data/places
+          }
+          # Logged, not pinned. GeoNames regenerates the archive daily, so a
+          # fixed checksum would fail the refresh within a day; this leaves the
+          # digest in the run record so a swap is auditable after the fact.
+          # load_places() enforces a plausibility floor and refuses a truncated
+          # or wrong file outright.
+          sha256sum data/places/cities15000.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run python -m scripts.refresh_remote fast
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

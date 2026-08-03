@@ -1,4 +1,10 @@
-from pipeline.enrich import fetch_gdacs, gdacs_for_event, load_places, nearest_place
+from pipeline.enrich import (
+    MIN_PLACES,
+    fetch_gdacs,
+    gdacs_for_event,
+    load_places,
+    nearest_place,
+)
 from pipeline.events import cluster
 from tests.synth import T, hs
 
@@ -38,3 +44,41 @@ def test_gdacs_parse_and_match():
     members = next(iter(cluster([hs(45.0, 8.0, T(20, 0))], now=T(20, 6)).values()))
     m = gdacs_for_event(members, alerts)
     assert m == {"title": "Wildfire in Testland", "link": "https://www.gdacs.org/report?id=1"}
+
+
+def _row(name, lat, lon):
+    # GeoNames layout: id, name, asciiname, alternates, lat, lon, ...
+    return f"1\t{name}\t{name}\t\t{lat}\t{lon}\tP\tPPL"
+
+
+def _gazetteer(tmp_path, rows):
+    f = tmp_path / "cities15000.txt"
+    f.write_text("\n".join(rows), encoding="utf-8")
+    return f
+
+
+def test_load_places_skips_a_malformed_row_instead_of_dying(tmp_path):
+    """One bad line in a 3 MB third-party download must not take the whole
+    refresh down — it should cost that one city and nothing else."""
+    rows = [_row(f"City{i}", 45.0, 5.0) for i in range(5)]
+    rows.insert(3, "1\tBroken\tBroken\t\tnot-a-latitude\talso-not\tP\tPPL")
+    places = load_places(_gazetteer(tmp_path, rows))
+    assert [p["name"] for p in places] == [f"City{i}" for i in range(5)]
+
+
+def test_load_places_refuses_an_implausibly_small_gazetteer(tmp_path):
+    """GeoNames regenerates this file daily, so a pinned checksum would break
+    the refresh within a day — the plausibility floor is the integrity check
+    that actually holds. A truncated or swapped file must fail LOUDLY:
+    silently yielding no names is exactly the regression that left every scar
+    called "Burn scar · <date>" for weeks without anyone noticing."""
+    import pytest
+
+    f = _gazetteer(tmp_path, [_row("Lyon", 45.76, 4.84)])
+    with pytest.raises(ValueError, match="implausible"):
+        load_places(f, min_places=MIN_PLACES)
+
+
+def test_load_places_accepts_a_full_gazetteer(tmp_path):
+    rows = [_row(f"City{i}", 45.0, 5.0) for i in range(MIN_PLACES)]
+    assert len(load_places(_gazetteer(tmp_path, rows), min_places=MIN_PLACES)) == MIN_PLACES

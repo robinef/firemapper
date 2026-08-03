@@ -179,3 +179,65 @@ export function addActiveFires(
     },
   });
 }
+
+// ── Burned out: fires that have stopped detecting ────────────────
+// Every layer above filters status=closed out, which is right for "where is
+// fire burning now" but leaves those fires with no clickable mark at all. The
+// scar marker used to be the fallback, and it is capped — so a notable fire
+// could lose the last route to its card days after burning out. Off by
+// default (this is history, not the live picture), clickable when on.
+export const CLOSED_LAYER_IDS = [
+  ...FIRE_CLASSES.map((c) => `fire-closed-halo-${c}`),
+  ...FIRE_CLASSES.map((c) => `fires-closed-${c}`),
+];
+const CLOSED_HUE = "#8a5a44"; // burnt, desaturated — reads as over, not quiet
+
+export function addClosedFires(map: maplibregl.Map): void {
+  if (map.getLayer(CLOSED_LAYER_IDS[0])) return;
+  // Per size class at the SAME zooms as the live dots, not one blanket layer.
+  // Closed fires are the majority of the archive — 4214 of 7477 in production
+  // on 2026-08-03 — so drawing them all at Europe zoom would bury the live
+  // picture under three times as many dead ones and hand every pixel of the
+  // map a tap target. Big burns still appear from z3; specks wait for z8.5.
+  for (const cls of FIRE_CLASSES) {
+    const filter = [
+      "all", ["==", ["get", "status"], "closed"], ["==", ["get", "size_class"], cls],
+    ];
+    const minzoom = CLASS_MINZOOM[cls];
+    map.addLayer({
+      id: `fire-closed-halo-${cls}`,
+      type: "circle",
+      source: "fires",
+      minzoom,
+      filter: filter as never,
+      layout: { visibility: "none" },
+      paint: { "circle-radius": 22, "circle-color": "rgba(0,0,0,0)" },
+    });
+    map.addLayer({
+      id: `fires-closed-${cls}`,
+      type: "circle",
+      source: "fires",
+      minzoom,
+      filter: filter as never,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-color": CLOSED_HUE,
+        "circle-radius": fireRadiusExpression() as never,
+        "circle-opacity": 0.45,
+        "circle-stroke-color": CLOSED_HUE,
+        "circle-stroke-width": 1,
+        "circle-stroke-opacity": 0.8,
+      },
+    });
+  }
+}
+
+export const CLOSED_LEGEND = {
+  title: "Burned out",
+  entries: [
+    { color: CLOSED_HUE, size: 12, shape: "dot" as const, label: "no detection for over 48 h" },
+  ],
+  note:
+    "Fires that have stopped burning but are still in the archive. Hidden from " +
+    "the live view; turn on to find a recent fire and open its before/after.",
+};

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { FIRE_CLASSES, addActiveFires, fireHaloIds, fireLayerIds } from "../src/layer_fires";
+import {
+  CLOSED_LAYER_IDS,
+  FIRE_CLASSES,
+  addActiveFires,
+  addClosedFires,
+  fireHaloIds,
+  fireLayerIds,
+} from "../src/layer_fires";
 
 /** Minimal fake of the subset of maplibregl.Map that addActiveFires touches,
  * recording every addLayer call by id so tests can inspect what was built —
@@ -10,6 +17,7 @@ function fakeMap() {
   const layers: Record<string, Record<string, unknown>> = {};
   const map = {
     getSource: (id: string) => sources[id],
+    getLayer: (id: string) => layers[id],
     addSource: (id: string, src: unknown) => {
       sources[id] = src;
     },
@@ -59,5 +67,55 @@ describe("fire halo zoom range", () => {
       const paint = layers[id].paint as Record<string, unknown>;
       expect(paint["circle-color"]).toBe("rgba(0,0,0,0)");
     }
+  });
+});
+
+describe("burned-out fires stay reachable", () => {
+  // A fire quiet >48h becomes status=closed (events.py CLOSE_AFTER_H), and
+  // every layer above filters closed OUT. Its scar marker is then the only
+  // route to its card — and the scar list is capped, so a notable fire can
+  // lose that route entirely a few days after it stops burning. This layer is
+  // the durable way back in.
+  it("draws closed fires and nothing else", () => {
+    const { map, layers } = fakeMap();
+    addClosedFires(map as never);
+    for (const id of CLOSED_LAYER_IDS) {
+      expect(layers[id], `${id} missing`).toBeTruthy();
+      expect(JSON.stringify(layers[id].filter)).toContain("closed");
+    }
+  });
+
+  it("reuses the fires source rather than refetching", () => {
+    const { map, layers } = fakeMap();
+    addClosedFires(map as never);
+    for (const id of CLOSED_LAYER_IDS) expect(layers[id].source).toBe("fires");
+  });
+
+  it("backs the dot with a tap target big enough to hit", () => {
+    const { map, layers } = fakeMap();
+    addClosedFires(map as never);
+    const halo = layers[CLOSED_LAYER_IDS[0]];
+    expect(halo.type).toBe("circle");
+    // Same 44px-ish touch minimum as the active fire halos above.
+    expect((halo.paint as Record<string, number>)["circle-radius"]).toBeGreaterThanOrEqual(20);
+  });
+
+  it("gates each size class at the same zoom as its live counterpart", () => {
+    const { map, layers } = fakeMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    addClosedFires(map as never);
+    // Closed fires outnumber live ones ~3:1 in production; without this they
+    // would blanket the Europe view and every pixel would be a tap target.
+    for (const cls of FIRE_CLASSES) {
+      expect(layers[`fires-closed-${cls}`].minzoom).toBe(layers[`fires-${cls}`].minzoom);
+    }
+  });
+
+  it("renders dimmer than a live fire, so it reads as over", () => {
+    const { map, layers } = fakeMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    addClosedFires(map as never);
+    const closed = layers["fires-closed-major"].paint as Record<string, unknown>;
+    expect(closed["circle-opacity"]).toBeLessThan(0.6);
   });
 });

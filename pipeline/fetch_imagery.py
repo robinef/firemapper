@@ -33,7 +33,7 @@ GIBS_LAYER = "MODIS_Terra_CorrectedReflectance_TrueColor"
 BASELINE_LEAD_DAYS = 6  # "before" image this many days pre-fire (pre-scar)
 SCAR_SETTLE_DAYS = 14   # for a past fire, "after" this long post-ignition
 MIN_MEMBERS = 4         # ignore specks — a scar worth comparing has a few cells
-MAX_SCARS = 15          # a pickable shortlist per section (active / past)
+MAX_SCARS = 25          # a pickable shortlist per section (active / past)
 ACTIVE_MAX_H = 48       # a fire quiet longer than this counts as a past scar
 
 WMS_BASE = "https://sh.dataspace.copernicus.eu/ogc/wms"
@@ -114,6 +114,7 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
         "kind": "past" if past else "active",
         "lon": round(lon, 4),
         "lat": round(lat, 4),
+        "cells": len(members),
         "started": start.isoformat(),
         "before": before,
         "after": after,
@@ -124,8 +125,9 @@ def build_scars(events: dict, now: datetime, places: list | None = None) -> list
     """Compare-able burn scars from our own fire detections, split by lifecycle.
 
     A fire whose latest detection is within ACTIVE_MAX_H is "active"; one quiet
-    longer than that is "past" (last month's fires). Only fires with a few cells
-    are kept, biggest first, and each section is capped. Tiles are the keyless
+    longer than that is "past" (last month's fires). Specks below MIN_MEMBERS
+    are dropped, each section is capped at MAX_SCARS, and the two sections are
+    ranked differently on purpose — see the sort below. Tiles are the keyless
     GIBS true-colour layer client-side, so no per-scar fetch here.
     """
     today = now.date()
@@ -140,8 +142,13 @@ def build_scars(events: dict, now: datetime, places: list | None = None) -> list
             _scar_from_fire(eid, members, today, is_past, places)
         )
 
+    # Active fires are ranked by recency: they are still burning, so "what is
+    # happening now" is the question. PAST scars are ranked by SIZE, because the
+    # question there is "which burns are worth comparing" — and because a cap
+    # filled by recency quietly deletes the only route to a notable fire's card
+    # as soon as a couple of quiet days produce enough small ones.
     active.sort(key=lambda s: s["started"], reverse=True)
-    past.sort(key=lambda s: s["started"], reverse=True)
+    past.sort(key=lambda s: (s["cells"], s["started"]), reverse=True)
     return active[:MAX_SCARS] + past[:MAX_SCARS]
 
 

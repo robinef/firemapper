@@ -12,7 +12,15 @@ import {
 import { badgeText } from "./freshness";
 import { escapeHtml } from "./escape";
 import { createMap } from "./map";
-import { FIRE_HUE, addActiveFires, fireHaloIds, fireLayerIds } from "./layer_fires";
+import {
+  CLOSED_LAYER_IDS,
+  CLOSED_LEGEND,
+  FIRE_HUE,
+  addActiveFires,
+  addClosedFires,
+  fireHaloIds,
+  fireLayerIds,
+} from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
@@ -20,7 +28,13 @@ import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
 import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
 import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
-import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
+import {
+  DAY_SLICE_LAYER,
+  addDaySlice,
+  firesInCell,
+  hideDaySlice,
+  setDaySlice,
+} from "./layer_dayslice";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -40,6 +54,7 @@ import { createSheet } from "./sheet";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
+import { buildFireIndex, renderFireList, searchFires } from "./firelist";
 import { emitUi } from "./ui_events";
 import type { Manifest } from "./types";
 
@@ -89,6 +104,7 @@ async function boot() {
 
     addDaySlice(map); // under the fires: painted when a histogram day is clicked
     addActiveFires(map, events, footprint);
+    addClosedFires(map);
     if (frp) addIntensity(map, frp);
     if (frp) addSpread(map, frp);
     const wind =
@@ -131,6 +147,16 @@ async function boot() {
           ],
           note: "One colour = fire. Bigger dot = more area burned; faded = gone quiet. Zoom in for the outline.",
         },
+      },
+      {
+        key: "closed",
+        freshnessKeys: ["events"],
+        levels: [1, 2] as (1|2)[],
+        label: "Burned out (recent)",
+        question: "Which fires have stopped, and what did they leave?",
+        layerIds: CLOSED_LAYER_IDS,
+        defaultOn: false,
+        legend: CLOSED_LEGEND,
       },
       {
         key: "intensity",
@@ -236,10 +262,15 @@ async function boot() {
     // concurrent `loadTrack` requests racing to render the card.
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
-      ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      // Last: the slice blankets whole regions, so any dot drawn over it must
+      // win the hit test. It is the fallback for "there is no dot here".
+      DAY_SLICE_LAYER,
     ];
     const HANDLERS: Record<string, (e: maplibregl.MapLayerMouseEvent) => void> = {};
-    for (const id of [...fireHaloIds, ...fireLayerIds, "fire-footprint-fill"]) {
+    for (const id of [
+      ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", ...CLOSED_LAYER_IDS,
+    ]) {
       HANDLERS[id] = fireCard.openFire;
     }
     for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
@@ -252,6 +283,72 @@ async function boot() {
         }
       };
     }
+
+    // Search is the only route into a card that survives the rolling windows:
+    // a dot vanishes 48 h after the last detection, the scar list is capped,
+    // and the whole event window is 14 days. Built from the events already
+    // loaded, so it costs no extra request and covers closed fires too.
+    const fireIndex = buildFireIndex(events);
+    const openFromList = (id: string) => {
+      const entry = fireIndex.find((e) => e.id === id);
+      const feature = events.features.find(
+        (f) => (f.properties as { id?: string })?.id === id,
+      );
+      if (!entry || !feature) return;
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
+      fireCard.openFire({
+        features: [feature],
+        lngLat: { lng: entry.lon, lat: entry.lat },
+      } as unknown as maplibregl.MapLayerMouseEvent);
+    };
+    const showFireList = (query: string) => {
+      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
+      const box = document.querySelector<HTMLInputElement>(".fl-search");
+      // Re-render on every keystroke, then restore focus and caret: innerHTML
+      // replaces the input node, so without this the box loses focus after one
+      // character and the reader can only ever type one letter.
+      box?.addEventListener("input", () => showFireList(box.value));
+      if (box && query) {
+        box.focus();
+        box.setSelectionRange(query.length, query.length);
+      }
+      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
+        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
+      }
+    };
+    document.getElementById("find-fire")?.addEventListener("click", () => showFireList(""));
+
+    // Scrub to a day, click where the fire was. This was the obvious route to a
+    // fire that has stopped burning, and it did nothing: the layer had no
+    // handler, and its cells carried only a count. Resolve the clicked hex
+    // against the loaded events instead — which makes closed fires work too.
+    HANDLERS[DAY_SLICE_LAYER] = (ev) => {
+      const cell = ev.features?.[0]?.properties?.cell;
+      if (typeof cell !== "string") return;
+      const hits = firesInCell(events.features, cell);
+      if (hits.length === 1) {
+        fireCard.openFire({
+          features: hits,
+          lngLat: ev.lngLat,
+          point: ev.point,
+        } as unknown as maplibregl.MapLayerMouseEvent);
+        return;
+      }
+      panel.showHtml(renderCellPicker(hits, ev.lngLat));
+      if (hits.length > 1) {
+        for (const b of document.querySelectorAll<HTMLButtonElement>(".cell-pick")) {
+          b.addEventListener("click", () => {
+            const hit = hits.find((f) => String(f.properties?.id) === b.dataset.id);
+            if (!hit) return;
+            fireCard.openFire({
+              features: [hit],
+              lngLat: ev.lngLat,
+              point: ev.point,
+            } as unknown as maplibregl.MapLayerMouseEvent);
+          });
+        }
+      }
+    };
 
     map.on("click", (e) => {
       const layers = CLICK_ORDER.filter((id) => map.getLayer(id));
@@ -502,6 +599,60 @@ function scarFromProps(p: Record<string, unknown>): Scar | null {
     before: p.before as string,
     after: p.after as string,
   };
+}
+
+
+/** Panel shown when a slice hex resolves to something other than one fire.
+ *
+ * Zero is a legitimate outcome, not a failure: slices reach back 30 days but
+ * clustering keeps 14 (events.py WINDOW_DAYS), so an older day genuinely has no
+ * fire record left to open. Saying that plainly beats a click that appears to
+ * do nothing — which is what this whole layer used to do. */
+function renderCellPicker(
+  hits: GeoJSON.Feature[],
+  at: { lng: number; lat: number },
+): string {
+  const where = `${at.lat.toFixed(2)}, ${at.lng.toFixed(2)}`;
+  if (!hits.length) {
+    return (
+      `<button class="panel-close" aria-label="Close">&times;</button>` +
+      `<div class="fc-title">No fire records here</div>` +
+      `<div class="fc-sub">${escapeHtml(where)}</div>` +
+      `<p class="legend-note">Detections were recorded in this area on the day ` +
+      `you picked, but the fires themselves have aged out of the 14-day event ` +
+      `window, so there is no card left to open.</p>`
+    );
+  }
+  const rows = hits
+    .map((f) => {
+      const p = (f.properties ?? {}) as Record<string, unknown>;
+      // GeoJSON stringifies nested props, so `place` arrives as JSON text — and
+      // a bad value here must not throw inside a click handler and swallow the
+      // interaction entirely.
+      let place: string | null = null;
+      if (typeof p.place === "string") {
+        try {
+          place = (JSON.parse(p.place) as { name?: string })?.name ?? null;
+        } catch {
+          place = null;
+        }
+      }
+      const name = place || (typeof p.id === "string" ? `Fire ${p.id.slice(0, 6)}` : "Fire");
+      const started = typeof p.started === "string" ? p.started.slice(0, 10) : "";
+      return (
+        `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
+        `<b>${escapeHtml(String(name))}</b>` +
+        `<span>${escapeHtml(String(p.area_km2 ?? "?"))} km² · ${escapeHtml(started)} · ` +
+        `${escapeHtml(String(p.status ?? ""))}</span></button>`
+      );
+    })
+    .join("");
+  return (
+    `<button class="panel-close" aria-label="Close">&times;</button>` +
+    `<div class="fc-title">${hits.length} fires here</div>` +
+    `<div class="fc-sub">${escapeHtml(where)} · biggest first</div>` +
+    `<div class="cell-picks">${rows}</div>`
+  );
 }
 
 /** Whole days from ISO day `a` to ISO day `b` (negative when b is earlier). */
