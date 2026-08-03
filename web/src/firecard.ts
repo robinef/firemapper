@@ -321,9 +321,15 @@ export function setupFireCard(
     return g.type === "Point" ? (g.coordinates as [number, number]) : [0, 0];
   };
 
+  // Guards `loadTrack`: a click on one fire while a previous fire's track is
+  // still loading must not let that earlier response win and overwrite the
+  // card the user is now looking at once it finally arrives.
+  let openToken = 0;
+
   const openFire = async (e: maplibregl.MapLayerMouseEvent) => {
     const feat = e.features?.[0];
     if (!feat) return;
+    const mine = ++openToken;
     const p = reparse(feat.properties ?? {});
     const [lon, lat] = coords(e, feat);
     let track: Track | null = null;
@@ -332,6 +338,7 @@ export function setupFireCard(
     } catch {
       /* no track (e.g. tiny fire) — card still renders from props */
     }
+    if (mine !== openToken) return; // superseded by a newer fire click
     const bins = track?.series ?? [];
     const series: TimelineDay[] = bins.map((b) => ({
       date: b.bin,

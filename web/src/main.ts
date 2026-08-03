@@ -21,6 +21,7 @@ import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
 import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
+import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
   ImagerySwipe,
@@ -203,25 +204,15 @@ async function boot() {
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
-    let shownDay: string | null = null;
+    const daySlice = createDaySliceSelector(
+      dayDates,
+      (date) => loadDaySlice(manifest, date),
+      (cells) => setDaySlice(map, cells),
+      () => hideDaySlice(map),
+    );
     const timelineEl = document.getElementById("timeline")!;
     const mountOverviewTimeline = () =>
-      mountTimeline(timelineEl, manifest.timeline, {
-        onSelect: async (d) => {
-          if (shownDay === d.date) {
-            hideDaySlice(map);
-            shownDay = null;
-            return;
-          }
-          if (!dayDates.has(d.date)) {
-            hideDaySlice(map);
-            shownDay = null;
-            return;
-          }
-          shownDay = d.date;
-          setDaySlice(map, await loadDaySlice(manifest, d.date));
-        },
-      });
+      mountTimeline(timelineEl, manifest.timeline, { onSelect: daySlice.onSelect });
     mountOverviewTimeline();
     // Level 2: clicking any fire zone (active dot, footprint, or past-scar
     // marker) opens that fire's card — map flies in, others dim, stats on the
@@ -230,10 +221,11 @@ async function boot() {
     const compare = setupCompareMode(map, manifest);
     const fireCard = setupFireCard(
       map, manifest, compare, timelineEl, switcher, mountOverviewTimeline,
-      () => {
-        hideDaySlice(map);
-        shownDay = null;
-      },
+      // Not just a hide: a day-slice fetch from before the card opened can
+      // still be in flight (the scrubber issues one per bin crossed), and
+      // without disarming its token here it would land later and repaint the
+      // overview slice on top of the fire card that just opened.
+      () => daySlice.invalidate(),
     );
     // Precedence, highest first. Halos come before their visible layer so the
     // larger target wins, and fires beat scars where they overlap. A single
