@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it } from "vitest";
-import { createSheet, projectDetent } from "../src/sheet";
+import { createSheet, detentHeights, projectDetent } from "../src/sheet";
 import { emitUi } from "../src/ui_events";
 
 const HEIGHTS = { peek: 100, half: 400, full: 700 };
@@ -202,5 +202,12 @@ describe("sheet", () => {
     expect(sheet.detent).toBe("peek");
     expect(setCalls).toBe(2);
     expect(releaseCalls).toBe(2);
+  });
+
+  it("peek tall enough histogram plus scrubber row", () => {
+    // peek exists to show histogram glance; scrubber row now part of
+    // block, so peek must fit both controls invisible exactly where most needed.
+    const heights = detentHeights();
+    expect(heights.peek).toBeGreaterThanOrEqual(200);
   });
 });
