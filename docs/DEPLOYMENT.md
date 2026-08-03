@@ -117,14 +117,29 @@ Expect ~30 distinct days. Far fewer means rate-limited windows — rerun with
 
 ## Secrets and public deploys
 
-**Never expose `SENTINELHUB_INSTANCE_ID` to a public deploy.** The Sentinel Hub
-instance id is itself a WMS access token: it ends up in `manifest.imagery.hd` and
-is therefore visible to anyone using the site, who could then spend your quota.
+**`SENTINELHUB_INSTANCE_ID` must never reach a browser.** The Sentinel Hub
+instance id is itself a bearer token for an entire OGC configuration — the same
+id works against `/ogc/wms`, `/wmts`, `/wcs`, `/wfs` and `/fis`, so a holder can
+enumerate the configuration with GetCapabilities, pull raw raster via WCS and
+statistics via FIS, all billed to your account.
 
-Build public deploys without it — `hd` stays `null` and the before/after swipe
-falls back to keyless NASA GIBS imagery. A `FIRMS_MAP_KEY` is safe to use during
-a refresh (it is only read server-side during the fetch and never written into
-the artifacts), but keep it in a repository secret, never in the repository.
+It is therefore NOT a pipeline input and never appears in `manifest.json`. The
+Worker holds it as a Worker secret and proxies tiles at `/hd`:
+
+```sh
+wrangler secret put SENTINELHUB_INSTANCE_ID
+```
+
+The manifest carries only `imagery.hd.wms_base = "/hd"`, a relative path. The
+pipeline enables the tier with `SENTINELHUB_PROXY=1` — a flag, not a credential
+— so the refresh job (which holds R2 write keys) never sees the Sentinel Hub
+token at all. Without the Worker secret, `/hd` returns 503 and the swipe stays
+on the keyless MODIS tier rather than showing blank tiles.
+
+Keep the CDSE configuration minimal — only the true-colour layer — and set a
+request cap. The proxy pins `service=WMS&request=GetMap` and forwards only
+recognised tile parameters, so it cannot be used to enumerate or mine the
+configuration; the cap is the backstop for plain tile-scraping.
 
 ## Running the whole thing somewhere else
 

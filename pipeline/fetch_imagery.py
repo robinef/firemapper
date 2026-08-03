@@ -37,7 +37,7 @@ MAX_SCARS = 25          # a pickable shortlist per section (active / past)
 ACTIVE_MAX_H = 48       # a fire quiet longer than this counts as a past scar
 
 WMS_BASE = "https://sh.dataspace.copernicus.eu/ogc/wms"
-TRUE_COLOR_LAYER = "TRUE-COLOR-S2L2A"
+TRUE_COLOR_LAYER = "TRUE_COLOR"
 
 # Curated real European megafire scars, always available so the before/after
 # mode has a striking green→black example even with no live past fires (and even
@@ -152,19 +152,31 @@ def build_scars(events: dict, now: datetime, places: list | None = None) -> list
     return active[:MAX_SCARS] + past[:MAX_SCARS]
 
 
-def hd_config(settings) -> dict | None:
-    """CDSE Sentinel-2 10 m HD source, or None when no instance is configured.
+# The browser asks the Worker for HD tiles, never Sentinel Hub directly. The
+# instance id is the bearer token for a whole OGC configuration — GetCapabilities
+# enumerates its layers, WCS returns raw raster, FIS returns statistics — so
+# publishing it in the manifest would hand that access to every visitor, billed
+# to the account. docs/DEPLOYMENT.md has always said never to expose it to a
+# public deploy; this is how the HD tier ships without doing so. The pipeline
+# therefore needs no Sentinel Hub credential at all: it only names the route.
+HD_PROXY_PATH = "/hd"
 
-    Only the OGC INSTANCE id is required — the instance id is itself the access
-    token for Sentinel Hub WMS, so no per-request OAuth. The layer name defaults
-    to TRUE-COLOR-S2L2A but is overridable (SENTINELHUB_LAYER) to match whatever
-    the user named the true-colour layer in their configuration. Per-scar dates
-    stay GIBS-driven; HD just swaps the tile source."""
-    instance = getattr(settings, "sh_instance_id", None)
-    if not instance:
+
+def hd_config(settings) -> dict | None:
+    """Sentinel-2 10 m HD source via the Worker proxy, or None when off.
+
+    Gated on SENTINELHUB_PROXY, a plain flag rather than a secret. The layer
+    name defaults to TRUE_COLOR — the true-colour layer of the "Simple
+    Sentinel-2 L2A template" configuration that .env.example documents. Note
+    that the older TRUE-COLOR-S2L2A default was simply wrong for that template
+    and returned HTTP 400 on every tile, which MapLibre swallows silently (it
+    drops a failed raster tile WITHOUT firing `error`), leaving a blank half.
+    Per-scar dates stay GIBS-driven; HD only swaps the tile source.
+    """
+    if not getattr(settings, "sh_proxy", False):
         return None
     layer = getattr(settings, "sh_layer", None) or TRUE_COLOR_LAYER
-    return {"wms_base": f"{WMS_BASE}/{instance}", "layer": layer}
+    return {"wms_base": HD_PROXY_PATH, "layer": layer}
 
 
 def _dedup_scars(scars: list[dict]) -> list[dict]:

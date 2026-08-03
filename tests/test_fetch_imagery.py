@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 from pipeline.fetch_imagery import (
     BASELINE_LEAD_DAYS,
     MAX_SCARS,
+    HD_PROXY_PATH,
     build_imagery,
+    hd_config,
     build_scars,
 )
 
@@ -77,13 +79,14 @@ def test_build_imagery_keyless_default_and_gated_hd():
     assert cfg["source"] == "gibs" and cfg["hd"] is None
     assert cfg["scars"] and "MODIS" in cfg["gibs_layer"]
 
-    # Only the instance id is required for HD (the id is the WMS access token).
-    hd = build_imagery(_Settings(sh_instance_id="INST"), events, NOW)
-    assert hd["hd"]["wms_base"].endswith("/INST")
-    assert hd["hd"]["layer"] == "TRUE-COLOR-S2L2A"
+    # HD is a flag, not a credential: the Sentinel Hub instance id lives in the
+    # Worker, and the manifest only ever names the proxy path.
+    hd = build_imagery(_Settings(sh_proxy=True), events, NOW)
+    assert hd["hd"]["wms_base"] == HD_PROXY_PATH
+    assert hd["hd"]["layer"] == "TRUE_COLOR"
 
     # Layer name overridable to match the user's configuration.
-    custom = build_imagery(_Settings(sh_instance_id="INST", sh_layer="MY_TC"), events, NOW)
+    custom = build_imagery(_Settings(sh_proxy=True, sh_layer="MY_TC"), events, NOW)
     assert custom["hd"]["layer"] == "MY_TC"
 
 
@@ -134,3 +137,27 @@ def test_equal_size_past_scars_fall_back_to_recency():
     }
     past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
     assert [s["place"] for s in past] == ["Newer", "Older"]
+
+
+def test_hd_config_publishes_a_relative_proxy_base_not_the_instance_id():
+    """The manifest must never carry the Sentinel Hub instance id.
+
+    That id IS the bearer token for the whole configuration — GetCapabilities
+    enumerates its layers, WCS returns raw raster, FIS returns statistics — and
+    docs/DEPLOYMENT.md has always said never to expose it to a public deploy.
+    The browser asks the Worker, which holds the id as a Worker secret."""
+    cfg = hd_config(_Settings(sh_proxy=True, sh_layer="TRUE_COLOR"))
+    assert cfg == {"wms_base": HD_PROXY_PATH, "layer": "TRUE_COLOR"}
+    assert "copernicus" not in cfg["wms_base"]
+
+
+def test_hd_config_off_without_the_flag():
+    assert hd_config(_Settings(sh_proxy=False, sh_layer="TRUE_COLOR")) is None
+
+
+def test_hd_config_needs_no_credential_in_the_pipeline_at_all():
+    """The refresh job holds R2 write credentials. Not needing the Sentinel Hub
+    secret there too is the point: it lives only in the Worker."""
+    s = _Settings(sh_proxy=True)
+    assert not hasattr(s, "sh_instance_id")
+    assert hd_config(s) is not None
