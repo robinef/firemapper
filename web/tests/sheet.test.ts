@@ -204,10 +204,11 @@ describe("sheet", () => {
     expect(releaseCalls).toBe(2);
   });
 
-  it("peek tall enough histogram plus scrubber row", () => {
-    // peek exists to show histogram glance; scrubber row now part of
-    // block, so peek must fit both controls invisible exactly where most needed.
+  it("peek tall enough for histogram plus scrubber row, including sheet padding", () => {
+    // peek exists to show histogram glance; scrubber row now part of the
+    // block. The content box is 12px shorter than this number (.sheet's
+    // border-box padding), so peek must clear content height + that padding.
     const heights = detentHeights();
-    expect(heights.peek).toBeGreaterThanOrEqual(200);
+    expect(heights.peek).toBeGreaterThanOrEqual(212);
   });
 });
