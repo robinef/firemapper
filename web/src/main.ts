@@ -12,7 +12,15 @@ import {
 import { badgeText } from "./freshness";
 import { escapeHtml } from "./escape";
 import { createMap } from "./map";
-import { FIRE_HUE, addActiveFires, fireHaloIds, fireLayerIds } from "./layer_fires";
+import {
+  CLOSED_LAYER_IDS,
+  CLOSED_LEGEND,
+  FIRE_HUE,
+  addActiveFires,
+  addClosedFires,
+  fireHaloIds,
+  fireLayerIds,
+} from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
@@ -88,6 +96,7 @@ async function boot() {
 
     addDaySlice(map); // under the fires: painted when a histogram day is clicked
     addActiveFires(map, events, footprint);
+    addClosedFires(map);
     if (frp) addIntensity(map, frp);
     if (frp) addSpread(map, frp);
     const wind =
@@ -130,6 +139,16 @@ async function boot() {
           ],
           note: "One colour = fire. Bigger dot = more area burned; faded = gone quiet. Zoom in for the outline.",
         },
+      },
+      {
+        key: "closed",
+        freshnessKeys: ["events"],
+        levels: [1, 2] as (1|2)[],
+        label: "Burned out (recent)",
+        question: "Which fires have stopped, and what did they leave?",
+        layerIds: CLOSED_LAYER_IDS,
+        defaultOn: false,
+        legend: CLOSED_LEGEND,
       },
       {
         key: "intensity",
@@ -244,10 +263,12 @@ async function boot() {
     // concurrent `loadTrack` requests racing to render the card.
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
-      ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
     ];
     const HANDLERS: Record<string, (e: maplibregl.MapLayerMouseEvent) => void> = {};
-    for (const id of [...fireHaloIds, ...fireLayerIds, "fire-footprint-fill"]) {
+    for (const id of [
+      ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", ...CLOSED_LAYER_IDS,
+    ]) {
       HANDLERS[id] = fireCard.openFire;
     }
     for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
