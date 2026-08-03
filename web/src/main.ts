@@ -28,7 +28,13 @@ import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
 import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
 import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
-import { addDaySlice, hideDaySlice, setDaySlice } from "./layer_dayslice";
+import {
+  DAY_SLICE_LAYER,
+  addDaySlice,
+  firesInCell,
+  hideDaySlice,
+  setDaySlice,
+} from "./layer_dayslice";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
   ImagerySwipe,
@@ -264,6 +270,9 @@ async function boot() {
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
       ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      // Last: the slice blankets whole regions, so any dot drawn over it must
+      // win the hit test. It is the fallback for "there is no dot here".
+      DAY_SLICE_LAYER,
     ];
     const HANDLERS: Record<string, (e: maplibregl.MapLayerMouseEvent) => void> = {};
     for (const id of [
@@ -281,6 +290,38 @@ async function boot() {
         }
       };
     }
+
+    // Scrub to a day, click where the fire was. This was the obvious route to a
+    // fire that has stopped burning, and it did nothing: the layer had no
+    // handler, and its cells carried only a count. Resolve the clicked hex
+    // against the loaded events instead — which makes closed fires work too.
+    HANDLERS[DAY_SLICE_LAYER] = (ev) => {
+      const cell = ev.features?.[0]?.properties?.cell;
+      if (typeof cell !== "string") return;
+      const hits = firesInCell(events.features, cell);
+      if (hits.length === 1) {
+        fireCard.openFire({
+          features: hits,
+          lngLat: ev.lngLat,
+          point: ev.point,
+        } as unknown as maplibregl.MapLayerMouseEvent);
+        return;
+      }
+      panel.showHtml(renderCellPicker(hits, ev.lngLat));
+      if (hits.length > 1) {
+        for (const b of document.querySelectorAll<HTMLButtonElement>(".cell-pick")) {
+          b.addEventListener("click", () => {
+            const hit = hits.find((f) => String(f.properties?.id) === b.dataset.id);
+            if (!hit) return;
+            fireCard.openFire({
+              features: [hit],
+              lngLat: ev.lngLat,
+              point: ev.point,
+            } as unknown as maplibregl.MapLayerMouseEvent);
+          });
+        }
+      }
+    };
 
     map.on("click", (e) => {
       const layers = CLICK_ORDER.filter((id) => map.getLayer(id));
@@ -531,6 +572,60 @@ function scarFromProps(p: Record<string, unknown>): Scar | null {
     before: p.before as string,
     after: p.after as string,
   };
+}
+
+
+/** Panel shown when a slice hex resolves to something other than one fire.
+ *
+ * Zero is a legitimate outcome, not a failure: slices reach back 30 days but
+ * clustering keeps 14 (events.py WINDOW_DAYS), so an older day genuinely has no
+ * fire record left to open. Saying that plainly beats a click that appears to
+ * do nothing — which is what this whole layer used to do. */
+function renderCellPicker(
+  hits: GeoJSON.Feature[],
+  at: { lng: number; lat: number },
+): string {
+  const where = `${at.lat.toFixed(2)}, ${at.lng.toFixed(2)}`;
+  if (!hits.length) {
+    return (
+      `<button class="panel-close" aria-label="Close">&times;</button>` +
+      `<div class="fc-title">No fire records here</div>` +
+      `<div class="fc-sub">${escapeHtml(where)}</div>` +
+      `<p class="legend-note">Detections were recorded in this area on the day ` +
+      `you picked, but the fires themselves have aged out of the 14-day event ` +
+      `window, so there is no card left to open.</p>`
+    );
+  }
+  const rows = hits
+    .map((f) => {
+      const p = (f.properties ?? {}) as Record<string, unknown>;
+      // GeoJSON stringifies nested props, so `place` arrives as JSON text — and
+      // a bad value here must not throw inside a click handler and swallow the
+      // interaction entirely.
+      let place: string | null = null;
+      if (typeof p.place === "string") {
+        try {
+          place = (JSON.parse(p.place) as { name?: string })?.name ?? null;
+        } catch {
+          place = null;
+        }
+      }
+      const name = place || (typeof p.id === "string" ? `Fire ${p.id.slice(0, 6)}` : "Fire");
+      const started = typeof p.started === "string" ? p.started.slice(0, 10) : "";
+      return (
+        `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
+        `<b>${escapeHtml(String(name))}</b>` +
+        `<span>${escapeHtml(String(p.area_km2 ?? "?"))} km² · ${escapeHtml(started)} · ` +
+        `${escapeHtml(String(p.status ?? ""))}</span></button>`
+      );
+    })
+    .join("");
+  return (
+    `<button class="panel-close" aria-label="Close">&times;</button>` +
+    `<div class="fc-title">${hits.length} fires here</div>` +
+    `<div class="fc-sub">${escapeHtml(where)} · biggest first</div>` +
+    `<div class="cell-picks">${rows}</div>`
+  );
 }
 
 /** Whole days from ISO day `a` to ISO day `b` (negative when b is earlier). */

@@ -352,3 +352,14 @@ body.fire-focus #timeline { right: 356px; }
     left: -21px; width: 44px;
   }
 }
+
+/* Slice-hex picker: a res-5 hex is ~250 km² and often holds several fires. */
+.cell-picks { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.cell-pick {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; padding: 8px 10px; color: var(--fg); font: inherit;
+}
+.cell-pick:hover { background: rgba(255,255,255,.12); border-color: #ff6b00; }
+.cell-pick b { font-size: 13px; }
+.cell-pick span { font-size: 11px; color: var(--muted); }
