@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mountScrubber, STEP_MS } from "../src/scrubber";
+import { emitUi } from "../src/ui_events";
 
 function host() {
   const el = document.createElement("div");
@@ -156,6 +157,34 @@ describe("scrubber", () => {
     // Advance timers: if a second chain were running, onScrub would fire again
     vi.advanceTimersByTime(STEP_MS * 10);
     expect(seen.length).toBe(countAtPause);
+  });
+
+  it("compare:enter stops a playing scrubber", () => {
+    // Compare mode hides every data overlay on purpose; an unattended play
+    // timer must not repaint fire-bin-fill/-line back over the imagery once
+    // that decision has been made.
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    const s = mountScrubber(h, { count: 20, labelFor: label, onScrub: (i) => seen.push(i) });
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    vi.advanceTimersByTime(STEP_MS * 2);
+    expect(s.playing).toBe(true);
+    emitUi("compare:enter");
+    expect(s.playing).toBe(false);
+    const countAtEnter = seen.length;
+    vi.advanceTimersByTime(STEP_MS * 10);
+    expect(seen.length).toBe(countAtEnter);
+  });
+
+  it("destroy unsubscribes from compare:enter", () => {
+    // Otherwise a destroyed scrubber's stop() (closed over removed DOM) keeps
+    // firing for every future compare:enter, and the subscriber set leaks one
+    // entry per fire card opened and closed.
+    const h = host();
+    const s = mountScrubber(h, { count: 20, labelFor: label, onScrub: () => {} });
+    s.destroy();
+    expect(() => emitUi("compare:enter")).not.toThrow();
   });
 
   it("destroy after multiple play clicks stops all timer chains", () => {

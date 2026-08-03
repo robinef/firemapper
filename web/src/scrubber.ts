@@ -1,3 +1,5 @@
+import { onUi } from "./ui_events";
+
 /** One bin per step. Slow enough to read a fire's shape, fast enough that a
  *  30-bin history plays in about 13 seconds. */
 export const STEP_MS = 450;
@@ -94,6 +96,11 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
 
   show(clamp(opts.initialIndex ?? 0));
 
+  // Compare mode hides every data overlay on purpose (fire-bin-fill/-line
+  // included) — an unattended play timer must not repaint them back over
+  // the before/after imagery once that decision has been made.
+  const offCompare = onUi("compare:enter", stop);
+
   return {
     get playing() {
       return timer !== null;
@@ -101,6 +108,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     setIndex: show,
     destroy: () => {
       stop();
+      offCompare();
       row.remove();
     },
     get index() {
