@@ -19,7 +19,7 @@ class Settings:
     eumetsat_secret: str | None
     sh_client_id: str | None
     sh_client_secret: str | None
-    sh_instance_id: str | None
+    sh_proxy: bool
     sh_layer: str | None
     data_dir: Path
     out_dir: Path
@@ -67,7 +67,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         eumetsat_secret=merged.get("EUMETSAT_CONSUMER_SECRET"),
         sh_client_id=merged.get("SENTINELHUB_CLIENT_ID"),
         sh_client_secret=merged.get("SENTINELHUB_CLIENT_SECRET"),
-        sh_instance_id=merged.get("SENTINELHUB_INSTANCE_ID"),
+        sh_proxy=str(merged.get("SENTINELHUB_PROXY", "")).lower() in {"1", "true", "yes"},
         sh_layer=merged.get("SENTINELHUB_LAYER"),
         data_dir=Path(merged.get("DATA_DIR", "data")),
         out_dir=Path(merged.get("OUT_DIR", "web/public/data")),

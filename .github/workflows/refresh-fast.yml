@@ -49,6 +49,13 @@ jobs:
           sha256sum data/places/cities15000.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run python -m scripts.refresh_remote fast
         env:
+          # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
+          # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
+          # id is a bearer token for a whole OGC configuration and lives only in
+          # the Worker (see worker/index.ts and docs/DEPLOYMENT.md). This job
+          # holds R2 write credentials; it has no business holding that one too.
+          SENTINELHUB_PROXY: "1"
+          SENTINELHUB_LAYER: TRUE_COLOR
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
