@@ -1,6 +1,19 @@
 import { mountScrubber, type Scrubber } from "./scrubber";
 import type { TimelineDay } from "./types";
 
+// Keyed on the host element rather than held in a closure so a running
+// scrubber can be found and stopped from the TOP of the next mountTimeline
+// call — before any early return. Without this, a previous render's
+// scrubber.destroy() is never reachable and its play timer keeps firing
+// against a stale closure (stale days/onSelect) after the DOM row that
+// displayed it is long gone.
+const scrubbers = new WeakMap<HTMLElement, Scrubber>();
+
+function teardownScrubber(el: HTMLElement): void {
+  scrubbers.get(el)?.destroy();
+  scrubbers.delete(el);
+}
+
 /**
  * Bottom fire-activity histogram — the archive's time dimension, one bar per
  * day. This is the app's founding question ("are fires accelerating?") made
@@ -56,6 +69,11 @@ export function mountTimeline(
   days: TimelineDay[] | null | undefined,
   opts: TimelineOpts = {},
 ): void {
+  // Must run before every return path, including the early-out ones below:
+  // a prior render's play timer outlives the DOM row that displayed it
+  // (el.innerHTML wipes the row, not the setTimeout chain closed over it).
+  teardownScrubber(el);
+
   if (!days || days.length === 0) {
     el.style.display = "none";
     return;
@@ -160,6 +178,7 @@ export function mountTimeline(
         labelFor: (i) => (barsWrap.children[i] as HTMLElement | undefined)?.dataset.label ?? "",
         onScrub: (i) => select(i, true),
       });
+      scrubbers.set(el, scrubber);
     }
 
     // Track pointerdown state to guard against drag-selection. Record which

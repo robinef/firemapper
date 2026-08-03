@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { mountTimeline, binAtX } from "../src/timeline";
+import { STEP_MS } from "../src/scrubber";
 import type { TimelineDay } from "../src/types";
 
 function days(counts: number[]): TimelineDay[] {
@@ -345,5 +346,33 @@ describe("timeline scrubber wiring", () => {
     mountTimeline(el, days([1, 2, 3]), { onSelect: () => {} });
     mountTimeline(el, days([4, 5, 6]), { onSelect: () => {} });
     expect(el.querySelectorAll(".scrub-range").length).toBe(1);
+  });
+
+  // Regression: firecard.ts mounts a fresh onSelect (closed over that fire's
+  // centroids/cellBins) into the SAME element on every card open. If a
+  // playing scrubber's setTimeout chain outlives the mountTimeline call that
+  // started it, it keeps calling the stale onSelect — repainting fire A's
+  // footprint onto the map while fire B's card is open.
+  it("stops a playing scrubber's timer when the host element is remounted", () => {
+    vi.useFakeTimers();
+    try {
+      const el = document.createElement("div");
+      const firstSeen: number[] = [];
+      const secondSeen: number[] = [];
+
+      mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: (_d, i) => firstSeen.push(i) });
+      (el.querySelector(".scrub-play") as HTMLButtonElement).click();
+      vi.advanceTimersByTime(STEP_MS); // one tick into playback
+
+      mountTimeline(el, days([10, 20, 30, 40, 50]), { onSelect: (_d, i) => secondSeen.push(i) });
+
+      const countAtRemount = firstSeen.length;
+      vi.advanceTimersByTime(STEP_MS * 5); // well past the old scrubber's full run
+
+      expect(firstSeen.length).toBe(countAtRemount); // no further calls to the stale onSelect
+      expect(secondSeen).toEqual([]); // the new mount was never played
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
