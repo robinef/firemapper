@@ -1,4 +1,4 @@
-import { mountScrubber, type Scrubber } from "./scrubber";
+import { mountScrubber, type Scrubber, type ScrubCause } from "./scrubber";
 import type { TimelineDay } from "./types";
 
 // Keyed on the host element rather than held in a closure so a running
@@ -60,8 +60,11 @@ export interface TimelineOpts {
   showTrend?: boolean; // week-over-week badge (only meaningful for daily data)
   partialLast?: boolean; // mark the final bar as still-accumulating
   /** Click a bar to inspect that day/bin — the caller reacts (e.g. locate it
-   *  on the map). */
-  onSelect?: (day: TimelineDay, index: number) => void;
+   *  on the map). `cause` tells a toggling consumer (e.g. day_slice_select)
+   *  whether this is the user's deliberate pick ("select": a bar click or a
+   *  drag) or playback landing on this bin ("step") — only the former should
+   *  ever hide what it just showed. */
+  onSelect?: (day: TimelineDay, index: number, cause: ScrubCause) => void;
   /** Which bin the scrubber starts on. A caller that already painted a bin
    *  other than 0 before mounting (e.g. a fire card opens on the full
    *  footprint) must pass that bin, or the scrubber's label disagrees with
@@ -165,8 +168,11 @@ export function mountTimeline(
 
     /** The single place a selection happens. Bar clicks and slider input both
      *  land here, which is what keeps the two controls in agreement — rather
-     *  than two listeners each trying to mirror the other. */
-    const select = (i: number, fromScrubber = false) => {
+     *  than two listeners each trying to mirror the other. `scrubCause` is
+     *  present only when the scrubber drove this call (a drag or playback);
+     *  a bar click leaves it undefined, which also means the scrubber hasn't
+     *  synced its own position yet and needs setIndex. */
+    const select = (i: number, scrubCause?: ScrubCause) => {
       const bar = barsWrap.children[i] as HTMLElement | undefined;
       if (bar) {
         barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
@@ -174,15 +180,16 @@ export function mountTimeline(
         if (readout) readout.textContent = bar.dataset.label ?? "";
       }
       // setIndex moves the control without calling back, so this cannot loop.
-      if (!fromScrubber) scrubber?.setIndex(i);
-      onSelect(days[i], i);
+      if (!scrubCause) scrubber?.setIndex(i);
+      // A bar click is always a deliberate pick, same as a drag.
+      onSelect(days[i], i, scrubCause ?? "select");
     };
 
     if (days.length > 1) {
       scrubber = mountScrubber(el, {
         count: days.length,
         labelFor: (i) => (barsWrap.children[i] as HTMLElement | undefined)?.dataset.label ?? "",
-        onScrub: (i) => select(i, true),
+        onScrub: (i, cause) => select(i, cause),
         initialIndex,
       });
       scrubbers.set(el, scrubber);

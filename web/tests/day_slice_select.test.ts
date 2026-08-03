@@ -115,4 +115,22 @@ describe("day slice selector", () => {
     await sel.onSelect(day("2026-07-01"), 0);
     expect(sel.shownDay).toBeNull();
   });
+
+  it("a playback step landing on the shown day does not hide it", async () => {
+    // The toggle-off is a deliberate-click behaviour, not a general "same day
+    // again" rule. Playback re-visiting the shown bin (e.g. right after a
+    // click-click that just hid it, then Play is pressed) must always mean
+    // "show this bin" — there's no such thing as the user clicking it via
+    // autoplay, so applying the toggle to a "step" would silently skip it.
+    const sel = createDaySliceSelector(
+      new Set(["2026-07-01"]),
+      async () => [["cellA", 1]],
+      () => {},
+      () => {},
+    );
+    await sel.onSelect(day("2026-07-01"), 0); // deliberate click shows it
+    expect(sel.shownDay).toBe("2026-07-01");
+    await sel.onSelect(day("2026-07-01"), 0, "step"); // playback lands back on it
+    expect(sel.shownDay).toBe("2026-07-01"); // still shown, not toggled off
+  });
 });

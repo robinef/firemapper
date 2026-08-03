@@ -4,10 +4,23 @@ import { onUi } from "./ui_events";
  *  30-bin history plays in about 13 seconds. */
 export const STEP_MS = 450;
 
+/**
+ * Why a bin was handed to onScrub. The scrubber cannot see a consumer's
+ * selection state (e.g. day_slice_select's shownDay) — caching a guess at it
+ * is what caused the regression this type replaces (see git history on
+ * `lastEmitted`). Instead the scrubber tells the truth about what IT knows:
+ * whether this emit is the user picking a bin ("select": a drag) or playback
+ * landing on one ("step": the play button's start or a tick's advance). A
+ * consumer that toggles on repeat selections (day_slice_select) can then
+ * apply that toggle only to "select" — landing on a bin via playback must
+ * always show it, never hide it.
+ */
+export type ScrubCause = "select" | "step";
+
 export interface ScrubberOpts {
   count: number;
   labelFor: (i: number) => string;
-  onScrub: (i: number) => void;
+  onScrub: (i: number, cause: ScrubCause) => void;
   /** Where the control starts. A caller may have already painted a bin other
    *  than 0 before mounting (e.g. a fire card opens on the full footprint) —
    *  the label is this feature's whole point, so it must agree with what's
@@ -27,11 +40,6 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   const last = Math.max(0, opts.count - 1);
   let index = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // The bin most recently handed to onScrub (by any path: tick, a drag, or an
-  // external setIndex sync after a bar click already called onSelect itself).
-  // null until the first emit, since a bar click's own onSelect call never
-  // goes through this scrubber's onScrub — see setIndex below.
-  let lastEmitted: number | null = null;
 
   const row = document.createElement("div");
   row.className = "scrub-row";
@@ -73,8 +81,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
       return; // as a glitch rather than a story
     }
     show(index + 1);
-    opts.onScrub(index);
-    lastEmitted = index;
+    opts.onScrub(index, "step");
     timer = setTimeout(tick, STEP_MS);
   };
 
@@ -87,15 +94,12 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     if (index >= last) show(0);
     // Emit the bin playback starts from — otherwise the first tick's
     // show(index + 1) skips straight past it and a play-from-0 never shows
-    // bin 0 at all, even though the restart-from-end case (above) does.
-    // But skip it when that bin was already handed to onScrub (a drag or a
-    // bar click landed here just before Play was pressed): a toggling
-    // consumer (the overview's day-slice select) would read a repeat of the
-    // bin it's already showing as "click it again" and hide it for one tick.
-    if (lastEmitted !== index) {
-      opts.onScrub(index);
-      lastEmitted = index;
-    }
+    // bin 0 at all, even though the restart-from-end case (above) does. This
+    // must always fire, even if that bin was already handed to onScrub (a
+    // drag or a bar click landed here just before Play was pressed): tagging
+    // it "step" rather than skipping it is what lets a toggling consumer show
+    // the bin instead of reading a repeat as "click it again, hide it".
+    opts.onScrub(index, "step");
     play.textContent = "❚❚";
     play.setAttribute("aria-label", "Pause fire history");
     timer = setTimeout(tick, STEP_MS);
@@ -104,8 +108,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   range.addEventListener("input", () => {
     stop(); // a hand on the slider outranks playback
     show(Number(range.value));
-    opts.onScrub(index);
-    lastEmitted = index;
+    opts.onScrub(index, "select"); // a drag is a deliberate pick, same as a bar click
   });
 
   show(clamp(opts.initialIndex ?? 0));
@@ -115,13 +118,12 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   // the before/after imagery once that decision has been made.
   const offCompare = onUi("compare:enter", stop);
 
-  // A caller uses this to sync a selection it already made itself (a bar
-  // click calls onSelect directly, then this — see timeline.ts's `select`),
-  // so that bin counts as emitted too: Play must not repeat a call the caller
-  // just made through a different door.
+  // A caller uses this to sync the control's position after it already made
+  // a selection itself (a bar click calls onSelect directly, then this — see
+  // timeline.ts's `select`). Move only — never call onScrub, or the caller's
+  // onSelect would fire twice for one click.
   const setIndex = (i: number) => {
     show(i);
-    lastEmitted = index;
   };
 
   return {

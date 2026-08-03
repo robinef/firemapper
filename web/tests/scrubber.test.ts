@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mountScrubber, STEP_MS } from "../src/scrubber";
+import { mountScrubber, STEP_MS, type ScrubCause } from "../src/scrubber";
 import { emitUi, uiSubscriberCount } from "../src/ui_events";
 
 function host() {
@@ -104,38 +104,55 @@ describe("scrubber", () => {
     expect(seen[0]).toBe(0);
   });
 
-  it("does not re-emit a bin already reached by dragging when play starts from it", () => {
-    // Regression: the overview binds onScrub to a TOGGLING onSelect (clicking
-    // the already-shown day hides it). Play always re-emitted its starting
-    // bin, so pressing play right after dragging to bin 2 hid bin 2 for one
-    // 450ms tick before the first real advance repainted bin 3.
+  it("always re-emits the bin play starts from, even if a drag already selected it", () => {
+    // A prior fix skipped this emit whenever the starting bin had already
+    // been handed to onScrub (via a `lastEmitted` cache), on the theory that
+    // a toggling consumer would otherwise read the repeat as "click it
+    // again" and hide it. That cache was a guess at the CONSUMER's display
+    // state, and it went stale the moment a click toggled the bin back off
+    // without the scrubber's knowledge — silently skipping the bin instead of
+    // flickering it. The scrubber cannot know the consumer's state, so it
+    // must always emit and instead tell the truth about the cause: "select"
+    // for a drag, "step" for playback. See day_slice_select.ts for the
+    // consumer-side half of this fix.
     vi.useFakeTimers();
     const h = host();
-    const seen: number[] = [];
-    mountScrubber(h, { count: 5, labelFor: label, onScrub: (i) => seen.push(i) });
+    const seen: Array<[number, ScrubCause]> = [];
+    mountScrubber(h, { count: 5, labelFor: label, onScrub: (i, cause) => seen.push([i, cause]) });
     const range = h.querySelector<HTMLInputElement>(".scrub-range")!;
     range.value = "2";
     range.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(seen).toEqual([2]);
+    expect(seen).toEqual([[2, "select"]]);
     (h.querySelector(".scrub-play") as HTMLButtonElement).click();
-    expect(seen).toEqual([2]); // no immediate re-emit of the bin already shown
+    expect(seen).toEqual([
+      [2, "select"],
+      [2, "step"], // re-emitted, but tagged "step" — not a fresh pick
+    ]);
     vi.advanceTimersByTime(STEP_MS);
-    expect(seen).toEqual([2, 3]); // first tick still advances normally
+    expect(seen).toEqual([
+      [2, "select"],
+      [2, "step"],
+      [3, "step"],
+    ]);
   });
 
-  it("does not re-emit a bin already selected via setIndex when play starts from it", () => {
+  it("always re-emits the bin selected via setIndex when play starts from it", () => {
     // Same guarantee via the other entry point: a bar click calls onSelect
     // itself and only syncs the scrubber's position with setIndex — that
-    // selection is just as "already current" as a drag.
+    // selection is just as "already current" as a drag, and play must still
+    // emit it (tagged "step") rather than assume the caller already handled it.
     vi.useFakeTimers();
     const h = host();
-    const seen: number[] = [];
-    const s = mountScrubber(h, { count: 5, labelFor: label, onScrub: (i) => seen.push(i) });
+    const seen: Array<[number, ScrubCause]> = [];
+    const s = mountScrubber(h, { count: 5, labelFor: label, onScrub: (i, cause) => seen.push([i, cause]) });
     s.setIndex(3);
     (h.querySelector(".scrub-play") as HTMLButtonElement).click();
-    expect(seen).toEqual([]); // nothing emitted yet — bin 3 was already current
+    expect(seen).toEqual([[3, "step"]]); // setIndex itself never calls onScrub — this is play's own emit
     vi.advanceTimersByTime(STEP_MS);
-    expect(seen).toEqual([4]);
+    expect(seen).toEqual([
+      [3, "step"],
+      [4, "step"],
+    ]);
   });
 
   it("a manual drag cancels playback", () => {

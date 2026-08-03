@@ -1,8 +1,9 @@
+import type { ScrubCause } from "./scrubber";
 import type { TimelineDay } from "./types";
 
 export interface DaySliceSelector {
   /** Bind directly as the overview timeline's `onSelect`. */
-  onSelect: (day: TimelineDay, i: number) => Promise<void>;
+  onSelect: (day: TimelineDay, i: number, cause?: ScrubCause) => Promise<void>;
   /** Clear the current selection and disarm any in-flight load, without going
    *  through onSelect — used when something OTHER than a day click needs the
    *  overview state gone (e.g. a fire card opening over it). */
@@ -36,14 +37,21 @@ export function createDaySliceSelector(
     shownDay = null;
   };
 
-  const onSelect = async (d: TimelineDay): Promise<void> => {
+  const onSelect = async (d: TimelineDay, _i: number, cause: ScrubCause = "select"): Promise<void> => {
     // Bump on every call, including the two hide branches below: that is what
     // stops an OLDER in-flight load (from a bin the drag already passed) from
     // resolving after this one and re-painting or re-showing over it.
     const mine = ++token;
     if (shownDay === d.date) {
-      hide();
-      shownDay = null;
+      // Re-picking the shown day is a toggle-off ONLY when it's a deliberate
+      // selection. Playback landing back on this bin (e.g. click it, click it
+      // again to hide it, then press Play) must always mean "show this bin" —
+      // there's no such thing as the user "clicking" a bin via autoplay, so
+      // treating a step as a toggle would silently skip it instead.
+      if (cause === "select") {
+        hide();
+        shownDay = null;
+      }
       return;
     }
     if (!dayDates.has(d.date)) {

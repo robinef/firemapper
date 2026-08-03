@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { mountTimeline, binAtX } from "../src/timeline";
-import { STEP_MS } from "../src/scrubber";
+import { STEP_MS, type ScrubCause } from "../src/scrubber";
 import type { TimelineDay } from "../src/types";
 
 function days(counts: number[]): TimelineDay[] {
@@ -380,6 +380,68 @@ describe("timeline scrubber wiring", () => {
 
       expect(firstSeen.length).toBe(countAtRemount); // no further calls to the stale onSelect
       expect(secondSeen).toEqual([]); // the new mount was never played
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("timeline vs a toggling consumer (day_slice_select-style)", () => {
+  // Mirrors day_slice_select's real rule: re-picking the shown bin hides it,
+  // but ONLY for a deliberate pick ("select" — a bar click or a drag).
+  // Nothing before this test drove a toggling consumer through a real
+  // click-click-then-play sequence, which is exactly the gap that let a
+  // silently-skipped bin regression (17cb709's `lastEmitted`) through: no
+  // test noticed a bin could be shown, then hidden by a second click, then
+  // never come back once Play was pressed.
+  function toggler() {
+    let shown: number | null = null;
+    const onSelect = (_d: TimelineDay, i: number, cause: ScrubCause) => {
+      if (shown === i) {
+        if (cause === "select") shown = null; // toggle-off is a click's meaning, not playback's
+      } else {
+        shown = i;
+      }
+    };
+    return { onSelect, shown: () => shown };
+  }
+
+  function click(bar: HTMLElement) {
+    bar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    bar.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10, button: 0 }));
+  }
+
+  it("clicking the same bar twice still toggles it off (deliberate click)", () => {
+    const el = document.createElement("div");
+    const t = toggler();
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: t.onSelect });
+    const bar = el.querySelector(".tl-bars")!.children[2] as HTMLElement;
+    click(bar);
+    expect(t.shown()).toBe(2);
+    click(bar);
+    expect(t.shown()).toBeNull(); // deliberate re-click must still toggle off
+  });
+
+  it("playback landing on the just-hidden bin shows it, instead of skipping it", () => {
+    vi.useFakeTimers();
+    try {
+      const el = document.createElement("div");
+      const t = toggler();
+      mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: t.onSelect });
+      const bar = el.querySelector(".tl-bars")!.children[2] as HTMLElement;
+      click(bar); // shows bin 2
+      click(bar); // hides it again — a deliberate toggle-off
+      expect(t.shown()).toBeNull();
+
+      (el.querySelector(".scrub-play") as HTMLButtonElement).click();
+      // Playback starts from bin 2 (the scrubber's position tracks the last
+      // click regardless of the consumer's hidden/shown state). It must be
+      // SHOWN the instant playback starts — not left hidden, and not silently
+      // skipped once the first tick fires a moment later.
+      expect(t.shown()).toBe(2);
+
+      vi.advanceTimersByTime(STEP_MS);
+      expect(t.shown()).toBe(3); // playback continues to advance normally
     } finally {
       vi.useRealTimers();
     }
