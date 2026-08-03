@@ -41,6 +41,12 @@ jobs:
             curl -sSfL https://download.geonames.org/export/dump/cities15000.zip -o /tmp/cities.zip
             unzip -o /tmp/cities.zip -d data/places
           }
+          # Logged, not pinned. GeoNames regenerates the archive daily, so a
+          # fixed checksum would fail the refresh within a day; this leaves the
+          # digest in the run record so a swap is auditable after the fact.
+          # load_places() enforces a plausibility floor and refuses a truncated
+          # or wrong file outright.
+          sha256sum data/places/cities15000.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run python -m scripts.refresh_remote fast
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
