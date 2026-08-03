@@ -186,6 +186,12 @@ export function setupFireCard(
   };
 
   const close = () => {
+    // openFire's guard only rechecks openToken after its await, so a track
+    // request kicked off just before this close() (e.g. click fire B, then hit
+    // Escape) is still "current" as far as that guard can tell — close() never
+    // calls open(), so nothing else invalidates it. Bumping here is what makes
+    // that late response a no-op instead of reopening the card just dismissed.
+    openToken++;
     panel.classList.add("hidden");
     panel.innerHTML = "";
     clearBin();
@@ -262,6 +268,12 @@ export function setupFireCard(
     cellBins: [string, string[]][] | null,
     onBeforeAfter: () => void,
   ) => {
+    // Bumped here, not just in openFire: this is the single choke point every
+    // card display goes through (a fresh fire, openScar's synchronous call, or
+    // any future caller), so it's the honest place to invalidate whichever
+    // earlier fire's loadTrack might still be in flight — patching openScar
+    // alone would only cover today's callers, not the next one added.
+    openToken++;
     clearBin();
     onEnter(); // clear any overview state (e.g. a painted day slice)
     panel.innerHTML = html;

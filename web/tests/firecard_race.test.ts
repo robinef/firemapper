@@ -89,4 +89,78 @@ describe("fire card open race", () => {
     expect(panel.innerHTML).toContain("Fire B");
     expect(panel.innerHTML).not.toContain("Fire A");
   });
+
+  function stubMap() {
+    return {
+      getLayer: () => null, getSource: () => null, setPaintProperty: () => {},
+      getPaintProperty: () => 1, on: () => {}, off: () => {}, flyTo: () => {},
+      getCanvas: () => ({ style: {} }),
+    } as unknown as maplibregl.Map;
+  }
+
+  function scarClickEvent(id: string, label: string): maplibregl.MapLayerMouseEvent {
+    return {
+      features: [{
+        properties: {
+          id, label, kind: "past", lat: 10, lon: 20,
+          started: "2020-01-01", before: "2020-01-01", after: "2020-01-05",
+        },
+        geometry: { type: "Point", coordinates: [20, 10] },
+      }],
+      lngLat: { lng: 20, lat: 10 },
+    } as unknown as maplibregl.MapLayerMouseEvent;
+  }
+
+  it("does not let a stale fire track overwrite a scar card opened while it was loading", async () => {
+    const { setupFireCard } = await import("../src/firecard");
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const card = setupFireCard(
+      stubMap(), { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    // Fire A's track is still loading when the user taps a past-scar marker —
+    // openScar renders synchronously, with no track to await.
+    const pA = card.openFire(fireClickEvent("fire-a", "Fire A"));
+    card.openScar(scarClickEvent("scar-1", "Scar One"));
+
+    // Fire A's now-stale response finally lands — it must not win.
+    pendingTracks.get("fire-a")!.resolve({ series: [], cell_bins: null });
+    await pA;
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.innerHTML).toContain("Scar One");
+    expect(panel.innerHTML).not.toContain("Fire A");
+  });
+
+  it("does not let a stale fire track reopen the card after it was closed", async () => {
+    const { setupFireCard } = await import("../src/firecard");
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const card = setupFireCard(
+      stubMap(), { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    // Open fire A fully first, so the scenario is "a card is open, the user
+    // clicks another fire, then dismisses before it resolves" rather than
+    // starting from nothing.
+    const pA = card.openFire(fireClickEvent("fire-a", "Fire A"));
+    pendingTracks.get("fire-a")!.resolve({ series: [], cell_bins: null });
+    await pA;
+    expect(document.getElementById("panel")!.innerHTML).toContain("Fire A");
+
+    // Fire B's track is in flight when the user hits Escape (or taps the
+    // background) before it lands.
+    const pB = card.openFire(fireClickEvent("fire-b", "Fire B"));
+    card.close();
+
+    pendingTracks.get("fire-b")!.resolve({ series: [], cell_bins: null });
+    await pB;
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.classList.contains("hidden")).toBe(true);
+    expect(panel.innerHTML).toBe("");
+  });
 });
