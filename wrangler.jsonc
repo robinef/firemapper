@@ -17,7 +17,12 @@
     // "**" is required, not "*": generation paths nest
     // (/data/gen-<ts>/tracks/<id>.json) and a single-segment glob left them to
     // the asset layer, which answered HEAD probes with 503.
-    "run_worker_first": ["/data/**"]
+    // /hd is the Sentinel Hub tile proxy (worker/index.ts). Without it here the
+    // asset layer answers every tile with index.html and a 200 — and MapLibre
+    // discards a non-image raster tile WITHOUT firing `error`, so the compare
+    // mode goes blank with nothing in the console. Any new Worker route must be
+    // added here too; web/tests/wrangler_routes.test.ts enforces that.
+    "run_worker_first": ["/data/**", "/hd"]
   },
   "r2_buckets": [
     { "binding": "DATA", "bucket_name": "firemapper-data" }
