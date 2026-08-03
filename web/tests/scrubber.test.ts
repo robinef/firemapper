@@ -104,6 +104,40 @@ describe("scrubber", () => {
     expect(seen[0]).toBe(0);
   });
 
+  it("does not re-emit a bin already reached by dragging when play starts from it", () => {
+    // Regression: the overview binds onScrub to a TOGGLING onSelect (clicking
+    // the already-shown day hides it). Play always re-emitted its starting
+    // bin, so pressing play right after dragging to bin 2 hid bin 2 for one
+    // 450ms tick before the first real advance repainted bin 3.
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    mountScrubber(h, { count: 5, labelFor: label, onScrub: (i) => seen.push(i) });
+    const range = h.querySelector<HTMLInputElement>(".scrub-range")!;
+    range.value = "2";
+    range.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(seen).toEqual([2]);
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    expect(seen).toEqual([2]); // no immediate re-emit of the bin already shown
+    vi.advanceTimersByTime(STEP_MS);
+    expect(seen).toEqual([2, 3]); // first tick still advances normally
+  });
+
+  it("does not re-emit a bin already selected via setIndex when play starts from it", () => {
+    // Same guarantee via the other entry point: a bar click calls onSelect
+    // itself and only syncs the scrubber's position with setIndex — that
+    // selection is just as "already current" as a drag.
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    const s = mountScrubber(h, { count: 5, labelFor: label, onScrub: (i) => seen.push(i) });
+    s.setIndex(3);
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    expect(seen).toEqual([]); // nothing emitted yet — bin 3 was already current
+    vi.advanceTimersByTime(STEP_MS);
+    expect(seen).toEqual([4]);
+  });
+
   it("a manual drag cancels playback", () => {
     vi.useFakeTimers();
     const h = host();

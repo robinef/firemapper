@@ -27,6 +27,11 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   const last = Math.max(0, opts.count - 1);
   let index = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // The bin most recently handed to onScrub (by any path: tick, a drag, or an
+  // external setIndex sync after a bar click already called onSelect itself).
+  // null until the first emit, since a bar click's own onSelect call never
+  // goes through this scrubber's onScrub — see setIndex below.
+  let lastEmitted: number | null = null;
 
   const row = document.createElement("div");
   row.className = "scrub-row";
@@ -69,6 +74,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     }
     show(index + 1);
     opts.onScrub(index);
+    lastEmitted = index;
     timer = setTimeout(tick, STEP_MS);
   };
 
@@ -82,7 +88,14 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     // Emit the bin playback starts from — otherwise the first tick's
     // show(index + 1) skips straight past it and a play-from-0 never shows
     // bin 0 at all, even though the restart-from-end case (above) does.
-    opts.onScrub(index);
+    // But skip it when that bin was already handed to onScrub (a drag or a
+    // bar click landed here just before Play was pressed): a toggling
+    // consumer (the overview's day-slice select) would read a repeat of the
+    // bin it's already showing as "click it again" and hide it for one tick.
+    if (lastEmitted !== index) {
+      opts.onScrub(index);
+      lastEmitted = index;
+    }
     play.textContent = "❚❚";
     play.setAttribute("aria-label", "Pause fire history");
     timer = setTimeout(tick, STEP_MS);
@@ -92,6 +105,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     stop(); // a hand on the slider outranks playback
     show(Number(range.value));
     opts.onScrub(index);
+    lastEmitted = index;
   });
 
   show(clamp(opts.initialIndex ?? 0));
@@ -101,11 +115,20 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
   // the before/after imagery once that decision has been made.
   const offCompare = onUi("compare:enter", stop);
 
+  // A caller uses this to sync a selection it already made itself (a bar
+  // click calls onSelect directly, then this — see timeline.ts's `select`),
+  // so that bin counts as emitted too: Play must not repeat a call the caller
+  // just made through a different door.
+  const setIndex = (i: number) => {
+    show(i);
+    lastEmitted = index;
+  };
+
   return {
     get playing() {
       return timer !== null;
     },
-    setIndex: show,
+    setIndex,
     destroy: () => {
       stop();
       offCompare();
