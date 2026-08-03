@@ -171,6 +171,21 @@ def prune_remote(settings: Settings, client, keep: int = 3) -> None:
         if key[len(DATA_PREFIX):].startswith("gen-")
     })
     for old in generations[:-keep] if len(generations) > keep else []:
-        for key in _keys(client, bucket, f"{DATA_PREFIX}{old}/"):
-            client.delete_object(Bucket=bucket, Key=key)
-        client.delete_object(Bucket=bucket, Key=archive_key(old))
+        doomed = _keys(client, bucket, f"{DATA_PREFIX}{old}/")
+        doomed.append(archive_key(old))
+        _delete_many(client, bucket, doomed)
+
+
+# S3 and R2 accept up to 1000 keys per delete_objects call. A generation is
+# ~8000 objects, so deleting one key per call is ~8000 round trips — minutes
+# per generation, hours for a backlog.
+DELETE_BATCH = 1000
+
+
+def _delete_many(client, bucket: str, keys: list[str]) -> int:
+    deleted = 0
+    for i in range(0, len(keys), DELETE_BATCH):
+        batch = keys[i : i + DELETE_BATCH]
+        client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in batch]})
+        deleted += len(batch)
+    return deleted

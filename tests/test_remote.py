@@ -31,6 +31,8 @@ class FakeS3:
         self.fail_on = fail_on
         self.put_order: list[str] = []
         self.deleted: list[str] = []
+        self.batch_delete_calls = 0
+        self.single_delete_calls = 0
 
     def get_object(self, Bucket, Key):
         if Key not in self.objects:
@@ -61,8 +63,18 @@ class FakeS3:
         return out
 
     def delete_object(self, Bucket, Key):
+        self.single_delete_calls += 1
         self.deleted.append(Key)
         self.objects.pop(Key, None)
+
+    def delete_objects(self, Bucket, Delete):
+        keys = [o["Key"] for o in Delete.get("Objects", [])]
+        assert len(keys) <= 1000, "S3 rejects a delete_objects batch over 1000"
+        self.batch_delete_calls += 1
+        for k in keys:
+            self.deleted.append(k)
+            self.objects.pop(k, None)
+        return {"Deleted": [{"Key": k} for k in keys]}
 
 
 def _settings(tmp_path: Path):
@@ -270,3 +282,27 @@ def test_prune_sees_generations_beyond_the_first_page(tmp_path):
     assert remaining == ["gen-3", "gen-4", "gen-5"]
     assert archive_key("gen-0") not in fake.objects
     assert archive_key("gen-5") in fake.objects
+
+
+def test_prune_deletes_in_batches_not_one_call_per_object(tmp_path):
+    """A stale generation is ~8000 objects. One delete_object call each is
+    ~100ms of round trip apiece — hours for a real backlog. S3 and R2 take up
+    to 1000 keys per delete_objects call."""
+    settings = _settings(tmp_path)
+    objects = {}
+    for g in range(4):
+        for i in range(1200):
+            objects[f"data/gen-{g}/tracks/e{i:05d}.json"] = b"{}"
+        objects[archive_key(f"gen-{g}")] = b"P"
+
+    fake = FakeS3(objects)
+    prune_remote(settings, fake, keep=3)
+
+    # gen-0's 1200 objects + its archive, in batches — not 1201 single calls
+    assert fake.batch_delete_calls > 0
+    assert fake.single_delete_calls == 0
+    remaining = sorted({
+        k[len("data/"):].split("/")[0] for k in fake.objects if k.startswith("data/gen-")
+    })
+    assert remaining == ["gen-1", "gen-2", "gen-3"]
+    assert archive_key("gen-0") not in fake.objects
