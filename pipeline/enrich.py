@@ -11,16 +11,42 @@ from .metrics import haversine_m
 _NS = {"gdacs": "http://www.gdacs.org", "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#"}
 
 
-def load_places(path: Path) -> list[dict]:
+# Europe alone has thousands of settlements over 15k people in the GeoNames
+# extract. A parse yielding fewer than this is a truncated, swapped or
+# half-downloaded file, not a real gazetteer. The download is unpinned by
+# necessity — GeoNames regenerates the archive daily, so a fixed checksum would
+# take the refresh down within a day — which makes a plausibility floor the
+# integrity check that actually holds.
+MIN_PLACES = 500
+
+
+def load_places(path: Path, min_places: int = 0) -> list[dict]:
+    """European settlements from a GeoNames cities extract.
+
+    Malformed rows are skipped rather than fatal: this is a multi-megabyte
+    third-party download, and one bad line should cost one city, not the whole
+    refresh. `min_places` is the opposite guard — pass it at the call site to
+    refuse a file too small to be the real thing, LOUDLY, because silently
+    returning nothing here just renames every fire to "Fire · <date>" and that
+    went unnoticed for weeks.
+    """
     lon_min, lat_min, lon_max, lat_max = EUROPE_BBOX
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         cols = line.split("\t")
         if len(cols) < 6:
             continue
-        lat, lon = float(cols[4]), float(cols[5])
+        try:
+            lat, lon = float(cols[4]), float(cols[5])
+        except ValueError:
+            continue  # one unparseable row, not a reason to lose the gazetteer
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
             out.append({"name": cols[1], "lat": lat, "lon": lon})
+    if len(out) < min_places:
+        raise ValueError(
+            f"implausible gazetteer: {len(out)} European places parsed from {path} "
+            f"(expected at least {min_places}) — truncated or wrong file"
+        )
     return out
 
 
