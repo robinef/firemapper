@@ -319,6 +319,15 @@ describe("timeline scrubber wiring", () => {
     expect(el.querySelector(".scrub-range")).toBeNull();
   });
 
+  it("starts the scrubber at initialIndex instead of bin 0", () => {
+    // A caller that already painted a bin other than 0 before mounting (a
+    // fire card opening on the full footprint) must have the control agree,
+    // or its label claims bin 0 while the map shows something else.
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: () => {}, initialIndex: 4 });
+    expect(el.querySelector<HTMLInputElement>(".scrub-range")!.value).toBe("4");
+  });
+
   it("moves the slider when a bar is clicked", () => {
     const el = document.createElement("div");
     mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: () => {} });

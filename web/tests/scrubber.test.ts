@@ -66,9 +66,30 @@ describe("scrubber", () => {
     const s = mountScrubber(h, { count: 4, labelFor: label, onScrub: (i) => seen.push(i) });
     (h.querySelector(".scrub-play") as HTMLButtonElement).click();
     vi.advanceTimersByTime(STEP_MS * 10); // well past the end
-    expect(seen).toEqual([1, 2, 3]);
+    // Play must emit the bin it starts from (0) as well as every bin it
+    // advances through, so a play-from-0 shows the same growth story as the
+    // restart-from-end case below, rather than skipping straight to bin 1.
+    expect(seen).toEqual([0, 1, 2, 3]);
     expect(s.playing).toBe(false);
     expect(s.index).toBe(3);
+  });
+
+  it("starts at the given initialIndex instead of bin 0", () => {
+    const h = host();
+    const s = mountScrubber(h, { count: 5, labelFor: label, onScrub: () => {}, initialIndex: 4 });
+    expect(s.index).toBe(4);
+    expect(h.querySelector<HTMLInputElement>(".scrub-range")!.value).toBe("4");
+    expect(h.querySelector(".scrub-label")!.textContent).toBe("bin 4");
+  });
+
+  it("playing from a non-zero initialIndex emits that bin first", () => {
+    vi.useFakeTimers();
+    const h = host();
+    const seen: number[] = [];
+    mountScrubber(h, { count: 5, labelFor: label, onScrub: (i) => seen.push(i), initialIndex: 2 });
+    (h.querySelector(".scrub-play") as HTMLButtonElement).click();
+    vi.advanceTimersByTime(STEP_MS * 10);
+    expect(seen).toEqual([2, 3, 4]);
   });
 
   it("restarts from the beginning when played from the last bin", () => {

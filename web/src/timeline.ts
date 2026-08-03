@@ -62,6 +62,11 @@ export interface TimelineOpts {
   /** Click a bar to inspect that day/bin — the caller reacts (e.g. locate it
    *  on the map). */
   onSelect?: (day: TimelineDay, index: number) => void;
+  /** Which bin the scrubber starts on. A caller that already painted a bin
+   *  other than 0 before mounting (e.g. a fire card opens on the full
+   *  footprint) must pass that bin, or the scrubber's label disagrees with
+   *  what's already on the map. Defaults to 0. */
+  initialIndex?: number;
 }
 
 export function mountTimeline(
@@ -94,6 +99,7 @@ export function mountTimeline(
     showTrend = true,
     partialLast = true,
     onSelect,
+    initialIndex = 0,
   } = opts;
   el.style.display = "";
   const max = Math.max(1, ...days.map((d) => d.count));
@@ -177,6 +183,7 @@ export function mountTimeline(
         count: days.length,
         labelFor: (i) => (barsWrap.children[i] as HTMLElement | undefined)?.dataset.label ?? "",
         onScrub: (i) => select(i, true),
+        initialIndex,
       });
       scrubbers.set(el, scrubber);
     }

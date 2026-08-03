@@ -6,6 +6,12 @@ export interface ScrubberOpts {
   count: number;
   labelFor: (i: number) => string;
   onScrub: (i: number) => void;
+  /** Where the control starts. A caller may have already painted a bin other
+   *  than 0 before mounting (e.g. a fire card opens on the full footprint) —
+   *  the label is this feature's whole point, so it must agree with what's
+   *  already on screen instead of defaulting to a bin nothing shows.
+   *  Defaults to 0 (the overview histogram is unaffected). */
+  initialIndex?: number;
 }
 
 export interface Scrubber {
@@ -70,10 +76,11 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
       return;
     }
     // Playing from the end would otherwise do nothing at all.
-    if (index >= last) {
-      show(0);
-      opts.onScrub(0);
-    }
+    if (index >= last) show(0);
+    // Emit the bin playback starts from — otherwise the first tick's
+    // show(index + 1) skips straight past it and a play-from-0 never shows
+    // bin 0 at all, even though the restart-from-end case (above) does.
+    opts.onScrub(index);
     play.textContent = "❚❚";
     play.setAttribute("aria-label", "Pause fire history");
     timer = setTimeout(tick, STEP_MS);
@@ -85,7 +92,7 @@ export function mountScrubber(host: HTMLElement, opts: ScrubberOpts): Scrubber {
     opts.onScrub(index);
   });
 
-  show(0);
+  show(clamp(opts.initialIndex ?? 0));
 
   return {
     get playing() {

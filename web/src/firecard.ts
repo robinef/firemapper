@@ -273,6 +273,10 @@ export function setupFireCard(
     dim(id);
     if (fireSeries) {
       let onSelect: ((d: TimelineDay, i: number) => void) | undefined;
+      // Only the footprint branch below paints anything before the scrubber
+      // mounts; a series with no cell bins never desyncs, so it keeps the
+      // control's default of bin 0.
+      let initialIndex = 0;
       if (centroids && cellBins && cellBins.length) {
         // Arrival index per cell (the bin it first appeared in) → normalised t.
         const nb = cellBins.length;
@@ -292,6 +296,9 @@ export function setupFireCard(
           markBin(centroids, i);
         };
         renderUpto(nb - 1); // show the full arrival footprint on open
+        // The map above just painted the finished fire — the scrubber must
+        // agree, or its label claims bin 0 while the map shows the end state.
+        initialIndex = fireSeries.length - 1;
       }
       mountTimeline(timelineEl, fireSeries, {
         title: "This fire · new burned cells / 6 h",
@@ -299,6 +306,7 @@ export function setupFireCard(
         showTrend: false,
         partialLast: false,
         onSelect,
+        initialIndex,
       });
     } else {
       mountOverview();
