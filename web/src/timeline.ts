@@ -1,4 +1,18 @@
+import { mountScrubber, type Scrubber, type ScrubCause } from "./scrubber";
 import type { TimelineDay } from "./types";
+
+// Keyed on the host element rather than held in a closure so a running
+// scrubber can be found and stopped from the TOP of the next mountTimeline
+// call — before any early return. Without this, a previous render's
+// scrubber.destroy() is never reachable and its play timer keeps firing
+// against a stale closure (stale days/onSelect) after the DOM row that
+// displayed it is long gone.
+const scrubbers = new WeakMap<HTMLElement, Scrubber>();
+
+function teardownScrubber(el: HTMLElement): void {
+  scrubbers.get(el)?.destroy();
+  scrubbers.delete(el);
+}
 
 /**
  * Bottom fire-activity histogram — the archive's time dimension, one bar per
@@ -46,8 +60,16 @@ export interface TimelineOpts {
   showTrend?: boolean; // week-over-week badge (only meaningful for daily data)
   partialLast?: boolean; // mark the final bar as still-accumulating
   /** Click a bar to inspect that day/bin — the caller reacts (e.g. locate it
-   *  on the map). */
-  onSelect?: (day: TimelineDay, index: number) => void;
+   *  on the map). `cause` tells a toggling consumer (e.g. day_slice_select)
+   *  whether this is the user's deliberate pick ("select": a bar click or a
+   *  drag) or playback landing on this bin ("step") — only the former should
+   *  ever hide what it just showed. */
+  onSelect?: (day: TimelineDay, index: number, cause: ScrubCause) => void;
+  /** Which bin the scrubber starts on. A caller that already painted a bin
+   *  other than 0 before mounting (e.g. a fire card opens on the full
+   *  footprint) must pass that bin, or the scrubber's label disagrees with
+   *  what's already on the map. Defaults to 0. */
+  initialIndex?: number;
 }
 
 export function mountTimeline(
@@ -55,6 +77,11 @@ export function mountTimeline(
   days: TimelineDay[] | null | undefined,
   opts: TimelineOpts = {},
 ): void {
+  // Must run before every return path, including the early-out ones below:
+  // a prior render's play timer outlives the DOM row that displayed it
+  // (el.innerHTML wipes the row, not the setTimeout chain closed over it).
+  teardownScrubber(el);
+
   if (!days || days.length === 0) {
     el.style.display = "none";
     return;
@@ -75,6 +102,7 @@ export function mountTimeline(
     showTrend = true,
     partialLast = true,
     onSelect,
+    initialIndex = 0,
   } = opts;
   el.style.display = "";
   const max = Math.max(1, ...days.map((d) => d.count));
@@ -136,6 +164,37 @@ export function mountTimeline(
   if (onSelect) {
     barsWrap.style.cursor = "pointer";
 
+    let scrubber: Scrubber | null = null;
+
+    /** The single place a selection happens. Bar clicks and slider input both
+     *  land here, which is what keeps the two controls in agreement — rather
+     *  than two listeners each trying to mirror the other. `scrubCause` is
+     *  present only when the scrubber drove this call (a drag or playback);
+     *  a bar click leaves it undefined, which also means the scrubber hasn't
+     *  synced its own position yet and needs setIndex. */
+    const select = (i: number, scrubCause?: ScrubCause) => {
+      const bar = barsWrap.children[i] as HTMLElement | undefined;
+      if (bar) {
+        barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
+        bar.classList.add("tl-sel");
+        if (readout) readout.textContent = bar.dataset.label ?? "";
+      }
+      // setIndex moves the control without calling back, so this cannot loop.
+      if (!scrubCause) scrubber?.setIndex(i);
+      // A bar click is always a deliberate pick, same as a drag.
+      onSelect(days[i], i, scrubCause ?? "select");
+    };
+
+    if (days.length > 1) {
+      scrubber = mountScrubber(el, {
+        count: days.length,
+        labelFor: (i) => (barsWrap.children[i] as HTMLElement | undefined)?.dataset.label ?? "",
+        onScrub: (i, cause) => select(i, cause),
+        initialIndex,
+      });
+      scrubbers.set(el, scrubber);
+    }
+
     // Track pointerdown state to guard against drag-selection. Record which
     // pointer and target started the gesture; only fire onSelect if it ends
     // on the same pointer without significant movement (mimicking click semantics).
@@ -188,13 +247,7 @@ export function mountTimeline(
         i = binAtX(e.clientX - rect.left, rect.width, days.length);
       }
 
-      const bar = barsWrap.children[i] as HTMLElement;
-      if (bar) {
-        barsWrap.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel"));
-        bar.classList.add("tl-sel");
-        if (readout) readout.textContent = bar.dataset.label ?? "";
-      }
-      onSelect(days[i], i);
+      select(i);
 
       pointerDownState = null; // Consumed gesture.
     });

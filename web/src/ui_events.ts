@@ -22,6 +22,13 @@ export function onUi(event: UiEvent, fn: () => void): () => void {
   return () => set.delete(fn);
 }
 
+/** Test-only introspection: lets a leak/unsubscribe test assert on the
+ *  subscriber count directly instead of on a side effect that can't
+ *  distinguish "never subscribed" from "subscribed and never unsubscribed". */
+export function uiSubscriberCount(event: UiEvent): number {
+  return subscribers.get(event)?.size ?? 0;
+}
+
 export function emitUi(event: UiEvent): void {
   for (const fn of subscribers.get(event) ?? []) {
     // One bad subscriber must not stop the others: the sheet and any future

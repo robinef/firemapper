@@ -39,12 +39,15 @@ export interface Sheet {
 export function detentHeights(): Record<Detent, number> {
   const vh = window.innerHeight || 800;
   // peek exists to show the histogram — that's the one thing a glance at the
-  // collapsed sheet is for. Measured at 375px: handle ~28 + gap 8 +
-  // .tl-head (wraps to 2 lines) ~34 + gap 5 + .tl-bars 54 + gap 5 +
-  // .tl-axis ~14 ≈ 148px of real content. 100 sliced the bars and the date
-  // axis off entirely; 150 clears the measured content with a few px to
-  // spare instead of also trimming the axis/readout at this one detent.
-  return { peek: 150, half: Math.round(vh * 0.5), full: Math.round(vh * 0.88) };
+  // map should never earn. Since scrubber row sits in the same block, peek must
+  // fit both bars, axis, and the row control. Measured at 375px: handle ~28 +
+  // gap 8 + .tl-head (wraps to 2 lines) ~34 + gap 5 + .tl-bars 54 + gap 5 +
+  // .tl-axis ~14 + gap 5 + scrubber row's own 2px margin-top + ~44 ≈ 199px of
+  // real content. `* { box-sizing: border-box }` plus .sheet's `padding: 0
+  // 12px 12px` (style.css) eats 12px of whatever height is set here, so the
+  // content box at peek is 12px shorter than this number — 212 is what
+  // actually leaves a few px spare, not 200.
+  return { peek: 212, half: Math.round(vh * 0.5), full: Math.round(vh * 0.88) };
 }
 
 /**

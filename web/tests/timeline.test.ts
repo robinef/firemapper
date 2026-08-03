@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { mountTimeline, binAtX } from "../src/timeline";
+import { STEP_MS, type ScrubCause } from "../src/scrubber";
 import type { TimelineDay } from "../src/types";
 
 function days(counts: number[]): TimelineDay[] {
@@ -302,5 +303,147 @@ describe("timeline pointer interactions", () => {
     // In jsdom with zero-width container, binAtX(10, 0, 3) returns 0.
     expect(onSelect.called).toBe(1);
     expect(onSelect.lastIndex).toBe(0);
+  });
+});
+
+describe("timeline scrubber wiring", () => {
+  it("renders a scrubber when the caller can select", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4]), { onSelect: () => {} });
+    expect(el.querySelector(".scrub-range")).not.toBeNull();
+  });
+
+  it("renders no scrubber when there is nothing to select", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3]), {}); // no onSelect
+    expect(el.querySelector(".scrub-range")).toBeNull();
+  });
+
+  it("starts the scrubber at initialIndex instead of bin 0", () => {
+    // A caller that already painted a bin other than 0 before mounting (a
+    // fire card opening on the full footprint) must have the control agree,
+    // or its label claims bin 0 while the map shows something else.
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: () => {}, initialIndex: 4 });
+    expect(el.querySelector<HTMLInputElement>(".scrub-range")!.value).toBe("4");
+  });
+
+  it("moves the slider when a bar is clicked", () => {
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: () => {} });
+    const bars = el.querySelector(".tl-bars")!;
+    const bar = bars.children[3] as HTMLElement;
+    bar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    bar.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10, button: 0 }));
+    expect(el.querySelector<HTMLInputElement>(".scrub-range")!.value).toBe("3");
+  });
+
+  it("highlights the bar when the slider moves, and selects exactly once", () => {
+    const el = document.createElement("div");
+    const seen: number[] = [];
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: (_d, i) => seen.push(i) });
+    const range = el.querySelector<HTMLInputElement>(".scrub-range")!;
+    range.value = "2";
+    range.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(seen).toEqual([2]); // once, not twice via re-entry
+    expect((el.querySelector(".tl-bars")!.children[2] as HTMLElement).classList.contains("tl-sel")).toBe(true);
+  });
+
+  it("re-mounting replaces the scrubber rather than stacking one per render", () => {
+    // firecard.ts re-renders this same element on every fire card open.
+    const el = document.createElement("div");
+    mountTimeline(el, days([1, 2, 3]), { onSelect: () => {} });
+    mountTimeline(el, days([4, 5, 6]), { onSelect: () => {} });
+    expect(el.querySelectorAll(".scrub-range").length).toBe(1);
+  });
+
+  // Regression: firecard.ts mounts a fresh onSelect (closed over that fire's
+  // centroids/cellBins) into the SAME element on every card open. If a
+  // playing scrubber's setTimeout chain outlives the mountTimeline call that
+  // started it, it keeps calling the stale onSelect — repainting fire A's
+  // footprint onto the map while fire B's card is open.
+  it("stops a playing scrubber's timer when the host element is remounted", () => {
+    vi.useFakeTimers();
+    try {
+      const el = document.createElement("div");
+      const firstSeen: number[] = [];
+      const secondSeen: number[] = [];
+
+      mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: (_d, i) => firstSeen.push(i) });
+      (el.querySelector(".scrub-play") as HTMLButtonElement).click();
+      vi.advanceTimersByTime(STEP_MS); // one tick into playback
+
+      mountTimeline(el, days([10, 20, 30, 40, 50]), { onSelect: (_d, i) => secondSeen.push(i) });
+
+      const countAtRemount = firstSeen.length;
+      vi.advanceTimersByTime(STEP_MS * 5); // well past the old scrubber's full run
+
+      expect(firstSeen.length).toBe(countAtRemount); // no further calls to the stale onSelect
+      expect(secondSeen).toEqual([]); // the new mount was never played
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("timeline vs a toggling consumer (day_slice_select-style)", () => {
+  // Mirrors day_slice_select's real rule: re-picking the shown bin hides it,
+  // but ONLY for a deliberate pick ("select" — a bar click or a drag).
+  // Nothing before this test drove a toggling consumer through a real
+  // click-click-then-play sequence, which is exactly the gap that let a
+  // silently-skipped bin regression (17cb709's `lastEmitted`) through: no
+  // test noticed a bin could be shown, then hidden by a second click, then
+  // never come back once Play was pressed.
+  function toggler() {
+    let shown: number | null = null;
+    const onSelect = (_d: TimelineDay, i: number, cause: ScrubCause) => {
+      if (shown === i) {
+        if (cause === "select") shown = null; // toggle-off is a click's meaning, not playback's
+      } else {
+        shown = i;
+      }
+    };
+    return { onSelect, shown: () => shown };
+  }
+
+  function click(bar: HTMLElement) {
+    bar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    bar.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10, button: 0 }));
+  }
+
+  it("clicking the same bar twice still toggles it off (deliberate click)", () => {
+    const el = document.createElement("div");
+    const t = toggler();
+    mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: t.onSelect });
+    const bar = el.querySelector(".tl-bars")!.children[2] as HTMLElement;
+    click(bar);
+    expect(t.shown()).toBe(2);
+    click(bar);
+    expect(t.shown()).toBeNull(); // deliberate re-click must still toggle off
+  });
+
+  it("playback landing on the just-hidden bin shows it, instead of skipping it", () => {
+    vi.useFakeTimers();
+    try {
+      const el = document.createElement("div");
+      const t = toggler();
+      mountTimeline(el, days([1, 2, 3, 4, 5]), { onSelect: t.onSelect });
+      const bar = el.querySelector(".tl-bars")!.children[2] as HTMLElement;
+      click(bar); // shows bin 2
+      click(bar); // hides it again — a deliberate toggle-off
+      expect(t.shown()).toBeNull();
+
+      (el.querySelector(".scrub-play") as HTMLButtonElement).click();
+      // Playback starts from bin 2 (the scrubber's position tracks the last
+      // click regardless of the consumer's hidden/shown state). It must be
+      // SHOWN the instant playback starts — not left hidden, and not silently
+      // skipped once the first tick fires a moment later.
+      expect(t.shown()).toBe(2);
+
+      vi.advanceTimersByTime(STEP_MS);
+      expect(t.shown()).toBe(3); // playback continues to advance normally
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

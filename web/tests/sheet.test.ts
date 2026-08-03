@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it } from "vitest";
-import { createSheet, projectDetent } from "../src/sheet";
+import { createSheet, detentHeights, projectDetent } from "../src/sheet";
 import { emitUi } from "../src/ui_events";
 
 const HEIGHTS = { peek: 100, half: 400, full: 700 };
@@ -202,5 +202,13 @@ describe("sheet", () => {
     expect(sheet.detent).toBe("peek");
     expect(setCalls).toBe(2);
     expect(releaseCalls).toBe(2);
+  });
+
+  it("peek tall enough for histogram plus scrubber row, including sheet padding", () => {
+    // peek exists to show histogram glance; scrubber row now part of the
+    // block. The content box is 12px shorter than this number (.sheet's
+    // border-box padding), so peek must clear content height + that padding.
+    const heights = detentHeights();
+    expect(heights.peek).toBeGreaterThanOrEqual(212);
   });
 });
