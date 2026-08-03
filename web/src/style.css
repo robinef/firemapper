@@ -363,3 +363,26 @@ body.fire-focus #timeline { right: 356px; }
 .cell-pick:hover { background: rgba(255,255,255,.12); border-color: #ff6b00; }
 .cell-pick b { font-size: 13px; }
 .cell-pick span { font-size: 11px; color: var(--muted); }
+
+/* "Find a fire" — the search entry point in the left rail. */
+#find-fire {
+  background: var(--panel); color: var(--fg); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 10px; padding: 9px 12px; cursor: pointer; font: inherit; font-size: 13px;
+  text-align: left; box-shadow: 0 2px 12px rgba(0,0,0,.45);
+}
+#find-fire:hover { border-color: #ff6b00; color: #ffcf8f; }
+.fl-search {
+  width: 100%; margin-top: 12px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+  color: var(--fg); font: inherit; font-size: 13px;
+}
+.fl-search:focus { outline: none; border-color: #ff6b00; }
+.fl-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.fl-row {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; padding: 8px 10px; color: var(--fg); font: inherit;
+}
+.fl-row:hover { background: rgba(255,255,255,.12); border-color: #ff6b00; }
+.fl-row b { font-size: 13px; }
+.fl-row span { font-size: 11px; color: var(--muted); }

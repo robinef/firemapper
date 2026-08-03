@@ -53,6 +53,7 @@ import { createSheet } from "./sheet";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
+import { buildFireIndex, renderFireList, searchFires } from "./firelist";
 import { emitUi } from "./ui_events";
 import type { Manifest } from "./types";
 
@@ -290,6 +291,40 @@ async function boot() {
         }
       };
     }
+
+    // Search is the only route into a card that survives the rolling windows:
+    // a dot vanishes 48 h after the last detection, the scar list is capped,
+    // and the whole event window is 14 days. Built from the events already
+    // loaded, so it costs no extra request and covers closed fires too.
+    const fireIndex = buildFireIndex(events);
+    const openFromList = (id: string) => {
+      const entry = fireIndex.find((e) => e.id === id);
+      const feature = events.features.find(
+        (f) => (f.properties as { id?: string })?.id === id,
+      );
+      if (!entry || !feature) return;
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
+      fireCard.openFire({
+        features: [feature],
+        lngLat: { lng: entry.lon, lat: entry.lat },
+      } as unknown as maplibregl.MapLayerMouseEvent);
+    };
+    const showFireList = (query: string) => {
+      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
+      const box = document.querySelector<HTMLInputElement>(".fl-search");
+      // Re-render on every keystroke, then restore focus and caret: innerHTML
+      // replaces the input node, so without this the box loses focus after one
+      // character and the reader can only ever type one letter.
+      box?.addEventListener("input", () => showFireList(box.value));
+      if (box && query) {
+        box.focus();
+        box.setSelectionRange(query.length, query.length);
+      }
+      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
+        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
+      }
+    };
+    document.getElementById("find-fire")?.addEventListener("click", () => showFireList(""));
 
     // Scrub to a day, click where the fire was. This was the obvious route to a
     // fire that has stopped burning, and it did nothing: the layer had no
