@@ -32,7 +32,7 @@ describe("counting what is actually drawn", () => {
       fire(2, 44, "medium"),
     ];
     const c = countFires(fires, EUROPE, 6);
-    expect(c).toEqual({ inView: 54, shown: 1, zoomToSeeAll: 8.5 });
+    expect(c).toEqual({ inView: 54, shown: 1 });
     expect(countLabel(c)).toBe("1 of 54 in view · zoom in for the rest");
   });
 
@@ -65,11 +65,15 @@ describe("counting what is actually drawn", () => {
     expect(countFires(fires, EUROPE, 9).inView).toBe(1);
   });
 
-  it("reports the LOWEST zoom that reveals everything hidden", () => {
-    // medium (z6) and minor (z8.5) both hidden at z5: the honest answer is the
-    // deeper of the two, or the reader zooms once and is still missing fires.
-    const fires = [fire(0, 44, "medium"), fire(1, 44, "minor")];
-    expect(countFires(fires, EUROPE, 5).zoomToSeeAll).toBe(8.5);
+  it("counts nothing above the zoom where dots hand over to the footprint", () => {
+    // Fire layers carry maxzoom 9.5 and MapLibre treats it as EXCLUSIVE. A fire
+    // card flies to z10.5, so a counter ignoring the ceiling reads "2 in view"
+    // over a map showing no dots at all.
+    const fires = [fire(0, 44, "major"), fire(1, 44, "minor")];
+    expect(countFires(fires, EUROPE, 9.4).shown).toBe(2);
+    expect(countFires(fires, EUROPE, 9.5).shown).toBe(0);
+    expect(countFires(fires, EUROPE, 10.5).shown).toBe(0);
+    expect(countFires(fires, EUROPE, 10.5).inView).toBe(2); // still there, just not drawn
   });
 
   it("counts everything as shown once the size gates are turned off", () => {
@@ -82,14 +86,27 @@ describe("counting what is actually drawn", () => {
     expect(countLabel(c)).toBe("101 in view");
   });
 
-  it("handles a viewport across the antimeridian", () => {
-    const wrapped = { west: 170, south: 35, east: -170, north: 60 };
-    expect(countFires([fire(175, 44, "major"), fire(0, 44, "major")], wrapped, 5).inView).toBe(1);
+  it("handles the unwrapped bounds MapLibre really returns past the antimeridian", () => {
+    // getBounds() wraps the centre but not the corners, so panning past 180
+    // gives {west:150, east:190} while feature longitudes stay in [-180,180].
+    // A fire drawn at screen-longitude 185 has data longitude -175.
+    const past = { west: 150, south: 35, east: 190, north: 60 };
+    const c = countFires([fire(-175, 44, "major"), fire(0, 44, "major")], past, 5);
+    expect(c.inView).toBe(1);
   });
 
-  it("treats an unknown size class as the most-gated one", () => {
-    // A future class must not be silently counted as visible.
-    const c = countFires([fire(0, 44, "enormous")], EUROPE, 7);
-    expect(c.shown).toBe(0);
+  it("counts every copy once when the whole world is on screen", () => {
+    const wide = { west: -260, south: -80, east: 260, north: 80 };
+    expect(countFires([fire(0, 44, "major")], wide, 1).inView).toBe(1);
+  });
+
+  it("never counts an unknown size class as drawn, at any zoom", () => {
+    // Layer filters are ["==", size_class, cls] over exactly major/medium/minor,
+    // so an unrecognised class matches NO layer and is never rendered. The old
+    // fallback to minor's gate claimed it was visible from z8.5 upwards.
+    for (const zoom of [3, 7, 9]) {
+      expect(countFires([fire(0, 44, "enormous")], EUROPE, zoom).shown, `z${zoom}`).toBe(0);
+    }
+    expect(countFires([fire(0, 44, "enormous")], EUROPE, 9, true).shown).toBe(0);
   });
 });
