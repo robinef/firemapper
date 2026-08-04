@@ -47,6 +47,29 @@ export function createShell(deps: ShellDeps): Shell {
 
   const compareBar = document.getElementById("compare-bar");
 
+  const breakpoint = deps.breakpoint ?? 640;
+  const mobile = window.matchMedia?.(`(max-width: ${breakpoint}px)`);
+  let isMobile = mobile?.matches ?? false;
+
+  /** MapLibre camera padding is JS state, not CSS, so it is the one
+   *  responsive difference that cannot ride along with the media query. It
+   *  applies only when the slide-out is genuinely beside the map: never on
+   *  mobile (the overlay covers it) and never in compare (which owns the
+   *  whole surface). 376 = 56px rail + 320px panel. */
+  const applyCameraPadding = () => {
+    const open = !isMobile && HAS_PANEL[nav.top.view];
+    deps.map?.setPadding({ top: 0, bottom: 0, right: 0, left: open ? 376 : 0 });
+  };
+
+  const onMedia = (e: { matches: boolean }) => {
+    isMobile = e.matches;
+    applyCameraPadding();
+  };
+  mobile?.addEventListener?.("change", onMedia as (e: MediaQueryListEvent) => void);
+  offs.push(() =>
+    mobile?.removeEventListener?.("change", onMedia as (e: MediaQueryListEvent) => void),
+  );
+
   const renderBar = (stack: readonly (typeof nav.top)[]) => {
     const depth = stack.length - 1;
     const current = stack[depth];
@@ -91,6 +114,7 @@ export function createShell(deps: ShellDeps): Shell {
     document.body.dataset.view = current.view;
     if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
+    applyCameraPadding();
   };
 
   offs.push(nav.onChange(sync));

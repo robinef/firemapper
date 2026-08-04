@@ -271,3 +271,66 @@ describe("icon rail", () => {
     expect(nav.stack.map((e) => e.view)).toEqual(["map", "layers"]);
   });
 });
+
+describe("camera padding", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  function setupWithMap(width: number) {
+    mountShellDom();
+    const pads: Array<{ left: number }> = [];
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    const media = {
+      matches: width <= 640,
+      addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => {
+        media.fire = fn;
+      },
+      removeEventListener: () => {},
+      fire: (_: { matches: boolean }) => {},
+    };
+    (window as unknown as { matchMedia: () => unknown }).matchMedia = () => media;
+    const shell = createShell({
+      nav,
+      map: { setPadding: (p) => pads.push({ left: p.left }) },
+    });
+    return { nav, shell, pads, media };
+  }
+
+  it("pads left of the slide-out on desktop when a view opens", () => {
+    const { nav, pads } = setupWithMap(1280);
+    nav.push({ view: "layers", title: "Layers" });
+    expect(pads.at(-1)).toEqual({ left: 376 });
+  });
+
+  it("clears the padding when the view closes", () => {
+    const { nav, pads } = setupWithMap(1280);
+    nav.push({ view: "layers", title: "Layers" });
+    nav.back();
+    expect(pads.at(-1)).toEqual({ left: 0 });
+  });
+
+  it("never pads on mobile — the overlay covers the map", () => {
+    const { nav, pads } = setupWithMap(375);
+    nav.push({ view: "layers", title: "Layers" });
+    expect(pads.at(-1)).toEqual({ left: 0 });
+  });
+
+  it("never pads for compare, which owns the whole map", () => {
+    const { nav, pads } = setupWithMap(1280);
+    nav.push({ view: "detail", title: "Pedrógão" });
+    nav.push({ view: "compare", title: "Compare" });
+    expect(pads.at(-1)).toEqual({ left: 0 });
+  });
+
+  it("recomputes when the viewport crosses the breakpoint with a view open", () => {
+    const { nav, pads, media } = setupWithMap(1280);
+    nav.push({ view: "layers", title: "Layers" });
+    expect(pads.at(-1)).toEqual({ left: 376 });
+    media.fire({ matches: true }); // dragged down to a phone width
+    expect(pads.at(-1)).toEqual({ left: 0 });
+    media.fire({ matches: false }); // and back up
+    expect(pads.at(-1)).toEqual({ left: 376 });
+  });
+});
