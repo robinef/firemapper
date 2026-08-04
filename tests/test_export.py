@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 
 from pipeline.config import load_settings
 from pipeline.events import cluster
@@ -104,18 +105,21 @@ def test_size_class_follows_the_nwcg_standard(tmp_path):
     In km2 (1 ac = 0.00404686 km2) the top three boundaries are 1.2 / 4 / 20.
 
     The previous thresholds — major >=50, medium >=15 — were calibrated for
-    megafires and put our whole distribution in one bucket: of 2828 live fires
-    on 2026-08-04, 1335 were "minor", 8 "medium", 1 "major". `major >= 50` sits
-    ABOVE NWCG's largest class. Binned by NWCG the same data spreads across
-    D 1552 / E 1078 / F 192 / G 6.
+    megafires and put nearly the whole distribution in one bucket. `major >= 50`
+    sits ABOVE NWCG's largest class.
 
-    Classes A-C cannot occur here: an H3 res-7 cell is ~5 km2, so a single
-    detection already reports ~0.7 km2. We map the three classes we can
-    resolve.
+    Classes A-C cannot occur here: the smallest footprint we can express is one
+    H3 cell, already 0.7 km2 (VIIRS) or 5.2 km2 (Meteosat).
+
+    This exercises the `cells=None` path — plain NWCG on a bare area. In
+    production `size_class` is always given a cell count, and a one-cell
+    footprint is not sized at all; see
+    test_a_single_sensor_pixel_is_not_a_thousand_acre_fire for why, and for the
+    distribution this actually produces.
     """
     from pipeline.export import size_class
 
-    assert size_class(0.7) == "minor"     # one H3 cell: NWCG D
+    assert size_class(0.7) == "minor"     # below NWCG F
     assert size_class(4.04) == "minor"    # just under 1000 ac (4.047 km2)
     assert size_class(4.05) == "medium"   # NWCG F opens at 1000 ac
     assert size_class(20.1) == "medium"   # just under 5000 ac (20.23 km2)
@@ -166,3 +170,31 @@ def test_size_class_defaults_to_measured_when_the_count_is_unknown():
     rather than silently getting everything as minor."""
     assert size_class(20.2) == "major"
     assert size_class(4.05) == "medium"
+
+
+def test_export_sizes_on_distinct_cells_not_on_detection_count(tmp_path):
+    """Guards the CALL SITE, which the pure-function tests above cannot reach.
+
+    Replacing `cells=len({m["cell"] for m in members})` with `cells=len(members)`
+    passed all 201 tests while silently restoring the very bug this fixes: a
+    single Meteosat pixel re-reported eleven times has one cell but eleven
+    members, so counting members promotes it straight back to `medium`.
+
+    One pixel seen repeatedly is still one pixel.
+    """
+    # Eleven Meteosat detections on ONE pixel, over two hours. Built through
+    # cluster() so the members carry the same bin/cell shape production has.
+    rows = [hs(44.0, -1.0, T(20, 0) + timedelta(minutes=10 * i), tier="meteosat") for i in range(11)]
+    ev = cluster(rows, now=T(20, 3))
+    (members,) = ev.values()
+    assert len({m["cell"] for m in members}) == 1 and len(members) == 11
+
+    s = _settings(tmp_path)
+    gen = export(s, ev, liveness={}, places=[], alerts=[], now=T(20, 3))
+    props = json.loads((gen / "events.geojson").read_text())["features"][0]["properties"]
+
+    assert props["cum_cells"] == 1, "eleven detections, one cell"
+    assert props["area_km2"] == METEOSAT_CELL_KM2
+    assert props["size_class"] == "minor", (
+        "a single Meteosat pixel is not a 1000-acre fire, however often it is seen"
+    )
