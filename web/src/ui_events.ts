@@ -9,7 +9,6 @@
 export type UiEvent =
   | "detail:open"
   | "detail:close"
-  | "aircraft:open"
   | "compare:enter"
   | "compare:exit";
 

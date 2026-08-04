@@ -72,22 +72,34 @@ def test_confirmed_empty_frp_publishes_empty(tmp_path):
     assert _manifest(settings)["layers"]["frp"]["status"] == "empty"
 
 
-def test_aircraft_is_never_carried(tmp_path):
+def test_a_never_carried_layer_publishes_empty_instead_of_carrying(tmp_path, monkeypatch):
+    """A layer in NEVER_CARRIED must publish EMPTY on a failed fetch, not the
+    previous generation's data — for a layer whose staleness is a wrong claim,
+    showing nothing beats showing yesterday.
+
+    Driven through NEVER_CARRIED rather than a named layer: the set is empty
+    since aircraft was retired, and this behaviour has to keep working for
+    whatever goes in next."""
+    # Patch the freshness module, not export: export calls should_carry(), which
+    # reads NEVER_CARRIED from its own module namespace.
+    import pipeline.freshness as fr
+
+    monkeypatch.setattr(fr, "NEVER_CARRIED", frozenset({"wind"}))
     settings = _settings(tmp_path)
     events = cluster([hs(45.0, 8.0, T(20, 0)), hs(45.005, 8.0, T(20, 6))], now=T(20, 12))
-    planes = [{"lon": 8.0, "lat": 45.0, "callsign": "PELICAN 32", "pos_time": 1}]
+    samples = [{"lon": 8.0, "lat": 45.0, "dir": 90.0, "kmh": 12.0, "gust_kmh": 20.0}]
 
     export(
-        settings, events, {}, [], [], now=T(20, 12), aircraft=planes,
-        results={"aircraft": FetchResult("ok", planes, T(20, 12))},
+        settings, events, {}, [], [], now=T(20, 12), wind=samples,
+        results={"wind": FetchResult("ok", samples, T(20, 12))},
     )
     second = export(
-        settings, events, {}, [], [], now=LATER, aircraft=[],
-        results={"aircraft": FetchResult("failed", [], LATER)},
+        settings, events, {}, [], [], now=LATER, wind=[],
+        results={"wind": FetchResult("failed", [], LATER)},
     )
 
-    assert json.loads((second / "aircraft.geojson").read_text())["features"] == []
-    assert _manifest(settings)["layers"]["aircraft"]["status"] == "failed"
+    assert json.loads((second / "wind.geojson").read_text())["features"] == []
+    assert _manifest(settings)["layers"]["wind"]["status"] == "failed"
 
 
 def test_expired_carry_is_dropped(tmp_path):

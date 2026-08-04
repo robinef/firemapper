@@ -116,7 +116,7 @@ export function addActiveFires(
   // click targets for fires nothing on screen represents. MapLibre hit-tests
   // the RENDERED circle, and an 8-16px dot is far below the touch minimum, so
   // the halo is still needed — just scoped like its dot. Same enlarging trick
-  // as aircraft-halo (layer_aircraft.ts:79). Deliberately not in any legend:
+  // as the old aircraft halo. Deliberately not in any legend:
   // it is a target, not a symbol.
   for (const [cls, minz] of Object.entries(CLASS_MINZOOM)) {
     const filter = ["all", ["!=", ["get", "status"], "closed"], ["==", ["get", "size_class"], cls]];
