@@ -228,8 +228,48 @@ async function boot() {
       map,
       manifest,
     );
+    // Search is the only route into a card that survives the rolling windows:
+    // a dot vanishes 48 h after the last detection, the scar list is capped,
+    // and the whole event window is 14 days. Built from the events already
+    // loaded, so it costs no extra request and covers closed fires too.
+    const fireIndex = buildFireIndex(events);
+    const openFromList = (id: string) => {
+      const entry = fireIndex.find((e) => e.id === id);
+      const feature = events.features.find(
+        (f) => (f.properties as { id?: string })?.id === id,
+      );
+      if (!entry || !feature) return;
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
+      fireCard.openFire({
+        features: [feature],
+        lngLat: { lng: entry.lon, lat: entry.lat },
+      } as unknown as maplibregl.MapLayerMouseEvent);
+    };
+    let lastQuery = "";
+    const showFireList = (query: string) => {
+      lastQuery = query;
+      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
+      const box = document.querySelector<HTMLInputElement>(".fl-search");
+      // Re-render on every keystroke, then restore focus and caret: innerHTML
+      // replaces the input node, so without this the box loses focus after one
+      // character and the reader can only ever type one letter.
+      box?.addEventListener("input", () => showFireList(box.value));
+      if (box && query) {
+        box.focus();
+        box.setSelectionRange(query.length, query.length);
+      }
+      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
+        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
+      }
+    };
     const nav = createNav();
-    const shell = createShell({ nav, map, infoContent: () => infoHtml(manifest) });
+    const shell = createShell({
+      nav,
+      map,
+      showFireList,
+      lastQuery: () => lastQuery,
+      infoContent: () => infoHtml(manifest),
+    });
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
@@ -256,6 +296,10 @@ async function boot() {
       // overview slice on top of the fire card that just opened.
       () => daySlice.invalidate(),
     );
+    // Nav → views. Everything else in this file talks to nav, never the other
+    // way round; these two lines are the only inbound direction.
+    nav.onExit("detail", () => fireCard.close());
+    if (compare) nav.onExit("compare", () => compare.exit());
     // Precedence, highest first. Halos come before their visible layer so the
     // larger target wins, and fires beat scars where they overlap. A single
     // map-level click handler (instead of one per layer) is what makes "one
@@ -287,40 +331,6 @@ async function boot() {
       };
     }
 
-    // Search is the only route into a card that survives the rolling windows:
-    // a dot vanishes 48 h after the last detection, the scar list is capped,
-    // and the whole event window is 14 days. Built from the events already
-    // loaded, so it costs no extra request and covers closed fires too.
-    const fireIndex = buildFireIndex(events);
-    const openFromList = (id: string) => {
-      const entry = fireIndex.find((e) => e.id === id);
-      const feature = events.features.find(
-        (f) => (f.properties as { id?: string })?.id === id,
-      );
-      if (!entry || !feature) return;
-      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
-      fireCard.openFire({
-        features: [feature],
-        lngLat: { lng: entry.lon, lat: entry.lat },
-      } as unknown as maplibregl.MapLayerMouseEvent);
-    };
-    const showFireList = (query: string) => {
-      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
-      const box = document.querySelector<HTMLInputElement>(".fl-search");
-      // Re-render on every keystroke, then restore focus and caret: innerHTML
-      // replaces the input node, so without this the box loses focus after one
-      // character and the reader can only ever type one letter.
-      box?.addEventListener("input", () => showFireList(box.value));
-      if (box && query) {
-        box.focus();
-        box.setSelectionRange(query.length, query.length);
-      }
-      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
-        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
-      }
-    };
-    document.getElementById("find-fire")?.addEventListener("click", () => showFireList(""));
-
     // Scrub to a day, click where the fire was. This was the obvious route to a
     // fire that has stopped burning, and it did nothing: the layer had no
     // handler, and its cells carried only a count. Resolve the clicked hex
@@ -338,6 +348,10 @@ async function boot() {
         return;
       }
       panel.showHtml(renderCellPicker(hits, ev.lngLat));
+      // Both the multi-fire picker and the "no fire records here" message are
+      // #panel views like any other; without announcing, they were the one
+      // remaining route to an open panel with no history entry and no way back.
+      emitUi("detail:open");
       if (hits.length > 1) {
         for (const b of document.querySelectorAll<HTMLButtonElement>(".cell-pick")) {
           b.addEventListener("click", () => {
@@ -371,7 +385,7 @@ async function boot() {
         // on every miss-click made an ordinary empty-map click (any viewport,
         // desktop included) silently clear a selected histogram day even
         // though no card had ever been opened.
-        if (fireCard.isOpen) fireCard.close();
+        if (fireCard.isOpen) nav.back();
         return;
       }
       // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live
@@ -494,7 +508,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // rotation off survives a compare round-trip.
     if (locked) unlockMap(map, locked);
     locked = null;
-    setCompareNotice(null, cfg, exit, step, picked);
+    setCompareNotice(null, cfg, step, picked);
     if (wasComparing) emitUi("compare:exit");
   };
 
@@ -519,7 +533,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     if (landed.after === current.after) return;
     current = landed;
     swipe.setAfterTiles(scarTiles(cfg, landed, picked).after);
-    setCompareNotice(landed, cfg, exit, step, picked);
+    setCompareNotice(landed, cfg, step, picked);
   };
 
   // GIBS 404s a day it does not hold, and MODIS Terra drops whole days now and
@@ -539,10 +553,6 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // both halves reads as "the fire did nothing".
     return { ...scar, before: b.date, after: a.date < scar.started ? scar.after : a.date };
   };
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") exit();
-  });
-
   const enter = async (scar: Scar) => {
     const mine = ++entry;
     swipe?.destroy();
@@ -574,7 +584,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     const t = scarTiles(cfg, settled, picked);
     current = settled;
     swipe = new ImagerySwipe(map, t.before, t.after, fit);
-    setCompareNotice(settled, cfg, exit, step, picked);
+    setCompareNotice(settled, cfg, step, picked);
   };
 
   return {
@@ -670,7 +680,6 @@ function dayDelta(a: string, b: string): number {
 function setCompareNotice(
   scar: Scar | null,
   cfg: ImageryConfig,
-  onExit: () => void,
   onStep: (days: number) => void | Promise<void>,
   picked?: { before?: Capture; after?: Capture },
 ) {
@@ -716,10 +725,8 @@ function setCompareNotice(
     // frame read as a broken image.
     `<span class="compare-hint">Cloudy? Step the after day.</span>` +
     `<span class="compare-src">${src}</span>` +
-    `<button class="compare-exit" type="button">&times; Exit compare</button>` +
     `</div>`;
   el.style.display = "block";
-  el.querySelector(".compare-exit")?.addEventListener("click", onExit);
   for (const b of el.querySelectorAll<HTMLButtonElement>(".compare-day")) {
     b.addEventListener("click", () => void onStep(Number(b.dataset.days)));
   }

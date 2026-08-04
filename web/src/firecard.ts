@@ -373,10 +373,6 @@ export function setupFireCard(
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
 
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !panel.classList.contains("hidden")) close();
-  });
-
   return {
     openFire,
     openScar,
