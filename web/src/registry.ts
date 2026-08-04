@@ -99,11 +99,20 @@ export function mountSwitcher(
     legendEl.style.display = blocks.length ? "block" : "none";
   };
 
-  const render = () => {
+  /** `reassertVis` false = redraw the panel only.
+   *
+   * applyVis writes `visibility: visible` for every on, in-level module, which
+   * is right when the reader has just changed something — and wrong on a plain
+   * redraw. Compare mode hides the overlay layers itself (main.ts hideOverlays)
+   * and then flies the camera; the resulting moveend used to re-render, which
+   * put every fire dot, halo, footprint and label straight back on top of the
+   * before/after swipe for the whole session. Nothing may hide a layer behind
+   * the switcher's back unless a status-only redraw leaves visibility alone. */
+  const render = (reassertVis = true) => {
     const title = level === 2 ? "This fire · detail" : "Layers";
     layersEl.innerHTML = `<div class='layers-title'>${title}</div>`;
     for (const m of modules) {
-      applyVis(m); // force out-of-level layers hidden, in-level follow their toggle
+      if (reassertVis) applyVis(m); // out-of-level hidden, in-level follow their toggle
       if (!inLevel(m)) continue;
       const row = document.createElement("label");
       row.className = "layer-row";
@@ -157,7 +166,7 @@ export function mountSwitcher(
 
   return {
     isOn: (k) => state.get(k) ?? false,
-    refresh: render,
+    refresh: () => render(false),
     setLevel: (l) => {
       level = l;
       render();
