@@ -191,3 +191,19 @@ describe("compare mode enter/exit", () => {
     }
   });
 });
+
+// The bus contract, now stated from the consumer that replaced the sheet:
+// the shell is the only subscriber, and it must not need a payload to do its
+// job. If a future change adds one, this test is where it will be noticed.
+describe("the bus stays payloadless", () => {
+  it("emitUi passes no arguments to its subscribers", async () => {
+    const { emitUi, onUi } = await import("../src/ui_events");
+    let args: unknown[] = ["not called"];
+    const off = onUi("detail:open", (...rest: unknown[]) => {
+      args = rest;
+    });
+    emitUi("detail:open");
+    off();
+    expect(args).toEqual([]);
+  });
+});

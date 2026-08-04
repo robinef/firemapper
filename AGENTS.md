@@ -43,6 +43,13 @@ npm test           # vitest
   Meteosat MTG adds low-latency liveness and catches fresh fires.
 - **Frontend layers** each answer one question and own their legend; the switcher
   shows overview (Level 1) vs per-fire detail (Level 2) sets.
+- **Navigation goes through `nav.ts`.** Don't dismiss a view from outside by
+  calling its `close()` — that leaves the history entry standing, so the next
+  hardware back does nothing visible. Call `nav.back()` and let the stack run
+  the view's teardown. A view's own dismiss control may call its own teardown
+  directly, provided that teardown announces itself on the `ui_events` bus:
+  `shell.ts` turns that announcement into the `nav.back()`. `firecard.ts`'s ✕
+  is the worked example — it closes, emits `detail:close`, and the shell pops.
 - **Secrets** (FIRMS key, Sentinel Hub instance id) live only in `.env`
   (gitignored). Never commit them or put them in code, tests, or commit messages.
   Tests use synthetic data.
