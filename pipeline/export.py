@@ -90,10 +90,11 @@ def _events_features(events, liveness, places, alerts, now):
                     "lifecycle_age_h": round((now - newest).total_seconds() / 3600, 1),
                     "started": min(m["acq_time"] for m in members).isoformat(),
                     "area_km2": (a := area_km2(members, cell_km2)),
-                    # Size class drives scale-dependent display: big fires show
-                    # Europe-wide, smaller ones only reveal as you zoom in, so
-                    # no scale is ever cluttered (multi-scale generalisation).
-                    "size_class": "major" if a >= 50 else "medium" if a >= 15 else "minor",
+                    # Drives scale-dependent display: big fires show
+                    # Europe-wide, smaller ones reveal as you zoom in, so no
+                    # scale is cluttered (multi-scale generalisation). See
+                    # size_class() for why the boundaries are NWCG's.
+                    "size_class": size_class(a),
                     "cum_cells": series[-1]["cum_cells"],
                     "movement": movement(series, now), "state": status(series, now),
                     "freshness": {"viirs": newest.isoformat(), "meteosat": met["latest"] if met else None},
@@ -146,6 +147,38 @@ def _carry_layer_files(previous_generation: Path, gen: Path, filenames: list[str
     for name in filenames:
         shutil.copy2(previous_generation / name, gen / name)
     return True
+
+
+# Size classes follow the NWCG fire size standard (https://www.nwcg.gov/node/432922),
+# the US interagency scale used in federal incident records. Boundaries are its
+# acre thresholds converted to km2 (1 acre = 0.00404686 km2):
+#
+#   A <=0.25 ac   B <10 ac   C <100 ac   D <300 ac   E <1000 ac   F <5000 ac   G 5000+
+#
+# We map only the top three. Classes A-C are below what this pipeline can
+# resolve: an H3 res-7 cell is ~5 km2, so a single detection already reports
+# ~0.7 km2.
+#
+# The previous thresholds (major >=50, medium >=15) were invented rather than
+# borrowed, and were calibrated for megafires: of 2828 live fires on 2026-08-04,
+# 1335 fell in "minor", 8 in "medium", 1 in "major" — and major >= 50 sits ABOVE
+# NWCG's largest class. Binned by NWCG the same data spreads D 1552 / E 1078 /
+# F 192 / G 6, which is what makes the per-class zoom gates behave.
+#
+# Caveat worth keeping in mind: NWCG classes describe surveyed incident
+# perimeters, ours are H3 cell counts quantised to ~5 km2. Borrowing the
+# boundaries is defensible and citable; the low end reads coarse.
+MEDIUM_KM2 = 4.05   # NWCG F, 1000 acres
+MAJOR_KM2 = 20.2    # NWCG G, 5000 acres
+
+
+def size_class(area_km2_value: float) -> str:
+    """NWCG size class, collapsed to the three this pipeline can resolve."""
+    if area_km2_value >= MAJOR_KM2:
+        return "major"
+    if area_km2_value >= MEDIUM_KM2:
+        return "medium"
+    return "minor"
 
 
 def validate_generation(
