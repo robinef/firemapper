@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createNav } from "../src/nav";
 import { createShell } from "../src/shell";
 import { fakeHistory, mountShellDom } from "./nav_fixtures";
@@ -197,11 +197,20 @@ describe("shell ↔ ui_events wiring", () => {
 
   it("ignores detail:close raised by nav's own unwinding (no double pop)", () => {
     const { nav } = setup();
+    // Assert on the CALL, not the resulting stack: nav.back() itself no-ops
+    // while unwinding, so the stack shape is identical whether or not the
+    // shell guards. Only the call count can tell the two apart — and the
+    // shell's guard exists so the shell does not lean on nav's.
+    const backSpy = vi.spyOn(nav, "back");
     nav.onExit("detail", () => emitUi("detail:close")); // what firecard.close does
     nav.push({ view: "search", title: "Search" });
-    card("Pedrógão");
+    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
     emitUi("detail:open");
-    nav.back();
+    backSpy.mockClear();
+
+    nav.back(); // the one deliberate call
+
+    expect(backSpy).toHaveBeenCalledTimes(1); // the re-entrant emit must add none
     expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
   });
 
