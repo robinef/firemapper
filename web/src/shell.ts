@@ -8,6 +8,7 @@
  */
 
 import type { Nav, ViewId } from "./nav";
+import { onUi } from "./ui_events";
 
 export interface ShellDeps {
   nav: Nav;
@@ -88,11 +89,61 @@ export function createShell(deps: ShellDeps): Shell {
     // combinator: #rail precedes #view in the document and `~` only matches
     // following siblings, so such a selector silently never matches.
     document.body.dataset.view = current.view;
+    if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
   };
 
   offs.push(nav.onChange(sync));
   sync(nav.stack);
+
+  /** Push a detail entry, or replace the top when returning to it would serve
+   *  no purpose. `search` is on the push side because backing out of a fire to
+   *  the result list you picked it from is worth a stack level — that is what
+   *  Entry.restore exists for. `layers` and `info` are on the replace side:
+   *  nothing is gained by returning to a toggle list after opening a fire.
+   *  `layers` matters only on desktop, where the slide-out leaves the map
+   *  clickable beside it. */
+  const openDetail = () => {
+    const title =
+      document.querySelector("#panel .fc-title")?.textContent?.trim() || "Fire";
+    const entry = { view: "detail" as const, title };
+    const top = nav.top.view;
+    if (top === "map" || top === "search") nav.push(entry);
+    else nav.replace(entry);
+  };
+
+  offs.push(
+    onUi("detail:open", openDetail),
+    // An aircraft tap reuses #panel without going through the fire card, so it
+    // is the same view by the same rule — not a special case.
+    onUi("aircraft:open", openDetail),
+    onUi("detail:close", () => {
+      // Dropped while nav is tearing down: firecard.close() emits this from
+      // inside nav's own exit callback, and acting on it there would pop a
+      // second level. This is the guard that keeps hardware-back landing one
+      // level up instead of two.
+      if (nav.unwinding) return;
+      if (nav.top.view === "detail") nav.back();
+    }),
+    onUi("compare:enter", () => {
+      document.body.classList.add("compare-mode");
+      nav.push({ view: "compare", title: "Compare" });
+    }),
+    onUi("compare:exit", () => {
+      document.body.classList.remove("compare-mode");
+      if (nav.unwinding) return;
+      if (nav.top.view === "compare") nav.back();
+    }),
+  );
+
+  // The one Escape handler. firecard.ts and setupCompareMode each added their
+  // own, neither removed it, and compare's fired exit() even when nothing was
+  // being compared.
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") nav.back();
+  };
+  window.addEventListener("keydown", onKey);
+  offs.push(() => window.removeEventListener("keydown", onKey));
 
   return {
     ready() {

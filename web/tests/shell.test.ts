@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createNav } from "../src/nav";
 import { createShell } from "../src/shell";
 import { fakeHistory, mountShellDom } from "./nav_fixtures";
+import { emitUi } from "../src/ui_events";
 
 function setup() {
   mountShellDom();
@@ -107,5 +108,107 @@ describe("shell view switching", () => {
     nav.back();
     expect(document.getElementById("compare-bar")!.innerHTML).toBe("");
     expect(document.querySelector("#view-bar .view-back")).not.toBeNull();
+  });
+});
+
+describe("shell ↔ ui_events wiring", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const card = (name: string) => {
+    document.getElementById("panel")!.innerHTML = `<div class="fc-title">${name}</div>`;
+    document.getElementById("panel")!.classList.remove("hidden");
+  };
+
+  it("pushes detail from the map and takes the title from the rendered card", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail"]);
+    expect(nav.top.title).toBe("Pedrógão");
+  });
+
+  it("falls back to a generic title when the card has no name", () => {
+    const { nav } = setup();
+    emitUi("detail:open");
+    expect(nav.top.title).toBe("Fire");
+  });
+
+  it("replaces rather than pushes when detail is already top (fire → fire)", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    card("Monchique");
+    emitUi("detail:open");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail"]);
+    expect(nav.top.title).toBe("Monchique");
+  });
+
+  it("replaces on aircraft over an open card", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    emitUi("aircraft:open");
+    expect(nav.stack).toHaveLength(2);
+  });
+
+  it("replaces when layers is top (desktop: map is clickable beside the panel)", () => {
+    const { nav } = setup();
+    nav.push({ view: "layers", title: "Layers" });
+    card("Pedrógão");
+    emitUi("detail:open");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail"]);
+  });
+
+  it("pushes when search is top, so back returns to the results", () => {
+    const { nav } = setup();
+    nav.push({ view: "search", title: "Search" });
+    card("Pedrógão");
+    emitUi("detail:open");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search", "detail"]);
+  });
+
+  it("pushes compare on compare:enter", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    emitUi("compare:enter");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail", "compare"]);
+  });
+
+  it("marks the body in compare mode and clears it on exit", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    emitUi("compare:enter");
+    expect(document.body.classList.contains("compare-mode")).toBe(true);
+    nav.back();
+    expect(document.body.classList.contains("compare-mode")).toBe(false);
+  });
+
+  it("detail:close from a view's own teardown pops exactly one level", () => {
+    const { nav } = setup();
+    card("Pedrógão");
+    emitUi("detail:open");
+    emitUi("detail:close");
+    expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
+  });
+
+  it("ignores detail:close raised by nav's own unwinding (no double pop)", () => {
+    const { nav } = setup();
+    nav.onExit("detail", () => emitUi("detail:close")); // what firecard.close does
+    nav.push({ view: "search", title: "Search" });
+    card("Pedrógão");
+    emitUi("detail:open");
+    nav.back();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+  });
+
+  it("Escape navigates back one level", () => {
+    const { nav } = setup();
+    nav.push({ view: "layers", title: "Layers" });
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
   });
 });
