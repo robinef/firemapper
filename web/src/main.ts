@@ -169,7 +169,10 @@ async function boot() {
             { color: FIRE_HUE, size: 16, shape: "dot", label: "larger burned area" },
             { color: "rgba(255,90,31,0.4)", size: 14, shape: "dot", label: "quiet — no new detection 24–48 h" },
           ],
-          note: "One colour = fire. Bigger dot = more area burned; faded = gone quiet. Zoom in for the outline.",
+          note:
+            "One colour = fire. Bigger dot = more area burned; faded = gone quiet. " +
+            "Sizes follow the NWCG fire size classes (F \u2265 1000 acres shows from " +
+            "zoom 6, G \u2265 5000 from zoom 3, smaller from zoom 8.5). Zoom in for the outline.",
         },
       },
       {
