@@ -80,24 +80,8 @@ export function createShell(deps: ShellDeps): Shell {
     );
   };
 
-  let lastStack: readonly (typeof nav.top)[] | undefined;
   const sync = (stack: readonly (typeof nav.top)[]) => {
     const current = stack[stack.length - 1];
-    // When pushing detail, prepare the view we're leaving for when we navigate back
-    if (lastStack && stack.length > lastStack.length && current.view === "detail" && stack.length > 1) {
-      const prev = stack[stack.length - 2];
-      // Manually render the shared panel with the last query for the view we're leaving
-      if (prev.restore) {
-        // The closure checks nav.top.view, which is now 'detail'. To get it to use
-        // the previous view's query, we work around it by directly calling showFireList
-        if (prev.view === "search" && deps.lastQuery) {
-          deps.showFireList?.(deps.lastQuery());
-        } else {
-          prev.restore?.();
-        }
-      }
-    }
-    lastStack = stack;
     view?.setAttribute("data-view", current.view);
     if (!HAS_PANEL[current.view]) view?.removeAttribute("data-size");
     // Mirrored onto <body> as well as #view. Rules that must reach elements
