@@ -274,18 +274,45 @@ def _real_fetch(settings: Settings) -> list[dict]:  # pragma: no cover - network
 def liveness_for_events(
     events: dict[str, list[dict]], met_rows: list[dict]
 ) -> dict[str, dict]:
-    out: dict[str, dict] = {}
+    """Attach live MTG activity to the polar events it sits on.
+
+    A pixel counts for an event when it lands on one of that event's cells or a
+    neighbour (grid_disk radius 1).
+
+    Indexed rather than nested. The previous shape looped events x pixels and
+    recomputed latlng_to_cell + grid_disk inside the inner loop, so the h3 work
+    scaled with the PRODUCT: 3000 events x 4000 pixels measured 27s, and
+    fetch_frp_points asks for up to 8000. That cost sat at zero while EUMETView
+    was down and met_rows was empty, then reappeared in full when b91bb67
+    restored FRP — on a job with a 20-minute ceiling. The h3 work belongs to the
+    pixel, so do it once per pixel and look the event up.
+    """
+    # cell -> events whose footprint includes it. A set, not a list: an event
+    # with 200 archive rows on one cell would otherwise store its id 200 times
+    # and the lookup below would skip 199 of them.
+    by_cell: dict[str, set[str]] = {}
     for eid, members in events.items():
-        cells = {m["cell"] for m in members}
-        hits = []
-        for r in met_rows:
-            cell = h3.latlng_to_cell(r["lat"], r["lon"], H3_RES)
-            if cells & set(h3.grid_disk(cell, 1)):
-                hits.append(r)
-        if hits:
-            hits.sort(key=lambda r: r["acq_time"])
-            out[eid] = {
-                "latest": hits[-1]["acq_time"].isoformat(),
-                "frp_series": [[r["acq_time"].isoformat(), r["frp"]] for r in hits],
-            }
+        for m in members:
+            by_cell.setdefault(m["cell"], set()).add(eid)
+
+    hits: dict[str, list[dict]] = {}
+    for r in met_rows:
+        cell = h3.latlng_to_cell(r["lat"], r["lon"], H3_RES)
+        seen: set[str] = set()
+        for neighbour in h3.grid_disk(cell, 1):
+            for eid in by_cell.get(neighbour, ()):  # noqa: PERF401
+                # One pixel may touch several cells of the same event; count it
+                # once, as the set-intersection test used to.
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                hits.setdefault(eid, []).append(r)
+
+    out: dict[str, dict] = {}
+    for eid, rows in hits.items():
+        rows.sort(key=lambda r: r["acq_time"])
+        out[eid] = {
+            "latest": rows[-1]["acq_time"].isoformat(),
+            "frp_series": [[r["acq_time"].isoformat(), r["frp"]] for r in rows],
+        }
     return out
