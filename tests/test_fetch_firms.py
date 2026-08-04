@@ -1,8 +1,13 @@
+import sys
+import traceback
+import types
+import pytest
 from datetime import datetime, timezone
 
 from pipeline.config import load_settings
 from pipeline.fetch_firms import (
     REDACTED,
+    _fault,
     scrub,
     append_hotspots,
     fetch_firms,
@@ -227,3 +232,125 @@ def test_nrt_scrubs_an_injected_fetchers_exception(tmp_path):
         assert REDACTED in str(exc)
     else:
         raise AssertionError("expected the failure to propagate")
+
+
+def test_empty_key_is_treated_as_missing(tmp_path):
+    """An unset GitHub secret interpolates to "", not to nothing. "" is not None,
+    so it slips past every `is None` guard — fetch_firms:89, :162 and run.py:223
+    — and then builds a URL with an EMPTY key segment, fetches nothing, and
+    publishes the empty archive those guards exist to refuse.
+
+    config.py normalises it with `or None`. Deleting that normalisation left the
+    whole suite green, so the line documented as preventing "precisely the
+    empty-archive publish" had no test at all.
+    """
+    from pipeline.config import load_settings
+
+    s = load_settings(env={"FIRMS_MAP_KEY": "", "DATA_DIR": str(tmp_path), "OUT_DIR": str(tmp_path)})
+    assert s.firms_map_key is None, "empty string must read as missing, not as a key"
+
+    # And the guard it feeds must actually fire.
+    with pytest.raises(RuntimeError, match="FIRMS_MAP_KEY missing"):
+        fetch_firms(s, http_get=lambda _u: "")
+
+
+def test_dotenv_strips_quotes_so_the_key_is_scrubbable(tmp_path, monkeypatch):
+    """`FIRMS_MAP_KEY="abc"` in a .env yielded the key WITH quotes. scrub() then
+    searches for `"abc"` while requests reports the prepared URL containing
+    `%22abc%22` — a literal replace misses, and the key reaches the log.
+
+    Quotes are the common case because every shell tutorial writes them.
+    """
+    from pipeline.config import load_settings
+
+    (tmp_path / ".env").write_text('FIRMS_MAP_KEY="quoted_key_123"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FIRMS_MAP_KEY", raising=False)
+
+    assert load_settings().firms_map_key == "quoted_key_123"
+
+
+def test_scrub_also_catches_the_percent_encoded_form():
+    """requests reports the PREPARED url, so a key containing a character that
+    urlencodes (a quote, a space, a slash) appears percent-encoded in the
+    exception text while scrub searches for the raw value."""
+    key = 'ab"cd'
+    leaked = 'HTTPError: 500 for url: https://x/api/area/csv/ab%22cd/VIIRS/1'
+    assert key not in scrub(leaked, key)
+    assert "ab%22cd" not in scrub(leaked, key)
+
+
+def test_fault_scrubs_on_its_own():
+    """Both tests named "...scrubs_the_key" passed with _fault's scrub REMOVED —
+    they were satisfied by the outer scrub at the call site, so nothing pinned
+    _fault itself. History has no outer scrub at all, so _fault is the only
+    thing standing between a 500 and the key.
+    """
+    key = "unit_key_abcdef"
+
+    class Resp:
+        status_code = 500
+
+    exc = RuntimeError(f"500 Server Error for url: https://x/api/area/csv/{key}/VIIRS/1")
+    exc.response = Resp()
+
+    out = _fault(exc, key)
+    assert key not in out, "_fault must scrub without help from a caller"
+    assert "HTTP 500" in out, "and still say which failure it was"
+
+
+def test_default_fetcher_severs_the_exception_chain(tmp_path, monkeypatch):
+    """`from None` is what stops the traceback printer rendering the ORIGINAL
+    requests exception — url and all — as __context__. Dropping it from either
+    default wrapper left the suite green, because the chain-severing was
+    actually being held by the call-site wrap one level out.
+
+    Asserted one level in: the RuntimeError we catch is itself raised from the
+    call-site handler, so the property under test lives on ITS context.
+    """
+    key = "chain_key_zzz"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+
+    class Boom(Exception):
+        pass
+
+    def explode(_url, **_kw):
+        raise Boom(f"boom https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/V/1")
+
+    fake = types.SimpleNamespace(get=explode)
+    monkeypatch.setitem(sys.modules, "requests", fake)
+
+    with pytest.raises(RuntimeError) as ei:
+        fetch_firms(s)
+
+    # Render the traceback exactly as an unhandled exception would print it.
+    # `from None` sets __suppress_context__, so __context__ stays populated but
+    # the printer skips it — asserting on the chain directly would be testing a
+    # proxy. This tests the thing that actually reaches the log.
+    printed = "".join(
+        traceback.format_exception(type(ei.value), ei.value, ei.value.__traceback__)
+    )
+    assert key not in printed, f"key rendered in the traceback:\n{printed}"
+    assert "Boom" not in printed, "original exception still rendered as context"
+
+
+def test_a_parse_failure_keeps_its_own_type_and_frame(tmp_path):
+    """The scrub wrap spans the FETCH only. It used to span parsing and the
+    store write too, so a KeyError from the CSV parser surfaced as a bare
+    RuntimeError raised at the scrub line — original type gone, and the
+    traceback pointing at a line whose only job is redacting a url.
+
+    Nothing downstream branches on the type (run._safe catches Exception), so
+    this costs nothing in production and buys back a diagnosable traceback.
+    """
+    s = load_settings(env={"FIRMS_MAP_KEY": "k", "DATA_DIR": str(tmp_path)})
+    # Well-formed enough to fetch, malformed enough to fail in the parser.
+    bad = "latitude,longitude,acq_time,satellite,confidence,frp\n1.0,2.0,1200,N,h,10\n"
+
+    with pytest.raises(KeyError) as ei:
+        fetch_firms(s, http_get=lambda _u: bad)
+
+    frames = traceback.extract_tb(ei.value.__traceback__)
+    assert any(f.name == "parse_firms_csv" for f in frames), (
+        f"traceback should point at the parser, got {[f.name for f in frames]}"
+    )

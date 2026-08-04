@@ -53,7 +53,14 @@ def _read_dotenv(path: Path) -> dict[str, str]:
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            out[k.strip()] = v.strip()
+            v = v.strip()
+            # Strip one matched pair of surrounding quotes. Every shell tutorial
+            # writes FIRMS_MAP_KEY="abc", and keeping the quotes made the key
+            # unscrubbable: scrub() searches for the raw configured value while
+            # requests reports the PREPARED url, where a quote is %22.
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            out[k.strip()] = v
     return out
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+from urllib.parse import quote
 import io
 import sys
 from datetime import datetime, timezone
@@ -42,7 +43,16 @@ def scrub(text: str, key: str | None) -> str:
     reach a log through a raised exception, a caught-and-printed one, or a
     traceback, and each of those has its own path out.
     """
-    return text.replace(key, REDACTED) if key else text
+    if not key:
+        return text
+    out = text.replace(key, REDACTED)
+    # requests reports the PREPARED url, so a key containing anything not
+    # url-safe (a quote, a space) appears percent-encoded there while the raw
+    # value never matches. Scrub both spellings.
+    encoded = quote(key, safe="")
+    if encoded != key:
+        out = out.replace(encoded, REDACTED)
+    return out
 
 
 def _fault(exc: Exception, key: str | None) -> str:
@@ -96,9 +106,18 @@ def fetch_firms(settings: Settings, http_get: Callable[[str], str] | None = None
                 r = requests.get(url, timeout=60)
                 r.raise_for_status()
             except Exception as exc:  # noqa: BLE001 - re-raised, only the text changes
-                # `from None` is load-bearing: chaining would keep the original
-                # requests exception as __context__, and the traceback printer
-                # renders that too — complete with the un-scrubbed URL.
+                # `from None` severs the chain so a traceback printer cannot
+                # render the original requests exception, un-scrubbed URL and
+                # all, as __context__.
+                #
+                # Belt and braces, not load-bearing: mutation testing shows
+                # removing it here changes nothing observable, because the
+                # call-site wrap below re-raises `from None` too and that is
+                # what actually holds the property today. Kept because this
+                # wrapper is the boundary that SHOULD own it — the call-site
+                # wrap exists for injected fetchers, and narrowing or moving it
+                # must not silently unseal this path. No test can pin it while
+                # the outer layer masks it; the mutation result is the record.
                 raise RuntimeError(_fault(exc, settings.firms_map_key)) from None
             return r.text
 
@@ -117,9 +136,15 @@ def fetch_firms(settings: Settings, http_get: Callable[[str], str] | None = None
         # in whatever prints it. The injection seam exists to be used; the
         # boundary has to hold regardless of who supplies the fetcher.
         try:
-            total += append_hotspots(parse_firms_csv(http_get(url), tier), store)
+            body = http_get(url)
         except Exception as exc:  # noqa: BLE001 - re-raised, only the text changes
             raise RuntimeError(scrub(str(exc), settings.firms_map_key)) from None
+        # Parsing and the store write stay OUTSIDE the try. Only the fetch can
+        # carry the url, and wrapping them too flattened a KeyError from the CSV
+        # parser, or a DuckDB IO error from the store, into a bare RuntimeError
+        # raised at this line — losing both the type and the frame that actually
+        # failed, on a line whose only job is scrubbing a url.
+        total += append_hotspots(parse_firms_csv(body, tier), store)
     return total
 
 
