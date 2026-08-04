@@ -25,6 +25,25 @@ FIRMS_SOURCES = [
 ]
 _LOW_CONF = {"viirs": {"l"}, "modis": {str(i) for i in range(0, 30)}}  # modis numeric <30
 
+REDACTED = "<FIRMS_MAP_KEY>"
+
+
+def scrub(text: str, key: str | None) -> str:
+    """Remove the FIRMS key from anything on its way to a log.
+
+    The key is a path segment, not a query parameter or a header — NASA's area
+    API offers no alternative — so every URL built here carries the credential.
+    `requests` puts the failing URL into its exception messages, and this
+    pipeline runs in GitHub Actions on a PUBLIC repository, where job logs are
+    world-readable and retained. So one upstream 500, or one expired key
+    returning 401, would publish a working credential to anyone watching.
+
+    Scrubbing at the point of logging rather than trusting callers: the key can
+    reach a log through a raised exception, a caught-and-printed one, or a
+    traceback, and each of those has its own path out.
+    """
+    return text.replace(key, REDACTED) if key else text
+
 
 
 
@@ -61,8 +80,14 @@ def fetch_firms(settings: Settings, http_get: Callable[[str], str] | None = None
         import requests
 
         def http_get(url: str) -> str:  # pragma: no cover - network
-            r = requests.get(url, timeout=60)
-            r.raise_for_status()
+            try:
+                r = requests.get(url, timeout=60)
+                r.raise_for_status()
+            except Exception as exc:  # noqa: BLE001 - re-raised, only the text changes
+                # `from None` is load-bearing: chaining would keep the original
+                # requests exception as __context__, and the traceback printer
+                # renders that too — complete with the un-scrubbed URL.
+                raise RuntimeError(scrub(str(exc), settings.firms_map_key)) from None
             return r.text
 
     lon_min, lat_min, lon_max, lat_max = EUROPE_BBOX
@@ -120,8 +145,11 @@ def fetch_firms_history(
         import requests
 
         def http_get(url: str) -> str:  # pragma: no cover - network
-            r = requests.get(url, timeout=120)
-            r.raise_for_status()
+            try:
+                r = requests.get(url, timeout=120)
+                r.raise_for_status()
+            except Exception as exc:  # noqa: BLE001 - re-raised, only the text changes
+                raise RuntimeError(scrub(str(exc), settings.firms_map_key)) from None
             return r.text
 
     from datetime import datetime, timedelta, timezone
@@ -154,7 +182,11 @@ def fetch_firms_history(
             try:
                 rows = parse_firms_csv(http_get(url), "viirs")
             except Exception as e:  # noqa: BLE001 - history is best-effort
-                print(f"[warn] firms-history {source} {start}: {e}", file=sys.stderr)
+                print(
+                    f"[warn] firms-history {source} {start}: "
+                    f"{scrub(str(e), settings.firms_map_key)}",
+                    file=sys.stderr,
+                )
                 continue
             if rows:
                 window_rows = append_hotspots(rows, store)

@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 
 from pipeline.config import load_settings
 from pipeline.fetch_firms import (
+    REDACTED,
+    scrub,
     append_hotspots,
     fetch_firms,
     fetch_firms_history,
@@ -127,3 +129,33 @@ def test_history_stops_at_the_first_satellite_with_data(tmp_path):
 
     # no point paying for NOAA-20 when SNPP already answered
     assert all("VIIRS_NOAA20_NRT" not in u for u in asked)
+
+
+def test_scrub_removes_the_key():
+    key = "0123456789abcdef0123456789abcdef"
+    url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/x/2"
+    out = scrub(f"500 Server Error for url: {url}", key)
+    assert key not in out
+    assert REDACTED in out
+
+
+def test_scrub_is_a_noop_without_a_key():
+    # No key configured means nothing to hide; the message must survive intact.
+    assert scrub("500 Server Error", None) == "500 Server Error"
+
+
+def test_history_never_prints_the_key_when_a_window_fails(tmp_path, capsys):
+    """A failing window prints the exception, and requests puts the failing URL —
+    key and all — in that exception. These logs are public on a public repo, so a
+    single upstream 500 would otherwise publish a working credential."""
+    key = "deadbeefdeadbeefdeadbeefdeadbeef"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+
+    def boom(url: str) -> str:
+        # Exactly the shape requests raises: the URL is inside the message.
+        raise RuntimeError(f"500 Server Error for url: {url}")
+
+    fetch_firms_history(s, days=5, http_get=boom)
+    err = capsys.readouterr().err
+    assert key not in err
+    assert REDACTED in err
