@@ -10,7 +10,22 @@ window.URL.createObjectURL ??= () => "";
   ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }) as
     unknown as MediaQueryList;
 
-describe("the card closes itself exactly once, whichever route is taken", () => {
+// SCOPE NOTE — read before trusting this file as a regression gate.
+//
+// These two tests drive nav and shell directly with a locally-registered
+// onExit stub; they never import main.ts or run boot(). So they pin the
+// unwind CONTRACT (one teardown per pop, no double-pop, history left in
+// step) but NOT main.ts's use of it. Reverting main.ts's background-tap
+// `nav.back()` to a direct `fireCard.close()`, or deleting the day-slice
+// `emitUi("detail:open")`, would leave every assertion here green.
+//
+// main.ts wiring is verified by the manual browser checklist in the plan
+// (hardware back exiting compare -> card -> map -> site), because boot()
+// constructs a real MapLibre map at import time and the click handler
+// cannot be driven under jsdom without machinery larger than the code it
+// would test. The third describe block below IS a real regression guard:
+// it asserts against renderFireList's actual output.
+describe("nav/shell unwind contract (not main.ts wiring — see note)", () => {
   it("nav.back() tears the card down and does not bounce past the map", () => {
     mountShellDom();
     const { history, target } = fakeHistory();
