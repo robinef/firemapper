@@ -8,26 +8,40 @@
  *
  * The pipeline already refuses to size those — `size_class` returns `minor`
  * whenever `cells <= 1`, whatever the area — so the map classified a fire as
- * unsized while the panel printed a confident "5.2 km² burning area (1 cells)"
- * for the same fire. This makes the words agree with the classification.
+ * unsized while the text printed a confident number for the same fire.
  *
- * Only the panel and the fire card need it: the label layer filters `minor`
- * out, and every one-cell fire is `minor`, so a label can never carry an
- * unresolved area.
+ * Not needed by the label layer: it filters `minor` out, and every one-cell
+ * fire is `minor`, so a label can never carry an unresolved area.
  */
 
-/** Area as text, marked as an upper bound when the footprint is a single cell. */
-export function areaText(areaKm2: number, cells: number | undefined): string {
-  // `cells` absent (an older generation, a feature missing the property) means
-  // we do not know whether it was resolved — so claim neither a bound nor a
-  // measurement, just the number we have.
-  const bound = cells !== undefined && cells <= 1 ? "≤" : "";
-  return `${bound}${areaKm2} km²`;
+/** True when the footprint is a single cell, i.e. detected but not measured.
+ *
+ * `cells == null` catches null AND undefined deliberately. A JSON null passes
+ * `cells !== undefined` and then `null <= 1` is TRUE in JS, so a 40-cell fire
+ * whose count arrived as null would be described as one unresolved pixel —
+ * a confident, plausible, false claim, and a worse one than the bug this
+ * module exists to fix. `NaN` fails every comparison and so reads as sized,
+ * which is the safe direction.
+ */
+function unsized(cells: number | null | undefined): boolean {
+  return cells != null && cells <= 1;
 }
 
-/** How the footprint is made up, and why one cell is not a size. */
-export function cellsText(cells: number | undefined): string {
-  if (cells === undefined) return "";
-  if (cells <= 1) return "1 cell — size not resolved";
-  return `${cells} cells`;
+/** Area as text, marked as an upper bound when the footprint is a single cell. */
+export function areaText(areaKm2: number, cells: number | null | undefined): string {
+  return `${unsized(cells) ? "≤" : ""}${areaKm2} km²`;
+}
+
+/** How the footprint is made up, and why one cell is not a size. Includes its
+ *  own parentheses so a missing count leaves no dangling "()" behind. */
+export function cellsText(cells: number | null | undefined): string {
+  if (cells == null || !Number.isFinite(cells)) return "";
+  if (cells <= 1) return " (1 cell — size not resolved)";
+  return ` (${cells} cells)`;
+}
+
+/** Short "why is there a ≤" note for surfaces with room for one. Empty when the
+ *  extent is resolved and no explanation is owed. */
+export function footprintNote(cells: number | null | undefined): string {
+  return unsized(cells) ? "1 sensor pixel — size not resolved" : "";
 }
