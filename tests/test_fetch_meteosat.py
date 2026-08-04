@@ -285,3 +285,108 @@ def test_fetch_frp_points_still_raises_once_retries_are_spent():
     with pytest.raises(RuntimeError, match="offline"):
         fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=boom, sleep=lambda _: None)
     assert len(calls) == FRP_ATTEMPTS
+
+
+def test_liveness_does_the_h3_work_once_per_pixel_not_once_per_pair(monkeypatch):
+    """liveness_for_events recomputed latlng_to_cell + grid_disk for EVERY
+    (event, pixel) pair. Measured against production events: 3000 events x 4000
+    pixels took 27.1s, linear in pixels, and fetch_frp_points asks for 8000.
+    The cost sat at zero while EUMETView was down and met_rows was empty, then
+    returned in full when b91bb67 restored FRP.
+
+    Counted rather than timed: a wall-clock bound on the old shape measured
+    1.8s against a 1.5s limit, so a faster runner would have flipped it green
+    and the guard would have stopped guarding. Call counts cannot drift.
+    """
+    from datetime import datetime, timezone
+
+    import h3 as real_h3
+
+    from pipeline import fetch_meteosat
+    from pipeline.config import H3_RES
+
+    calls = {"cell": 0, "disk": 0}
+    # Bind the originals BEFORE patching: fetch_meteosat.h3 IS the h3 module, so
+    # a wrapper calling h3.latlng_to_cell would call itself.
+    orig_cell, orig_disk = real_h3.latlng_to_cell, real_h3.grid_disk
+
+    def counted_cell(lat, lon, res):
+        calls["cell"] += 1
+        return orig_cell(lat, lon, res)
+
+    def counted_disk(cell, k):
+        calls["disk"] += 1
+        return orig_disk(cell, k)
+
+    monkeypatch.setattr(fetch_meteosat.h3, "latlng_to_cell", counted_cell)
+    monkeypatch.setattr(fetch_meteosat.h3, "grid_disk", counted_disk)
+
+    now = datetime.now(timezone.utc)
+    events = {
+        f"e{i}": [{"cell": orig_cell(40 + i * 0.01, 10 + i * 0.01, H3_RES)}]
+        for i in range(50)
+    }
+    pixels = [
+        {"lat": 40 + (i % 50) * 0.01, "lon": 10 + (i % 50) * 0.01, "acq_time": now, "frp": 1.0}
+        for i in range(40)
+    ]
+
+    liveness_for_events(events, pixels)
+
+    # Once per pixel. The old shape did 50 x 40 = 2000 of each.
+    assert calls["cell"] == len(pixels)
+    assert calls["disk"] == len(pixels)
+
+
+def test_liveness_counts_a_pixel_once_per_event_however_many_cells_it_touches():
+    """Two invariants the rewrite hinges on, neither of which the rest of the
+    suite reaches: `seen` must be per-PIXEL (hoisting it out would give each
+    event only its first matching pixel), and it must exist at all (without it
+    a pixel whose grid_disk covers several of one event's cells is counted
+    once per cell). Both mutations previously survived all 196 tests.
+    """
+    from datetime import datetime, timezone
+
+    import h3
+
+    from pipeline.config import H3_RES
+
+    now = datetime.now(timezone.utc)
+    origin = h3.latlng_to_cell(44.0, -1.0, H3_RES)
+    # An event spanning the origin and every neighbour, so one pixel's disk
+    # necessarily covers several of its cells.
+    event_cells = list(h3.grid_disk(origin, 1))
+    events = {"wide": [{"cell": c} for c in event_cells]}
+
+    lat, lon = h3.cell_to_latlng(origin)
+    pixels = [
+        {"lat": lat, "lon": lon, "acq_time": now, "frp": 1.0},
+        {"lat": lat, "lon": lon, "acq_time": now, "frp": 2.0},
+    ]
+
+    series = liveness_for_events(events, pixels)["wide"]["frp_series"]
+    # Exactly one entry per pixel: not 1 (seen hoisted), not 14 (no guard).
+    assert len(series) == 2
+    assert [v for _, v in series] == [1.0, 2.0]  # met_rows order preserved
+
+
+def test_liveness_matches_the_same_events_as_before():
+    """Behaviour must be identical: a pixel counts for an event when it lands on
+    one of that event's cells or a neighbour (grid_disk radius 1)."""
+    from datetime import datetime, timezone
+
+    import h3
+
+    from pipeline.config import H3_RES
+
+    now = datetime.now(timezone.utc)
+    on_cell = h3.latlng_to_cell(44.0, -1.0, H3_RES)
+    neighbour = next(c for c in h3.grid_disk(on_cell, 1) if c != on_cell)
+    far = h3.latlng_to_cell(50.0, 20.0, H3_RES)
+
+    events = {"near": [{"cell": on_cell}], "far": [{"cell": far}]}
+    lat, lon = h3.cell_to_latlng(neighbour)
+    out = liveness_for_events(events, [{"lat": lat, "lon": lon, "acq_time": now, "frp": 3.0}])
+
+    assert "near" in out and "far" not in out
+    assert out["near"]["frp_series"] == [[now.isoformat(), 3.0]]
