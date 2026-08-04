@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 
 from pipeline.config import load_settings
 from pipeline.fetch_firms import (
+    REDACTED,
+    scrub,
     append_hotspots,
     fetch_firms,
     fetch_firms_history,
@@ -127,3 +129,101 @@ def test_history_stops_at_the_first_satellite_with_data(tmp_path):
 
     # no point paying for NOAA-20 when SNPP already answered
     assert all("VIIRS_NOAA20_NRT" not in u for u in asked)
+
+
+def test_scrub_removes_the_key():
+    key = "0123456789abcdef0123456789abcdef"
+    url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/x/2"
+    out = scrub(f"500 Server Error for url: {url}", key)
+    assert key not in out
+    assert REDACTED in out
+
+
+def test_scrub_is_a_noop_without_a_key():
+    # No key configured means nothing to hide; the message must survive intact.
+    assert scrub("500 Server Error", None) == "500 Server Error"
+
+
+def test_history_never_prints_the_key_when_a_window_fails(tmp_path, capsys):
+    """A failing window prints the exception, and requests puts the failing URL —
+    key and all — in that exception. These logs are public on a public repo, so a
+    single upstream 500 would otherwise publish a working credential."""
+    key = "deadbeefdeadbeefdeadbeefdeadbeef"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+
+    def boom(url: str) -> str:
+        # Exactly the shape requests raises: the URL is inside the message.
+        raise RuntimeError(f"500 Server Error for url: {url}")
+
+    fetch_firms_history(s, days=5, http_get=boom)
+    err = capsys.readouterr().err
+    assert key not in err
+    assert REDACTED in err
+
+
+class _Resp:
+    """Minimal stand-in for a requests Response that failed."""
+
+    def __init__(self, url: str, status: int):
+        self.status_code = status
+        self._url = url
+
+    def raise_for_status(self):
+        err = RuntimeError(f"{self.status_code} Server Error for url: {self._url}")
+        err.response = self  # requests attaches the response; _fault reads it
+        raise err
+
+
+def test_default_fetcher_scrubs_the_key(tmp_path, monkeypatch):
+    """The default http_get is the path production actually takes, and it was
+    marked `no cover`, so it would have passed the suite unscrubbed."""
+    import requests
+
+    key = "cafebabecafebabecafebabecafebabe"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _Resp(url, 500))
+
+    try:
+        fetch_firms(s)
+    except Exception as exc:  # noqa: BLE001 - the message is what is under test
+        assert key not in str(exc)
+        assert REDACTED in str(exc)
+        assert "HTTP 500" in str(exc)  # the status survives the flattening
+    else:
+        raise AssertionError("expected the failure to propagate")
+
+
+def test_default_history_fetcher_scrubs_the_key(tmp_path, monkeypatch, capsys):
+    """History swallows per-window failures and PRINTS them, so the return value
+    proves nothing — it is 0 whether or not the key was scrubbed. Assert on what
+    actually reaches the log."""
+    import requests
+
+    key = "f00df00df00df00df00df00df00df00d"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _Resp(url, 401))
+
+    assert fetch_firms_history(s, days=5) == 0
+    err = capsys.readouterr().err
+    assert key not in err
+    assert REDACTED in err
+    # 401 means the key expired; 500 means NASA is down. Only one needs a human.
+    assert "HTTP 401" in err
+
+
+def test_nrt_scrubs_an_injected_fetchers_exception(tmp_path):
+    """The injected seam bypasses the default wrapper entirely; the boundary has
+    to hold regardless of who supplies the fetcher."""
+    key = "abadidea0abadidea0abadidea0abad0"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+
+    def boom(url: str) -> str:
+        raise RuntimeError(f"500 Server Error for url: {url}")
+
+    try:
+        fetch_firms(s, http_get=boom)
+    except Exception as exc:  # noqa: BLE001
+        assert key not in str(exc)
+        assert REDACTED in str(exc)
+    else:
+        raise AssertionError("expected the failure to propagate")
