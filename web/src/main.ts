@@ -655,6 +655,20 @@ function renderCellPicker(
   );
 }
 
+
+/** How to state a capture date, which the two tiers know with different
+ * precision.
+ *
+ * MODIS is a daily global mosaic, so the date shown is the date rendered.
+ * Sentinel-2 revisits every ~2-3 days, so the HD tier hands Sentinel Hub a
+ * multi-day TIME range and lets it pick the clearest pass inside it — meaning
+ * the image can be from any day in that range, not the one named. Printing a
+ * bare date there claims a precision we do not have, so say "around".
+ */
+function captureDate(iso: string, cfg: ImageryConfig): string {
+  return cfg.hd ? `around ${iso}` : iso;
+}
+
 /** Whole days from ISO day `a` to ISO day `b` (negative when b is earlier). */
 function dayDelta(a: string, b: string): number {
   return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
@@ -697,8 +711,9 @@ function setCompareNotice(
     `<div class="compare-banner">` +
     `<span class="compare-title">${escapeHtml(scar.label)}</span>` +
     `<span class="compare-dates">` +
-    `<b>Before</b> pre-fire · ${scar.before}<br>` +
-    `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ${scar.after}` +
+    `<b>Before</b> pre-fire · ${captureDate(scar.before, cfg)}<br>` +
+    `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ` +
+    `${captureDate(scar.after, cfg)}` +
     `<span class="compare-step">` +
     `<button class="compare-day" type="button" data-days="-1" ` +
     `title="Previous capture day">&#9664;</button>` +
