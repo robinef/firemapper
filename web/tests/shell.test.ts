@@ -255,6 +255,7 @@ describe("icon rail", () => {
     const { nav, calls } = setupWithDeps();
     document.getElementById("rail-search")!.click();
     nav.push({ view: "detail", title: "Pedrógão" });
+    nav.back();
     expect(calls).toEqual(["list:", "list:porto"]);
   });
   it("ℹ pushes info and fills #info", () => {
