@@ -122,8 +122,9 @@ describe("burned-out fires stay reachable", () => {
 });
 
 describe("showing every fire size", () => {
-  // 1335 of 1344 live fires are `minor`, gated to z8.5, so the continental view
-  // draws almost nothing and looks broken. A reader must be able to say "show
+  // Most live fires are `minor` — 3079 of 4346 in the 2026-08-04 generation —
+  // and minor is gated to z8.5, so the continental view draws a fraction of
+  // what is burning and can look broken. A reader must be able to say "show
   // everything, I accept the clutter".
   function zoomMap() {
     const { map, layers } = fakeMap();
