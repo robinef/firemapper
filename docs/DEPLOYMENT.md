@@ -91,6 +91,46 @@ Repository secrets:
 No Cloudflare token is needed as a repository secret: deploys run inside
 Cloudflare's own build integration, not from Actions.
 
+Worker secret (set on Cloudflare, **not** a repository secret):
+
+| Secret | Used by | Notes |
+|---|---|---|
+| `GH_DISPATCH_TOKEN` | the Worker's cron trigger | fine-grained GitHub PAT, `Actions: read and write`, scoped to this repo only |
+
+```bash
+npx wrangler secret put GH_DISPATCH_TOKEN
+```
+
+`workflow_dispatch` needs only `Actions`. Do not grant `Contents: write` — that
+is what `repository_dispatch` would require, and it is a token that can push
+commits to the repo.
+
+### When the refresh stops
+
+**The token expiring is the most likely cause, and fine-grained PATs cap at
+about a year — so this is a when, not an if.** Put its expiry date in a
+calendar; nothing in the system will remind you.
+
+The failure is quiet by nature: the cron keeps firing, every dispatch is
+rejected, and the map simply stops advancing. Three ways to catch it, in the
+order they will actually reach you:
+
+1. **The map itself.** `attempted_at` in `data/manifest.json` is the honest
+   signal — it moves on every refresh regardless of which layers succeeded. If
+   it is hours old, the refresh is dead, whatever the cause. This is worth an
+   external uptime check; nothing in this repo performs one yet.
+2. **Cloudflare.** The scheduled handler throws on a failed dispatch, so the
+   invocation is recorded as an error rather than "Ok" — visible under the
+   Worker's Cron Events, and eligible for a Cloudflare notification.
+3. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
+   (401 expired, 403 wrong scope, 404 wrong path, 422 bad ref or disabled
+   workflow). Logs are retained 3 days on the free plan — a diagnostic once you
+   already suspect a problem, not a monitor.
+
+GitHub's own `schedule` in `refresh-fast.yml` still runs every six hours, so a
+dead Worker or expired token degrades the cadence rather than stopping the map
+outright.
+
 Seed the archive once, locally, with `FIRMS_MAP_KEY` in `.env`:
 
 ```bash

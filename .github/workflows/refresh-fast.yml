@@ -3,8 +3,23 @@ name: refresh-fast
 # Live layers only: MTG FRP (10-minute cadence), wind and aircraft, re-clustered
 # against the archive already in R2. Needs no API key.
 on:
+  # FALLBACK ONLY. The real cadence comes from a Cloudflare Cron Trigger calling
+  # workflow_dispatch below (see worker/index.ts): GitHub throttles scheduled
+  # workflows on public repos badly enough that this schedule was fiction —
+  # measured over 52.8 h on 2026-08-04, "*/15" produced 30 runs against 211
+  # nominal, median gap 81 min, worst 232.
+  #
+  # Every six hours, not hourly. `queue: max` means a colliding run is QUEUED,
+  # never discarded, and this group is strictly serial — so an hourly fallback
+  # is not free insurance, it is ~14 min of every 60 spent re-doing what the
+  # Worker already did. Together with two Worker-driven runs and refresh-full
+  # that came to ~58 min of work per 60-min hour: saturation, where any slow run
+  # pushes the queue permanently backwards and the cadence gets LESS regular.
+  #
+  # Six-hourly still catches a dead Worker or an expired token within one cycle,
+  # which is the job. Offset from refresh-full's ":07" so they do not collide.
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "37 */6 * * *"
   workflow_dispatch:
 
 # queue: max is load-bearing. The default (`single`) CANCELS an older pending
