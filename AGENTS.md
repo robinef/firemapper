@@ -58,5 +58,6 @@ are green. Add a test with any behaviour change.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Two things matter when touching
 it: `web/dist` is currently a **committed build artifact** (so served data is a
-static snapshot until rebuilt), and `SENTINELHUB_INSTANCE_ID` must **never** reach
-a public deploy — it is a WMS access token that would be visible in the browser.
+static snapshot until rebuilt), and `SENTINELHUB_INSTANCE_ID` must **never** reach a browser or the pipeline — it is a
+bearer token for a whole Sentinel Hub configuration, so it lives only as a Worker
+secret and tiles are proxied at `/hd` (see docs/DEPLOYMENT.md).

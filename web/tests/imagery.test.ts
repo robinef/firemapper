@@ -31,7 +31,7 @@ const scar: Scar = {
 
 // Pinned so the clamp-to-today branch is exercised deliberately, not by
 // whatever day the suite happens to run on.
-const TODAY = "2026-08-10";
+const TODAY = "2026-08-04";
 
 const gibsCfg: ImageryConfig = {
   source: "gibs",
@@ -235,5 +235,126 @@ describe("dates survive the trip from map click to compare button", () => {
     const s = scarFromClick({ props: {}, lon: 1, lat: 2 });
     expect(s.kind).toBe("active");
     expect(s.before < s.started).toBe(true);
+  });
+});
+
+/** Read the TIME range out of a Sentinel Hub WMS tile template. */
+function timeRange(url: string): [string, string] {
+  const t = decodeURIComponent(new URL(url, "https://x").searchParams.get("TIME")!);
+  return t.split("/") as [string, string];
+}
+
+const HD = { ...gibsCfg, hd: { wms_base: "/hd", layer: "TRUE_COLOR" } };
+
+const day = (iso: string, n: number) =>
+  new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const span = (a: string, b: string) =>
+  Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+
+/** A scar as the pipeline would emit it: before = ignition-6, after =
+ * min(ignition+14, yesterday), clamped to >= ignition. Mirrors _scar_dates. */
+function scarAged(ageDays: number, kind: "past" | "active" = "past"): Scar {
+  const started = day(TODAY, -ageDays);
+  const yesterday = day(TODAY, -1);
+  const settled = day(started, 14);
+  const after = kind === "active" ? yesterday : settled < yesterday ? settled : yesterday;
+  return {
+    id: "s", label: "s", kind, lon: -1, lat: 44.8, started,
+    before: day(started, -6),
+    after: after < started ? started : after,
+  };
+}
+
+describe("HD search windows", () => {
+  // Sentinel Hub picks a scene from a TIME range, so where that range sits
+  // decides what the comparison shows. Two invariants, both learned the hard
+  // way, and an earlier fix broke each while fixing the other.
+  const AGES = [0, 1, 2, 5, 13, 14, 15, 16, 19, 20, 30, 400];
+
+  it("never puts a pre-fire scene in the after slot, at any fire age", () => {
+    // The hard one. A window reaching before ignition shows unburned ground
+    // captioned as the scar.
+    for (const kind of ["past", "active"] as const) {
+      for (const age of AGES) {
+        const scar = scarAged(age, kind);
+        const [from] = timeRange(scarTiles(HD, scar, undefined, TODAY).after[0]);
+        expect(from >= scar.started, `age ${age} ${kind}: ${from} < ${scar.started}`).toBe(true);
+      }
+    }
+  });
+
+  it("never emits an inverted or future range", () => {
+    // An inverted TIME is not an error to Sentinel Hub — it returns an empty
+    // tile, which MapLibre renders as a silent blank half. Age 0 produced
+    // exactly that before this fix.
+    for (const kind of ["past", "active"] as const) {
+      for (const age of AGES) {
+        const [from, to] = timeRange(scarTiles(HD, scarAged(age, kind), undefined, TODAY).after[0]);
+        expect(from <= to, `age ${age} ${kind}: inverted ${from}/${to}`).toBe(true);
+        expect(to <= TODAY, `age ${age} ${kind}: future ${to}`).toBe(true);
+      }
+    }
+  });
+
+  it("keeps the window as wide as the fire's own age permits", () => {
+    // Sentinel-2 revisits every 2-3 days and cloud removes more, so a narrow
+    // window often holds no pass and renders black. It may only be narrow when
+    // the fire is too young for a wider one to exist without crossing ignition.
+    for (const age of AGES) {
+      const scar = scarAged(age);
+      const [from, to] = timeRange(scarTiles(HD, scar, undefined, TODAY).after[0]);
+      const available = span(scar.started, TODAY);
+      expect(span(from, to), `age ${age}`).toBe(Math.min(12, available));
+    }
+  });
+
+  it("slides the window as late as it can, so an old scar is fully settled", () => {
+    // A 30-day-old scar has plenty of post-settle imagery; the window must use
+    // it rather than opening near ignition.
+    const scar = scarAged(30);
+    const [from] = timeRange(scarTiles(HD, scar, undefined, TODAY).after[0]);
+    expect(span(scar.started, from)).toBeGreaterThanOrEqual(14); // past SCAR_SETTLE_DAYS
+  });
+
+  it("keeps the pre-fire baseline entirely before ignition, at any age", () => {
+    for (const age of AGES) {
+      const scar = scarAged(age);
+      const [, to] = timeRange(scarTiles(HD, scar, undefined, TODAY).before[0]);
+      expect(to <= scar.started, `age ${age}: baseline ends ${to}`).toBe(true);
+    }
+  });
+
+  it("holds every invariant while the reader steps the after date", () => {
+    // step() shifts scar.after; an earlier version had a cliff where one click
+    // on the next-day button moved the searched interval 11 days backwards.
+    let scar = scarAged(30);
+    for (let i = 0; i < 12; i++) {
+      scar = shiftAfter(scar, -1, TODAY);
+      const [from, to] = timeRange(scarTiles(HD, scar, undefined, TODAY).after[0]);
+      expect(from >= scar.started).toBe(true);
+      expect(from <= to).toBe(true);
+      expect(to <= TODAY).toBe(true);
+    }
+  });
+
+  it("cannot emit an inverted range even from a malformed scar", () => {
+    // scarFromProps (main.ts) builds a Scar from marker properties without
+    // validating their order, so a bad manifest entry can carry started > after.
+    // An inverted TIME is not an error to Sentinel Hub — it returns an empty
+    // tile, i.e. another silent blank half.
+    const bad: Scar = {
+      id: "s", label: "s", kind: "past", lon: -1, lat: 44.8,
+      started: "2026-08-01", before: "2026-07-01", after: "2026-07-10",
+    };
+    const [from, to] = timeRange(scarTiles(HD, bad, undefined, TODAY).after[0]);
+    expect(from <= to).toBe(true);
+  });
+
+  it("leaves the MODIS tier untouched", () => {
+    const scar = scarAged(30);
+    const t = scarTiles(gibsCfg, scar, undefined, TODAY);
+    expect(t.before[0]).toContain(scar.before);
+    expect(t.after[0]).toContain(scar.after);
+    expect(t.after[0]).not.toContain("TIME=");
   });
 });

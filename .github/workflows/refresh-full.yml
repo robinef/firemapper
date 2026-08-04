@@ -49,6 +49,13 @@ jobs:
       # archive is what put a 30-day timeline of zeroes on the live map.
       - run: uv run python -m scripts.refresh_remote full
         env:
+          # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
+          # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
+          # id is a bearer token for a whole OGC configuration and lives only in
+          # the Worker (see worker/index.ts and docs/DEPLOYMENT.md). This job
+          # holds R2 write credentials; it has no business holding that one too.
+          SENTINELHUB_PROXY: "1"
+          SENTINELHUB_LAYER: TRUE_COLOR
           FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
