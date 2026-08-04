@@ -132,9 +132,9 @@ def test_frp_warns_when_the_window_overflows_the_cap(capsys):
         "features": FRP_FC["features"],
     }
     fetch_frp_points(
-        (-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc), count=8000
+        (-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc), count=20000
     )
-    assert "truncated" in capsys.readouterr().out
+    assert "truncated" in capsys.readouterr().err
 
 
 def test_frp_is_quiet_when_the_whole_window_fits(capsys):
@@ -144,7 +144,72 @@ def test_frp_is_quiet_when_the_whole_window_fits(capsys):
         "features": FRP_FC["features"],
     }
     fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc))
-    assert "truncated" not in capsys.readouterr().out
+    assert "truncated" not in capsys.readouterr().err
+
+
+def test_frp_detects_truncation_without_numbermatched(capsys):
+    """WFS 2.0 permits numberMatched="unknown", and GeoServer sends exactly that
+    when skip-number-matched is on — a server-side toggle we do not control. If
+    that were the only detector it would go quiet precisely when the server stops
+    cooperating, so hitting the cap must be sufficient on its own."""
+    feats = FRP_FC["features"]
+    for matched in ("unknown", None):
+        fc = {"type": "FeatureCollection", "features": feats}
+        if matched is not None:
+            fc["numberMatched"] = matched
+        fetch_frp_points(
+            (-25.0, 34.0, 45.0, 72.0),
+            http_text=lambda url: json.dumps(fc),
+            count=len(feats),  # returned == cap, i.e. truncated by definition
+        )
+        assert "truncated" in capsys.readouterr().err, f"matched={matched!r}"
+
+
+def test_frp_window_is_bounded_against_the_freshness_budget():
+    """The window is how much history the heatmap paints at full weight, while
+    observed_at reports only the newest timestamp — so the layer always claims to
+    be minutes old however wide this gets. Keep the two visibly related: a window
+    many times the budget would render hours of history under a "live" label."""
+    from pipeline.fetch_meteosat import FRP_WINDOW_H
+    from pipeline.freshness import MAX_AGE_S
+
+    assert FRP_WINDOW_H * 3600 <= 6 * MAX_AGE_S["frp"]
+
+
+def test_frp_treats_a_naive_now_as_utc():
+    """Matches fetch_result.newest_timestamp. Reading a naive stamp as local time
+    would slide the whole window by the runner's UTC offset."""
+    from datetime import datetime
+
+    seen: list[str] = []
+
+    def capture(url: str) -> str:
+        seen.append(url)
+        return json.dumps({"type": "FeatureCollection", "features": []})
+
+    fetch_frp_points(
+        (-25.0, 34.0, 45.0, 72.0),
+        http_text=capture,
+        window_h=6,
+        now=datetime(2026, 8, 4, 12, 0),  # naive
+    )
+    assert quote("time AFTER 2026-08-04T06:00:00Z") in seen[0]
+
+
+def test_frp_url_never_names_a_crs_in_the_bbox():
+    """An explicit CRS operand looks more rigorous and silently moves the query.
+    With BBOX(...,'EPSG:4326') the server honours that CRS's official lat/lon
+    axis order, turning this box into lat -25..45, lon 34..72. Verified live on
+    2026-08-04: 5862 features without the operand, 1521 with — both HTTP 200, so
+    nothing surfaces the wrong region."""
+    from datetime import datetime, timezone
+
+    from pipeline.fetch_meteosat import _wfs_points_url
+
+    url = _wfs_points_url(
+        (-25.0, 34.0, 45.0, 72.0), 20000, datetime(2026, 8, 4, tzinfo=timezone.utc)
+    )
+    assert "EPSG%3A4326" not in url.split("CQL_FILTER=")[1]
 
 
 def test_fetch_frp_points_parses_rounds_and_filters():
