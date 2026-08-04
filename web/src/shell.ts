@@ -80,8 +80,24 @@ export function createShell(deps: ShellDeps): Shell {
     );
   };
 
+  let lastStack: readonly (typeof nav.top)[] | undefined;
   const sync = (stack: readonly (typeof nav.top)[]) => {
     const current = stack[stack.length - 1];
+    // When pushing detail, prepare the view we're leaving for when we navigate back
+    if (lastStack && stack.length > lastStack.length && current.view === "detail" && stack.length > 1) {
+      const prev = stack[stack.length - 2];
+      // Manually render the shared panel with the last query for the view we're leaving
+      if (prev.restore) {
+        // The closure checks nav.top.view, which is now 'detail'. To get it to use
+        // the previous view's query, we work around it by directly calling showFireList
+        if (prev.view === "search" && deps.lastQuery) {
+          deps.showFireList?.(deps.lastQuery());
+        } else {
+          prev.restore?.();
+        }
+      }
+    }
+    lastStack = stack;
     view?.setAttribute("data-view", current.view);
     if (!HAS_PANEL[current.view]) view?.removeAttribute("data-size");
     // Mirrored onto <body> as well as #view. Rules that must reach elements
@@ -135,6 +151,33 @@ export function createShell(deps: ShellDeps): Shell {
       if (nav.top.view === "compare") nav.back();
     }),
   );
+
+  /** Open a rail view. Re-tapping the icon of the view you are already on is a
+   *  no-op rather than a second identical entry, so back does not need two
+   *  presses to undo one deliberate action. */
+  const openRail = (view: ViewId, title: string, enter?: () => void) => {
+    if (nav.top.view === view) return;
+    enter?.();
+    nav.push({ view, title, restore: enter });
+  };
+  const bindRail = (id: string, view: ViewId, title: string, enter?: () => void) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const handler = () => openRail(view, title, enter);
+    el.addEventListener("click", handler);
+    offs.push(() => el.removeEventListener("click", handler));
+  };
+  bindRail("rail-layers", "layers", "Layers");
+  // restore repaints the list when search becomes top again after a fire was
+  // opened from it — #panel is shared with detail, so without this the list
+  // comes back empty and backing out of a fire reads as an overshoot.
+  bindRail("rail-search", "search", "Search", () =>
+    deps.showFireList?.(nav.top.view === "search" ? (deps.lastQuery?.() ?? "") : ""),
+  );
+  bindRail("rail-info", "info", "Data & sources", () => {
+    const el = document.getElementById("info");
+    if (el && deps.infoContent) el.innerHTML = deps.infoContent();
+  });
 
   // The one Escape handler. firecard.ts and setupCompareMode each added their
   // own, neither removed it, and compare's fired exit() even when nothing was

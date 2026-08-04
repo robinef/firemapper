@@ -221,3 +221,52 @@ describe("shell ↔ ui_events wiring", () => {
     expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
   });
 });
+
+describe("icon rail", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+  function setupWithDeps() {
+    mountShellDom();
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    const calls: string[] = [];
+    const shell = createShell({
+      nav,
+      showFireList: (q) => calls.push(`list:${q}`),
+      lastQuery: () => "porto",
+      infoContent: () => "<p>sources</p>",
+    });
+    return { nav, shell, calls };
+  }
+  it("⚙ pushes the layers view", () => {
+    const { nav } = setupWithDeps();
+    document.getElementById("rail-layers")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "layers"]);
+    expect(nav.top.title).toBe("Layers");
+  });
+  it("🔍 pushes search and renders an empty list", () => {
+    const { nav, calls } = setupWithDeps();
+    document.getElementById("rail-search")!.click();
+    expect(nav.top.view).toBe("search");
+    expect(calls).toEqual(["list:"]);
+  });
+  it("search restores its last query when it becomes top again", () => {
+    const { nav, calls } = setupWithDeps();
+    document.getElementById("rail-search")!.click();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    expect(calls).toEqual(["list:", "list:porto"]);
+  });
+  it("ℹ pushes info and fills #info", () => {
+    const { nav } = setupWithDeps();
+    document.getElementById("rail-info")!.click();
+    expect(nav.top.view).toBe("info");
+    expect(document.getElementById("info")!.innerHTML).toBe("<p>sources</p>");
+  });
+  it("tapping ⚙ twice does not stack two layers entries", () => {
+    const { nav } = setupWithDeps();
+    document.getElementById("rail-layers")!.click();
+    document.getElementById("rail-layers")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "layers"]);
+  });
+});
