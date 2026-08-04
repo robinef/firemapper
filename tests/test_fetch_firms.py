@@ -193,16 +193,22 @@ def test_default_fetcher_scrubs_the_key(tmp_path, monkeypatch):
         raise AssertionError("expected the failure to propagate")
 
 
-def test_default_history_fetcher_scrubs_the_key(tmp_path, monkeypatch):
+def test_default_history_fetcher_scrubs_the_key(tmp_path, monkeypatch, capsys):
+    """History swallows per-window failures and PRINTS them, so the return value
+    proves nothing — it is 0 whether or not the key was scrubbed. Assert on what
+    actually reaches the log."""
     import requests
 
     key = "f00df00df00df00df00df00df00df00d"
     s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
     monkeypatch.setattr(requests, "get", lambda url, timeout: _Resp(url, 401))
 
-    # History swallows per-window failures, so nothing propagates; the point is
-    # that the run completes without the key reaching the log.
     assert fetch_firms_history(s, days=5) == 0
+    err = capsys.readouterr().err
+    assert key not in err
+    assert REDACTED in err
+    # 401 means the key expired; 500 means NASA is down. Only one needs a human.
+    assert "HTTP 401" in err
 
 
 def test_nrt_scrubs_an_injected_fetchers_exception(tmp_path):
