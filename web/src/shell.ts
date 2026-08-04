@@ -47,6 +47,13 @@ export function createShell(deps: ShellDeps): Shell {
 
   const compareBar = document.getElementById("compare-bar");
 
+  /** Fire cards open peeked: the map, and the fire's own histogram scrubbing,
+   *  stay visible. Tapping the strip commits to the full card. Held per
+   *  detail entry so returning from the layers view restores what you left.
+   *  Declared here (before `sync`, not after `openDetail`) so `sync`'s first
+   *  synchronous call below can read it without a temporal-dead-zone crash. */
+  let detailSize: "peek" | "full" = "peek";
+
   const breakpoint = deps.breakpoint ?? 640;
   const mobile = window.matchMedia?.(`(max-width: ${breakpoint}px)`);
   let isMobile = mobile?.matches ?? false;
@@ -106,7 +113,13 @@ export function createShell(deps: ShellDeps): Shell {
   const sync = (stack: readonly (typeof nav.top)[]) => {
     const current = stack[stack.length - 1];
     view?.setAttribute("data-view", current.view);
-    if (!HAS_PANEL[current.view]) view?.removeAttribute("data-size");
+    if (current.view === "detail") {
+      view?.setAttribute("data-size", detailSize);
+      document.body.dataset.size = detailSize;
+    } else {
+      view?.removeAttribute("data-size");
+      delete document.body.dataset.size;
+    }
     // Mirrored onto <body> as well as #view. Rules that must reach elements
     // OUTSIDE #view — the rail, the peek chip — cannot use a sibling
     // combinator: #rail precedes #view in the document and `~` only matches
@@ -130,11 +143,30 @@ export function createShell(deps: ShellDeps): Shell {
   const openDetail = () => {
     const title =
       document.querySelector("#panel .fc-title")?.textContent?.trim() || "Fire";
-    const entry = { view: "detail" as const, title };
+    detailSize = "peek"; // a newly opened card always starts peeked
+    const entry = {
+      view: "detail" as const,
+      title,
+      restore: () => view?.setAttribute("data-size", detailSize),
+    };
     const top = nav.top.view;
     if (top === "map" || top === "search") nav.push(entry);
     else nav.replace(entry);
   };
+
+  const setSize = (size: "peek" | "full") => {
+    detailSize = size;
+    if (nav.top.view !== "detail") return;
+    view?.setAttribute("data-size", size);
+    document.body.dataset.size = size;
+  };
+  const onPeekClick = (e: Event) => {
+    if ((e.target as HTMLElement)?.closest(".fc-peek")) setSize("full");
+  };
+  document.getElementById("panel")?.addEventListener("click", onPeekClick);
+  offs.push(() =>
+    document.getElementById("panel")?.removeEventListener("click", onPeekClick),
+  );
 
   offs.push(
     onUi("detail:open", openDetail),
@@ -186,6 +218,11 @@ export function createShell(deps: ShellDeps): Shell {
     const el = document.getElementById("info");
     if (el && deps.infoContent) el.innerHTML = deps.infoContent();
   });
+
+  const chip = document.getElementById("view-chip");
+  const onChip = () => nav.reset();
+  chip?.addEventListener("click", onChip);
+  offs.push(() => chip?.removeEventListener("click", onChip));
 
   // The one Escape handler. firecard.ts and setupCompareMode each added their
   // own, neither removed it, and compare's fired exit() even when nothing was

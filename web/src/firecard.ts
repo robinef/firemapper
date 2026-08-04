@@ -72,7 +72,7 @@ function stat(label: string, value: string): string {
   return `<div class="fc-stat"><span>${label}</span><b>${value}</b></div>`;
 }
 
-function fireCardHtml(p: EventProps, track: Track | null): string {
+export function fireCardHtml(p: EventProps, track: Track | null): string {
   const st = STATUS[p.status] ?? STATUS.closed;
   const stt = STATE[p.state] ?? STATE.steady;
   const title = p.place?.name ?? "Fire";
@@ -85,7 +85,7 @@ function fireCardHtml(p: EventProps, track: Track | null): string {
     p.freshness.meteosat ? stat("Live (Meteosat)", rel(p.freshness.meteosat)) : "",
     peak ? stat("Peak intensity", `${Math.round(peak)} MW`) : "",
     mv ? stat("Spreading", `${compass(mv.bearing_deg)} · ${(mv.distance_24h_m / 1000).toFixed(1)} km / 24 h`) : "",
-    p.place ? stat("Nearest town", `${p.place.name} (${p.place.distance_km} km)`) : "",
+    p.place ? stat("Nearest town", `${esc(p.place.name)} (${p.place.distance_km} km)`) : "",
   ].join("");
   const alert = p.gdacs
     ? `<a class="fc-alert" href="${p.gdacs.link}" target="_blank" rel="noopener">⚠ ${esc(p.gdacs.title)}</a>`
@@ -97,7 +97,14 @@ function fireCardHtml(p: EventProps, track: Track | null): string {
       `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
       `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
     : "";
+  // The peeked strip: the whole card compressed to one tappable line, so a
+  // phone can dock it above the time bar and keep the map — and the fire's
+  // own histogram scrubbing — visible. CSS hides its siblings at that size.
+  const peek =
+    `<div class="fc-peek"><b>${esc(title)}</b>` +
+    `<span>${p.area_km2} km² · ${st.t}</span><i aria-hidden="true">›</i></div>`;
   return (
+    peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
     `<div class="fc-title">${esc(title)}</div>` +
     `<div class="fc-sub">${fmtDate(p.started)} · <span style="color:${st.c}">${st.t}</span> fire</div>` +
@@ -109,8 +116,13 @@ function fireCardHtml(p: EventProps, track: Track | null): string {
   );
 }
 
-function scarCardHtml(s: Scar): string {
+export function scarCardHtml(s: Scar): string {
+  const peek =
+    `<div class="fc-peek"><b>${esc(s.place || s.label)}</b>` +
+    `<span>${s.kind === "past" ? "Past fire" : "Active fire"}</span>` +
+    `<i aria-hidden="true">›</i></div>`;
   return (
+    peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
     `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +

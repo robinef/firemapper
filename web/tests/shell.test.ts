@@ -334,3 +334,46 @@ describe("camera padding", () => {
     expect(pads.at(-1)).toEqual({ left: 376 });
   });
 });
+
+describe("detail sizing", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("opens a fire card peeked", () => {
+    const { nav, view } = setup();
+    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    emitUi("detail:open");
+    expect(view.dataset.size).toBe("peek");
+    expect(nav.top.view).toBe("detail");
+  });
+
+  it("expands to full when the peek strip is tapped", () => {
+    const { view } = setup();
+    document.getElementById("panel")!.innerHTML =
+      `<div class="fc-peek"></div><div class="fc-title">Pedrógão</div>`;
+    emitUi("detail:open");
+    document.querySelector<HTMLElement>(".fc-peek")!.click();
+    expect(view.dataset.size).toBe("full");
+  });
+
+  it("restores the size it had when returning from another view", () => {
+    const { nav, view } = setup();
+    document.getElementById("panel")!.innerHTML =
+      `<div class="fc-peek"></div><div class="fc-title">Pedrógão</div>`;
+    emitUi("detail:open");
+    document.querySelector<HTMLElement>(".fc-peek")!.click();
+    expect(view.dataset.size).toBe("full");
+    nav.push({ view: "layers", title: "Layers" });
+    nav.back();
+    expect(view.dataset.size).toBe("full");
+  });
+
+  it("drops data-size entirely for views that have no sizes", () => {
+    const { nav, view } = setup();
+    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    emitUi("detail:open");
+    nav.push({ view: "compare", title: "Compare" });
+    expect(view.dataset.size).toBeUndefined();
+  });
+});

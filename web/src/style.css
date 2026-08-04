@@ -269,6 +269,45 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     content: ""; position: absolute; top: 0; bottom: 0;
     left: -21px; width: 44px;
   }
+
+  /* Rail: a horizontal row above the time bar, not a left strip. */
+  #rail { flex-direction: row; top: auto; left: auto;
+    right: 12px; bottom: calc(var(--timebar) + 12px); }
+  /* The rail is only useful while the map is: it is the way INTO a view, so
+     it has no job on top of one. The peeked card is the exception — ⚙ there
+     opens that fire's level-2 toggles.
+     Keyed on body, NOT on a sibling combinator: #rail precedes #view in the
+     document, and `~` only matches FOLLOWING siblings, so a #view-based
+     selector can never reach the rail and it would stay visible over every
+     full-page view. */
+  body:not([data-view="map"]):not([data-size="peek"]) #rail { display: none; }
+
+  /* Every view is full-page except the peeked card. */
+  #view { top: 0; left: 0; right: 0; bottom: 0; width: auto;
+    max-height: none; border-radius: 0; padding: 8px 12px 12px; }
+  #view[data-size="peek"] {
+    top: auto; bottom: var(--timebar);
+    height: 56px; padding: 0 12px; border-radius: 12px 12px 0 0;
+    overflow: hidden;
+  }
+  /* At peek the card is one line: hide the back bar and every part of the
+     card except the strip itself. The way out at this size is the floating
+     chip over the map, which is a bigger and closer target one-handed. */
+  #view[data-size="peek"] > #view-bar { display: none; }
+  #view[data-size="peek"] #panel > *:not(.fc-peek) { display: none; }
+  #view[data-size="peek"] .fc-peek { display: flex; }
+
+  .fc-peek { display: none; align-items: center; gap: 8px; height: 56px;
+    cursor: pointer; }
+  .fc-peek b { font-size: 14px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .fc-peek span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .fc-peek i { margin-left: auto; font-style: normal; color: var(--muted); }
+
+  /* The way back to the map while a card is peeked: a floating chip over the
+     map, thumb-reachable, rather than a control inside a 56px strip.
+     Body-keyed for the same reason as the rail above — no DOM-order coupling. */
+  body[data-size="peek"] #view-chip { display: inline-flex; }
 }
 
 /* Slice-hex picker: a res-5 hex is ~250 km² and often holds several fires. */
@@ -383,7 +422,14 @@ body.compare-mode #timeline { display: none; }
     border-radius: 12px; padding: 8px 12px 12px;
     box-shadow: 0 2px 20px rgba(0,0,0,.55); }
   #timeline { left: 80px; }
+  .fc-peek { display: none; }
 }
 
 #info .fc-stat span { text-transform: capitalize; }
 .info-warn { color: #ffcf8f; }
+
+#view-chip { display: none; position: absolute; top: 12px; left: 12px;
+  z-index: 9; min-height: 44px; padding: 0 14px; border-radius: 999px;
+  background: var(--panel); color: var(--fg); font: inherit; font-weight: 600;
+  border: 1px solid rgba(255,255,255,.14); cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0,0,0,.45); align-items: center; }
