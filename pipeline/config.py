@@ -62,7 +62,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     if env is not None:
         merged = dict(env)
     return Settings(
-        firms_map_key=merged.get("FIRMS_MAP_KEY"),
+        # `or None`: an unset GitHub secret interpolates to "", which is not None,
+        # so it slips past every `is None` guard — including run.py's refusal to
+        # publish without a key — and then fetches a URL with an empty key
+        # segment. That is precisely the empty-archive publish those guards exist
+        # to prevent.
+        firms_map_key=merged.get("FIRMS_MAP_KEY") or None,
         eumetsat_key=merged.get("EUMETSAT_CONSUMER_KEY"),
         eumetsat_secret=merged.get("EUMETSAT_CONSUMER_SECRET"),
         sh_client_id=merged.get("SENTINELHUB_CLIENT_ID"),

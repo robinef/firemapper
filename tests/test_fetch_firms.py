@@ -159,3 +159,65 @@ def test_history_never_prints_the_key_when_a_window_fails(tmp_path, capsys):
     err = capsys.readouterr().err
     assert key not in err
     assert REDACTED in err
+
+
+class _Resp:
+    """Minimal stand-in for a requests Response that failed."""
+
+    def __init__(self, url: str, status: int):
+        self.status_code = status
+        self._url = url
+
+    def raise_for_status(self):
+        err = RuntimeError(f"{self.status_code} Server Error for url: {self._url}")
+        err.response = self  # requests attaches the response; _fault reads it
+        raise err
+
+
+def test_default_fetcher_scrubs_the_key(tmp_path, monkeypatch):
+    """The default http_get is the path production actually takes, and it was
+    marked `no cover`, so it would have passed the suite unscrubbed."""
+    import requests
+
+    key = "cafebabecafebabecafebabecafebabe"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _Resp(url, 500))
+
+    try:
+        fetch_firms(s)
+    except Exception as exc:  # noqa: BLE001 - the message is what is under test
+        assert key not in str(exc)
+        assert REDACTED in str(exc)
+        assert "HTTP 500" in str(exc)  # the status survives the flattening
+    else:
+        raise AssertionError("expected the failure to propagate")
+
+
+def test_default_history_fetcher_scrubs_the_key(tmp_path, monkeypatch):
+    import requests
+
+    key = "f00df00df00df00df00df00df00df00d"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _Resp(url, 401))
+
+    # History swallows per-window failures, so nothing propagates; the point is
+    # that the run completes without the key reaching the log.
+    assert fetch_firms_history(s, days=5) == 0
+
+
+def test_nrt_scrubs_an_injected_fetchers_exception(tmp_path):
+    """The injected seam bypasses the default wrapper entirely; the boundary has
+    to hold regardless of who supplies the fetcher."""
+    key = "abadidea0abadidea0abadidea0abad0"
+    s = load_settings(env={"FIRMS_MAP_KEY": key, "DATA_DIR": str(tmp_path)})
+
+    def boom(url: str) -> str:
+        raise RuntimeError(f"500 Server Error for url: {url}")
+
+    try:
+        fetch_firms(s, http_get=boom)
+    except Exception as exc:  # noqa: BLE001
+        assert key not in str(exc)
+        assert REDACTED in str(exc)
+    else:
+        raise AssertionError("expected the failure to propagate")
