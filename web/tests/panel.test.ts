@@ -77,3 +77,26 @@ describe("mountPanel close wiring", () => {
     off();
   });
 });
+
+describe("stating an area we actually measured", () => {
+  /**
+   * The helper is unit-tested in area.test.ts; these guard the CALL SITES,
+   * which is where the equivalent pipeline fix was found to be unprotected.
+   * A one-cell footprint is `size_class: minor` precisely because one pixel
+   * says nothing about extent — the panel must not print a confident number
+   * for the same fire.
+   */
+  it("marks a single-cell footprint as an upper bound", () => {
+    const html = renderPanel({ ...props, area_km2: 5.2, cum_cells: 1 }, track, now);
+    expect(html).toContain("≤5.2 km²");
+    expect(html).toContain("1 cell — size not resolved");
+    expect(html).not.toContain("(1 cells)"); // the grammar bug, and the false claim
+  });
+
+  it("states a resolved extent plainly", () => {
+    const html = renderPanel(props, track, now); // 12.6 km², 18 cells
+    expect(html).toContain("12.6 km²");
+    expect(html).not.toContain("≤12.6");
+    expect(html).toContain("18 cells");
+  });
+});
