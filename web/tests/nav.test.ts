@@ -80,14 +80,35 @@ describe("nav stack", () => {
     const flags: boolean[] = [];
     // Mirrors firecard.close(), which emits detail:close and would otherwise
     // drive a second back() from inside the first one's teardown.
+    //
+    // The stack is TWO deep on purpose. From [map, detail] the re-entrant
+    // back() is absorbed by the history fake's own boundary clamp whether or
+    // not the guard works, so a depth-1 version of this test passes against a
+    // broken implementation — it proves the clamp, not the guard.
     nav.onExit("detail", () => {
       flags.push(nav.unwinding);
       nav.back();
     });
+    nav.push(entry("search", "Search"));
     nav.push(entry("detail", "Pedrógão"));
     nav.back();
     expect(flags).toEqual([true]);
-    expect(nav.stack.map((e) => e.view)).toEqual(["map"]); // one pop, not two
+    // One pop: back at search, NOT carried through to the map.
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    // The stack survived intact — a nested pop would have re-grown `entries`
+    // over a shorter array and left a hole here.
+    expect(nav.top).toBeDefined();
+    expect(nav.top.title).toBe("Search");
+  });
+
+  it("drops a re-entrant reset() from a teardown for the same reason", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.onExit("detail", () => nav.reset());
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    nav.back();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
   });
 
   it("runs restore() on the entry that becomes top again", () => {
@@ -119,9 +140,24 @@ describe("nav stack", () => {
     nav.push(entry("detail", "Pedrógão"));
     nav.back(); // → layers
     history.go(1); // Forward into the truncated tail; nav undoes it
+    expect(history.state).toEqual({ depth: 1 }); // in step with the cursor
     // History and stack agree again: one Back leaves layers for the map.
     nav.back();
     expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
+  });
+
+  it("resyncs a forward jump that crosses several entries at once", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    nav.push(entry("compare", "Compare"));
+    nav.reset(); // → map, tail truncated
+    // A browser forward-MENU jump, not a single Forward press. One back()
+    // would return only one level and leave history.state at depth 2.
+    history.go(3);
+    expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
+    expect(history.state).toEqual({ depth: 0 });
   });
 
   it("truncates the forward tail when a new push follows a back", () => {

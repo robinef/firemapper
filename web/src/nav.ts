@@ -20,10 +20,10 @@
  * worse than Forward that does nothing.
  *
  * So `popstate` reporting a depth above the cursor is an orphan: nav undoes it
- * with a single `history.back()`, leaving the button visibly inert and the
- * history index back in step with the stack. Without that resync the index
- * would sit one ahead, and the next Back would appear dead — the exact
- * complaint this module exists to fix.
+ * with `history.go(cursor - depth)`, correcting however far the forward jump
+ * reached and leaving the button visibly inert and the history index back in
+ * step with the stack. Without that resync the index would sit ahead, and the
+ * next Back would appear dead — the exact complaint this module exists to fix.
  *
  * Deliberately DOM-free and free of ui_events: shell.ts owns both. That keeps
  * the arithmetic here testable without a document.
@@ -99,24 +99,22 @@ export function createNav(opts: {
     }
   };
 
-  /** Set while undoing an orphaned Forward, so the resync's own popstate is
-   *  recognised as ours and does not start a second one. */
-  let resyncing = false;
-
   const goTo = (depth: number) => {
     if (depth > cursor) {
       // Forward into a tail this stack truncated. Nothing to restore, so undo
-      // the navigation rather than leaving the history index one ahead of the
+      // the navigation rather than leaving the history index ahead of the
       // stack — which would make the next Back look dead.
-      if (resyncing) {
-        resyncing = false;
-        return;
-      }
-      resyncing = true;
-      history.back();
+      //
+      // go(cursor - depth), not back(): a forward-menu jump can cross several
+      // entries at once, and a single back() would return only one of them,
+      // leaving history.state.depth disagreeing with the cursor. Every entry
+      // we pushed recorded its own index as `depth`, so landing on index
+      // `cursor` yields a popstate whose depth EQUALS the cursor — caught by
+      // the `wanted === cursor` early return below. That self-cancelling
+      // property is why no re-entrancy flag is needed here.
+      history.go(cursor - depth);
       return;
     }
-    resyncing = false;
     const wanted = Math.max(0, depth);
     if (wanted === cursor) return;
     unwinding = true;
@@ -143,6 +141,11 @@ export function createNav(opts: {
   if (typeof booted?.depth === "number" && booted.depth > 0) {
     history.go(-booted.depth);
   }
+  // Ensure the base entry has its depth recorded, so when a forward resync
+  // lands at index 0, history.state.depth equals the cursor.
+  if (cursor === 0 && typeof booted?.depth !== "number") {
+    history.replaceState({ depth: 0 }, "");
+  }
 
   return {
     push(e) {
@@ -158,11 +161,19 @@ export function createNav(opts: {
       notify();
     },
     back() {
-      if (cursor === 0) return; // never navigate off the site
+      // `unwinding` first, and NOT merely `cursor === 0`: cursor is not
+      // assigned until after goTo has run its exit callbacks, so a teardown
+      // that calls back() — which firecard.close() effectively does, by
+      // emitting detail:close — still sees the pre-pop depth. Guarding on
+      // cursor alone only stops the re-entrant call when the stack happened
+      // to be exactly one deep; from [map, search, detail] it lets a nested
+      // pop run to completion, and the outer pop then re-grows `entries` over
+      // the shorter array, leaving a hole that throws on the next restore().
+      if (unwinding || cursor === 0) return; // never navigate off the site
       history.back();
     },
     reset() {
-      if (cursor === 0) return;
+      if (unwinding || cursor === 0) return;
       history.go(-cursor);
     },
     onExit(view, fn) {
