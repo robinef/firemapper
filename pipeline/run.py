@@ -183,7 +183,7 @@ def _safe(fn, default, label: str):
 def refresh(settings: Settings, tier: str = "full") -> None:
     """Run one refresh at the given tier.
 
-    "fast": live layers only — MTG FRP and wind —
+    "fast" (every 30 min): live layers only — MTG FRP and wind —
     re-clustered against the archive already on disk. Nothing here needs a key.
 
     "full" (hourly): also tops up the polar (VIIRS/MODIS) archive and the slow

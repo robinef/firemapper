@@ -70,11 +70,12 @@ async function boot() {
   if (import.meta.env.DEV) {
     (window as unknown as { __map: maplibregl.Map }).__map = map;
   }
-  // mountPanel closes the search results and the cell picker; the fire card
-  // bypasses mountPanel entirely. Without announcing detail:close here, the
-  // sheet's mode never leaves "detail" after the user closes one, hiding the
-  // layer list and legends at every detent until a fire card is separately
-  // opened and closed.
+  // Announce the close so the sheet can leave whatever mode it is in. Nothing
+  // mountPanel currently shows (search results, the cell picker) emits
+  // detail:open, so today this only ever fires from an already-overview sheet
+  // and is a no-op — kept because the wiring was once absent and that cost the
+  // layer list and every legend until a fire card was separately opened and
+  // closed. The next content that does emit detail:open gets it for free.
   const panel = mountPanel("panel", () => emitUi("detail:close"));
 
   map.on("load", async () => {

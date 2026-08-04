@@ -60,8 +60,9 @@ Rules that fall out of it:
   *claim* rather than degraded data — a position, a countdown — a failed fetch
   has to blank the layer instead. `NEVER_CARRIED` enforces this. It is empty
   today: the aircraft layer that motivated it was retired once it became clear
-  its 20-minute budget could not be met by a pipeline whose publish step alone
-  takes longer than that.
+  its 20-minute budget was unreachable. A layer is fresh only from publish until
+  expiry, so meeting it needs `trigger interval + time-to-publish <= 20 min`;
+  publishing takes 12-18 min, which leaves no interval that fits.
 - **The header badge is computed from fire sources only** (`events`, `frp`). A
   successful wind fetch says nothing about whether we can still see fires.
 - **Derived layers inherit their source's staleness**: spread arrows and

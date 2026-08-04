@@ -82,8 +82,8 @@ translations, colour-blind-safe palettes, or accessibility fixes.
 ## Credits
 
 Built on open data from **NASA FIRMS**, **EUMETSAT**, **Copernicus**,
-**Open-Meteo**, **GeoNames**, and **OpenStreetMap**. Thank
-you to everyone who keeps those services public.
+**Open-Meteo**, **GeoNames**, and **OpenStreetMap**. Thank you to everyone who
+keeps those services public.
 
 ## License
 

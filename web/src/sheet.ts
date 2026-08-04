@@ -1,7 +1,7 @@
 /**
  * The mobile bottom sheet.
  *
- * It owns exactly two things: how tall the sheet is, and which of the three
+ * It owns exactly two things: how tall the sheet is, and which of the two
  * content modes is showing. It holds no application data — which layers are on
  * and which fire is open stay in registry.ts and firecard.ts, which render into
  * the same element ids they always did.
