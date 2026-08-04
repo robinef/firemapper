@@ -403,3 +403,36 @@ describe("level-2 toggles from a peeked card", () => {
     expect(document.body.dataset.size).toBe("peek"); // what #rail keys off
   });
 });
+
+describe("--timebar measurement", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    // documentElement isn't reset by clearing <body>, and a value written by
+    // one test would otherwise leak into the next.
+    document.documentElement.style.removeProperty("--timebar");
+  });
+
+  it("publishes #timeline's measured height (+12px) onto --timebar on a view change", () => {
+    // Construct with the real (0-height) jsdom box first, so the only way
+    // 176px can appear below is via the sync() call this test triggers —
+    // not the one-off measurement taken during construction.
+    const { nav } = setup();
+    expect(document.documentElement.style.getPropertyValue("--timebar")).toBe("");
+
+    const timeline = document.getElementById("timeline")!;
+    timeline.getBoundingClientRect = () =>
+      ({ height: 164, width: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    nav.push({ view: "layers", title: "Layers" }); // a view change must re-measure
+
+    expect(document.documentElement.style.getPropertyValue("--timebar")).toBe("176px");
+  });
+
+  it("leaves the CSS fallback alone when #timeline measures 0 (jsdom's default)", () => {
+    const { nav } = setup(); // #timeline's real getBoundingClientRect, unstubbed — jsdom reports 0
+
+    nav.push({ view: "layers", title: "Layers" });
+
+    expect(document.documentElement.style.getPropertyValue("--timebar")).toBe("");
+  });
+});

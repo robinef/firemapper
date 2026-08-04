@@ -47,6 +47,25 @@ export function createShell(deps: ShellDeps): Shell {
 
   const compareBar = document.getElementById("compare-bar");
 
+  /** --timebar is what the rail and the peeked card sit above. A constant is
+   *  wrong the moment #timeline's content changes height — the fire card swaps
+   *  its own series in, with a title that wraps differently from the overview's
+   *  — so measure the real element instead of guessing. */
+  const timelineEl = document.getElementById("timeline");
+  const syncTimebar = () => {
+    if (!timelineEl) return;
+    const h = Math.round(timelineEl.getBoundingClientRect().height);
+    // jsdom reports 0 for every box; leaving the CSS fallback in place there is
+    // correct, and writing 12px would be a lie the tests would then encode.
+    if (h > 0) document.documentElement.style.setProperty("--timebar", `${h + 12}px`);
+  };
+  if (typeof ResizeObserver !== "undefined" && timelineEl) {
+    const observer = new ResizeObserver(syncTimebar);
+    observer.observe(timelineEl);
+    offs.push(() => observer.disconnect());
+  }
+  syncTimebar();
+
   /** Fire cards open peeked: the map, and the fire's own histogram scrubbing,
    *  stay visible. Tapping the strip commits to the full card.
    *
@@ -143,6 +162,9 @@ export function createShell(deps: ShellDeps): Shell {
     if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
     applyCameraPadding();
+    // Every view change can change what #timeline shows (a fire card swaps in
+    // its own title/series), so the measured --timebar can go stale here too.
+    syncTimebar();
   };
 
   offs.push(nav.onChange(sync));

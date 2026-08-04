@@ -339,7 +339,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 /* ---- Navigation shell --------------------------------------------- */
 /* Height the docked time bar reserves at the bottom on mobile: the peeked
    card sits directly above it and the rail above that, so all three read
-   the same number. */
+   the same number. This 120px is only a pre-measurement fallback — #timeline's
+   real height varies (its title re-renders per fire card and wraps
+   differently), so shell.ts measures the live element and overwrites this
+   custom property at runtime. */
 :root { --timebar: 120px; }
 
 /* One container for every non-map view. data-view picks the child that
