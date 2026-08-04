@@ -20,6 +20,7 @@ import {
   addClosedFires,
   fireHaloIds,
   fireLayerIds,
+  setShowAllSizes,
 } from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
@@ -50,6 +51,7 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
+import { countFires, countLabel } from "./fire_count";
 import { createSheet } from "./sheet";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
@@ -127,6 +129,9 @@ async function boot() {
     }
     if (manifest.imagery?.scars?.length) addScars(map, manifest.imagery.scars);
 
+    // Mirrors the size filter below, so the counter describes the map as it
+    // actually is rather than as the default gates would have it.
+    let showAllSizes = false;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -138,6 +143,25 @@ async function boot() {
           ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
         ],
         defaultOn: true,
+        // A ticked layer drawing nothing reads as broken. It is usually just
+        // zoom: 1335 of 1344 live fires are `minor`, gated to z8.5. Say so.
+        status: () => {
+          const b = map.getBounds();
+          return countLabel(countFires(
+            events.features,
+            { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() },
+            map.getZoom(),
+            showAllSizes,
+          ));
+        },
+        filter: {
+          label: "Show every size (slower, busier)",
+          defaultOn: false,
+          onChange: (on) => {
+            showAllSizes = on;
+            setShowAllSizes(map, on);
+          },
+        },
         legend: {
           title: "Active fires",
           entries: [
@@ -226,6 +250,10 @@ async function boot() {
       map,
       manifest,
     );
+    // The count is camera-dependent, so it has to follow the camera — a
+    // stale "1 of 54" after panning is a different lie from the one this
+    // replaced. moveend rather than move: once per gesture, not per frame.
+    map.on("moveend", () => switcher.refresh());
     createSheet(); // no-op above 640px; re-parents the panels below it
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.

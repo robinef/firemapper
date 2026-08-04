@@ -427,3 +427,12 @@ body.fire-focus #timeline { right: 356px; }
 .fl-row:hover { background: rgba(255,255,255,.12); border-color: #ff6b00; }
 .fl-row b { font-size: 13px; }
 .fl-row span { font-size: 11px; color: var(--muted); }
+
+/* Live count under a layer toggle, and the layer's own filter. */
+.layer-count { font-size: 10.5px; color: #8fd8ff; margin-top: 2px; }
+.layer-filter {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  margin: -2px 0 7px 22px; font-size: 11px; color: var(--muted);
+}
+.layer-filter input { accent-color: #ff6b00; flex: 0 0 auto; }
+.layer-filter:hover { color: var(--fg); }

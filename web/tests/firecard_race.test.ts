@@ -62,7 +62,7 @@ describe("fire card open race", () => {
       getPaintProperty: () => 1, on: () => {}, off: () => {}, flyTo: () => {},
       getCanvas: () => ({ style: {} }),
     } as unknown as maplibregl.Map;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
 
     const card = setupFireCard(
       map,
@@ -114,7 +114,7 @@ describe("fire card open race", () => {
   it("does not let a stale fire track overwrite a scar card opened while it was loading", async () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
     const card = setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -137,7 +137,7 @@ describe("fire card open race", () => {
   it("does not let a stale fire track reopen the card after it was closed", async () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
     const card = setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
