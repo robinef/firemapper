@@ -54,6 +54,18 @@ export function createShell(deps: ShellDeps): Shell {
    *  synchronous call below can read it without a temporal-dead-zone crash. */
   let detailSize: "peek" | "full" = "peek";
 
+  /** #view and <body> must agree: rules for #rail and #view-chip key off the
+   *  body attribute, because those two sit outside #view and before it in the
+   *  document, where no selector rooted at #view can reach them. Anything that
+   *  changes the size goes through here so neither half can drift.
+   *  Declared here, ahead of `setSize` below, for the same temporal-dead-zone
+   *  reason as `detailSize`: `sync`'s first synchronous call (right after its
+   *  own definition) already calls this. */
+  const applySize = (size: "peek" | "full") => {
+    view?.setAttribute("data-size", size);
+    document.body.dataset.size = size;
+  };
+
   const breakpoint = deps.breakpoint ?? 640;
   const mobile = window.matchMedia?.(`(max-width: ${breakpoint}px)`);
   let isMobile = mobile?.matches ?? false;
@@ -114,8 +126,7 @@ export function createShell(deps: ShellDeps): Shell {
     const current = stack[stack.length - 1];
     view?.setAttribute("data-view", current.view);
     if (current.view === "detail") {
-      view?.setAttribute("data-size", detailSize);
-      document.body.dataset.size = detailSize;
+      applySize(detailSize);
     } else {
       view?.removeAttribute("data-size");
       delete document.body.dataset.size;
@@ -147,7 +158,7 @@ export function createShell(deps: ShellDeps): Shell {
     const entry = {
       view: "detail" as const,
       title,
-      restore: () => view?.setAttribute("data-size", detailSize),
+      restore: () => applySize(detailSize),
     };
     const top = nav.top.view;
     if (top === "map" || top === "search") nav.push(entry);
@@ -157,8 +168,7 @@ export function createShell(deps: ShellDeps): Shell {
   const setSize = (size: "peek" | "full") => {
     detailSize = size;
     if (nav.top.view !== "detail") return;
-    view?.setAttribute("data-size", size);
-    document.body.dataset.size = size;
+    applySize(size);
   };
   const onPeekClick = (e: Event) => {
     if ((e.target as HTMLElement)?.closest(".fc-peek")) setSize("full");

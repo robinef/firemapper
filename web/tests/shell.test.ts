@@ -345,6 +345,7 @@ describe("detail sizing", () => {
     document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
     emitUi("detail:open");
     expect(view.dataset.size).toBe("peek");
+    expect(document.body.dataset.size).toBe("peek"); // what #rail/#view-chip key off
     expect(nav.top.view).toBe("detail");
   });
 
@@ -355,6 +356,7 @@ describe("detail sizing", () => {
     emitUi("detail:open");
     document.querySelector<HTMLElement>(".fc-peek")!.click();
     expect(view.dataset.size).toBe("full");
+    expect(document.body.dataset.size).toBe("full");
   });
 
   it("restores the size it had when returning from another view", () => {
@@ -367,6 +369,7 @@ describe("detail sizing", () => {
     nav.push({ view: "layers", title: "Layers" });
     nav.back();
     expect(view.dataset.size).toBe("full");
+    expect(document.body.dataset.size).toBe("full");
   });
 
   it("drops data-size entirely for views that have no sizes", () => {
@@ -375,5 +378,6 @@ describe("detail sizing", () => {
     emitUi("detail:open");
     nav.push({ view: "compare", title: "Compare" });
     expect(view.dataset.size).toBeUndefined();
+    expect(document.body.dataset.size).toBeUndefined(); // cleared, not merely stale
   });
 });
