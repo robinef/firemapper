@@ -63,7 +63,7 @@ export function renderPanel(props: EventProps, track: Track, now: Date = new Dat
     <button class="panel-close" aria-label="Close">×</button>
     <div class="${badgeClass}">${props.state.toUpperCase()}</div>
     <div class="panel-row muted">Started ${startedTxt} · ${props.status}</div>
-    <div class="panel-row"><b>${areaText(props.area_km2, props.cum_cells)}</b> burning area (${cellsText(props.cum_cells)})</div>
+    <div class="panel-row"><b>${areaText(props.area_km2, props.cum_cells)}</b> burning area${cellsText(props.cum_cells)}</div>
     <div class="panel-row">${move}</div>
     <svg class="spark" viewBox="0 0 120 30" preserveAspectRatio="none">
       <polyline points="${sparklinePath(track, 120, 30)}" fill="none" stroke="#ff6b00" stroke-width="2"/>

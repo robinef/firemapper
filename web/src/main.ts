@@ -10,6 +10,7 @@ import {
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
+import { areaText } from "./area";
 import { escapeHtml } from "./escape";
 import { createMap } from "./map";
 import {
@@ -673,7 +674,7 @@ function renderCellPicker(
       return (
         `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
         `<b>${escapeHtml(String(name))}</b>` +
-        `<span>${escapeHtml(String(p.area_km2 ?? "?"))} km² · ${escapeHtml(started)} · ` +
+        `<span>${escapeHtml(areaText(Number(p.area_km2 ?? 0), typeof p.cum_cells === "number" ? p.cum_cells : null))} · ${escapeHtml(started)} · ` +
         `${escapeHtml(String(p.status ?? ""))}</span></button>`
       );
     })

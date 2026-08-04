@@ -89,7 +89,7 @@ describe("stating an area we actually measured", () => {
   it("marks a single-cell footprint as an upper bound", () => {
     const html = renderPanel({ ...props, area_km2: 5.2, cum_cells: 1 }, track, now);
     expect(html).toContain("≤5.2 km²");
-    expect(html).toContain("1 cell — size not resolved");
+    expect(html).toContain("(1 cell — size not resolved)");
     expect(html).not.toContain("(1 cells)"); // the grammar bug, and the false claim
   });
 
@@ -97,6 +97,15 @@ describe("stating an area we actually measured", () => {
     const html = renderPanel(props, track, now); // 12.6 km², 18 cells
     expect(html).toContain("12.6 km²");
     expect(html).not.toContain("≤12.6");
-    expect(html).toContain("18 cells");
+    expect(html).toContain("(18 cells)");
+  });
+
+  it("leaves no dangling parentheses when the count is missing", () => {
+    // cellsText owns its parens; the call site used to add them unconditionally
+    // and rendered "burning area ()".
+    const { cum_cells: _drop, ...noCount } = props;
+    const html = renderPanel(noCount as typeof props, track, now);
+    expect(html).not.toContain("()");
+    expect(html).toContain("12.6 km²");
   });
 });
