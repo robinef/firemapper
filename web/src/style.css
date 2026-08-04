@@ -273,6 +273,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   /* Rail: a horizontal row above the time bar, not a left strip. */
   #rail { flex-direction: row; top: auto; left: auto;
     right: 12px; bottom: calc(var(--timebar) + 12px); }
+  /* At peek the fire-card strip stacks between the rail and the time bar, so
+     the rail has to clear both. 56px is the strip's own fixed height (set on
+     #view[data-size="peek"] below), not a measurement of content — unlike
+     --timebar, which is measured because the histogram's height varies. */
+  body[data-size="peek"] #rail { bottom: calc(var(--timebar) + 68px); }
   /* The rail is only useful while the map is: it is the way INTO a view, so
      it has no job on top of one. The peeked card is the exception — ⚙ there
      opens that fire's level-2 toggles.
@@ -431,7 +436,7 @@ body.compare-mode #timeline { display: none; }
 #info .fc-stat span { text-transform: capitalize; }
 .info-warn { color: #ffcf8f; }
 
-#view-chip { display: none; position: absolute; top: 12px; left: 12px;
+#view-chip { display: none; position: absolute; top: 56px; left: 12px;
   z-index: 9; min-height: 44px; padding: 0 14px; border-radius: 999px;
   background: var(--panel); color: var(--fg); font: inherit; font-weight: 600;
   border: 1px solid rgba(255,255,255,.14); cursor: pointer;
