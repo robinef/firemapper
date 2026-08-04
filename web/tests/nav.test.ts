@@ -1,4 +1,4 @@
-/** @vitest-env jsdom */
+/** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import { createNav, type Entry } from "../src/nav";
 import { fakeHistory } from "./nav_fixtures";
