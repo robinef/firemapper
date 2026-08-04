@@ -49,6 +49,10 @@ jobs:
       # archive is what put a 30-day timeline of zeroes on the live map.
       - run: uv run python -m scripts.refresh_remote full
         env:
+          # Same reason as refresh-fast: buffered stdout turns a timeout kill
+          # into an empty log, so the one run you most need to read tells you
+          # nothing.
+          PYTHONUNBUFFERED: "1"
           # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
           # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
           # id is a bearer token for a whole OGC configuration and lives only in
