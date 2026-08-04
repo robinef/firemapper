@@ -66,6 +66,11 @@ export function rasterFit(cfg: ImageryConfig): RasterFit {
     : { tileSize: GIBS_TILE_PX, maxzoom: GIBS_MAX_Z, zoom: GIBS_MAX_Z };
 }
 
+/** Earlier of two ISO days (they sort lexicographically). */
+function minDay(a: string, b: string): string {
+  return a < b ? a : b;
+}
+
 /** Shift an ISO day (YYYY-MM-DD) back by N days, staying in UTC. */
 function isoMinusDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -311,6 +316,25 @@ interface TileOpts {
   /** Max scene cloud cover %. mostRecent needs a looser cap or it falls back to
    * an old clear scene; leastCC can stay tight. */
   maxcc?: number;
+  /** Let the window end LATER than `date` (up to `windowDays` ahead, capped at
+   * today) instead of ending exactly at it, and never start before `notBefore`.
+   *
+   * Both bounds earn their place. A settled-scar date is "ignition +
+   * SCAR_SETTLE_DAYS", so a plain backward window spans ignition+2 ..
+   * ignition+14 and leastCC could return an image from two days after ignition
+   * — still burning — while the caption claimed the later date.
+   *
+   * But forward alone is worse: for a fire whose settle date is already capped
+   * at yesterday there is no room ahead, and a 1-2 day window frequently holds
+   * no Sentinel-2 pass at all. Measured over Gujan-Mestras, TIME=2026-08-03/04
+   * returned a black 8 KB tile (mean luma 1.0) — a blank compare half, which
+   * MapLibre reports as success. So when forward has no room we search back
+   * instead, clamped at `notBefore` (ignition), which cannot show a pre-fire
+   * scene in the "after" slot even if it may catch the fire still burning. */
+  extend?: boolean;
+  notBefore?: string;
+  /** Injectable for tests; defaults to the real clock. */
+  today?: string;
 }
 
 /**
@@ -326,7 +350,27 @@ export function wmsTiles(
   date: string,
   opts: TileOpts = {},
 ): string[] {
-  const { windowDays = 12, priority = "leastCC", maxcc = 35 } = opts;
+  const { windowDays = 12, priority = "leastCC", maxcc = 35, extend = false } = opts;
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  // One rule, no branch: slide the window as LATE as it will go, then take the
+  // full width backwards from there, and never start before `notBefore`.
+  //
+  // Sliding late is what keeps a settled-scar search out of the burn; taking
+  // the full width is what keeps it from going empty. An earlier version
+  // branched between "forward" and "backward" and got both wrong — it left the
+  // original bug intact for fires aged 14-19 days (window still opened at
+  // ignition+1) and, for anything younger, collapsed to a 0-5 day window that
+  // Sentinel-2 frequently cannot fill, which renders as a black tile MapLibre
+  // reports as success. At age 0 it even emitted an inverted range.
+  //
+  // `extend` is off for the pre-fire baseline: that window must END at its
+  // date, since reaching forward from it would walk into the fire.
+  const end = extend ? minDay(isoMinusDays(date, -windowDays), today) : date;
+  let start = isoMinusDays(end, windowDays);
+  if (opts.notBefore && start < opts.notBefore) start = opts.notBefore;
+  // A fire younger than the window simply has less imagery in existence; take
+  // what there is rather than inverting the range.
+  if (start > end) start = end;
   const p = new URLSearchParams({
     service: "WMS",
     request: "GetMap",
@@ -338,7 +382,7 @@ export function wmsTiles(
     crs: "EPSG:3857",
     width: "512",
     height: "512",
-    TIME: `${isoMinusDays(date, windowDays)}/${date}`,
+    TIME: `${start}/${end}`,
     MAXCC: String(maxcc),
     PRIORITY: priority,
     bbox: "{bbox-epsg-3857}",
@@ -356,15 +400,23 @@ export function scarTiles(
   /** Per-side layer chosen by pickCapture, when one was measured. Ignored on
    * the HD tier, which has a single configured layer. */
   picked?: { before?: Capture; after?: Capture },
+  /** Injectable clock, so window arithmetic is testable at a fixed date. */
+  today?: string,
 ): { before: string[]; after: string[] } {
   if (cfg.hd) {
     const { wms_base, layer } = cfg.hd;
+    // Active fire: look BACK from the nominal date for the newest usable pass —
+    // the question is "what does it look like now". Settled scar: look FORWARD,
+    // so the search cannot wander back into days when the fire was still
+    // burning (see TileOpts.forward).
     const afterOpts: TileOpts =
       scar.kind === "active"
-        ? { priority: "mostRecent", maxcc: 60 }
-        : { priority: "leastCC", maxcc: 35 };
+        ? { priority: "mostRecent", maxcc: 60, notBefore: scar.started, today }
+        : { priority: "leastCC", maxcc: 35, extend: true, notBefore: scar.started, today };
     return {
-      before: wmsTiles(wms_base, layer, scar.before, { priority: "leastCC", maxcc: 35 }),
+      // No `notBefore`/`extend` here on purpose: the baseline window ends at
+      // its date and runs backwards, so it is entirely pre-ignition already.
+      before: wmsTiles(wms_base, layer, scar.before, { priority: "leastCC", maxcc: 35, today }),
       after: wmsTiles(wms_base, layer, scar.after, afterOpts),
     };
   }
