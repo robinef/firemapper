@@ -41,17 +41,25 @@ FRP_BACKOFF_S = 2.0
 # this window renders exactly as strongly as one from minutes ago — while the
 # manifest's observed_at reports only the NEWEST timestamp. Widen this and the
 # layer keeps claiming to be ten minutes old while painting proportionally more
-# history. Six hours is a deliberate compromise against MAX_AGE_S["frp"] (1 h);
+# history. Two hours is a deliberate compromise against MAX_AGE_S["frp"] (1 h);
 # see test_frp_window_is_bounded_against_the_freshness_budget.
 #
-# The cap below can only truncate from the OLD end (see _wfs_points_url), so the
-# window must also stay small enough that a busy day fits under FRP_COUNT.
-# Measured 2026-08-04 over Europe: 2 h ≈ 2.1k features, 6 h ≈ 5.0k, 12 h ≈ 6.4k,
-# 24 h ≈ 32k.
-FRP_WINDOW_H = 6
-# Sized above the worst measured window by ~4x. A window that overflows this is
-# silently truncated to its OLDEST features, which is exactly the stale-data
-# failure this module exists to avoid — fetch_frp_points warns when it happens.
+# The window must also stay small enough that a busy day fits under FRP_COUNT,
+# because the response is unsorted — the server emits OLDEST-first and the cap
+# drops the tail, so an overflowing window keeps the oldest pixels and discards
+# precisely the recent ones the layer exists to show.
+#
+# The 6 h that first shipped here was sized on a quiet morning (2 h ≈ 2.1k
+# features, 6 h ≈ 5.0k). By that afternoon Europe was burning enough to make the
+# same 6 h window 21911 — over FRP_COUNT, so a live run truncated and served
+# pixels up to an hour old under a one-hour budget. Measured 2026-08-04 14:05Z:
+# 1 h = 3924, 2 h = 9614, 3 h = 13984, 6 h = 21911.
+FRP_WINDOW_H = 2
+# ~2x the busiest 2 h yet measured (9614 on 2026-08-04). A window that overflows
+# this is silently truncated to its OLDEST features, which is exactly the
+# stale-data failure this module exists to avoid — fetch_frp_points warns when
+# it happens, and that warning is a signal to shorten the WINDOW rather than
+# raise this number: a bigger cap buys more history, never more freshness.
 FRP_COUNT = 20000
 # Per-attempt cap. Successful calls land in seconds; anything near this is the
 # service being down, where retrying is pointless — so keep the ceiling low
