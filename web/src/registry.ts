@@ -19,6 +19,14 @@ export interface LayerModule {
    *  both. A layer hidden at the current level is force-hidden on the map, so a
    *  detail layer left on never leaks back into the overview. */
   levels?: Level[];
+  /** Live status line under the toggle — e.g. how many fires are in view and
+   *  how many this zoom actually draws. Re-evaluated on every render, so a
+   *  module can report state that changes with the camera. Returning null
+   *  keeps the row quiet. */
+  status?: () => string | null;
+  /** An extra control inside the row: a filter the layer owns. `onChange` is
+   *  called with the new state; the switcher only renders and remembers it. */
+  filter?: { label: string; defaultOn: boolean; onChange: (on: boolean) => void };
   /** Manifest `layers` keys this module draws from. A module is greyed when any
    *  of them is past its age budget — derived layers (spread, isochrones) name
    *  the source they were computed from, not themselves. */
@@ -35,6 +43,8 @@ export interface LayerModule {
 
 export interface Switcher {
   isOn(key: string): boolean;
+  /** Re-render the rows, so camera-dependent status lines update. */
+  refresh(): void;
   /** Swap the panel between the overview (1) and per-fire detail (2) layer sets. */
   setLevel(level: Level): void;
 }
@@ -54,6 +64,9 @@ export function mountSwitcher(
   manifest?: Manifest,
 ): Switcher {
   const state = new Map(modules.map((m) => [m.key, m.defaultOn]));
+  /** Filter state lives here, not in the module, so a re-render does not reset
+   * a choice the reader made. */
+  const filters = new Map<string, boolean>();
   let level: Level = 1;
   const inLevel = (m: LayerModule) => (m.levels ?? [1, 2]).includes(level);
 
@@ -109,12 +122,33 @@ export function mountSwitcher(
       const stale = manifest ? moduleStale(manifest, m, new Date()) : false;
       const reason = stale && manifest ? moduleReason(manifest, m, new Date()) : null;
       if (stale) row.classList.add("stale");
+      // Only while the layer is on: a count for a hidden layer is noise, and a
+      // count that contradicts an empty map is the thing being fixed here.
+      const status = state.get(m.key) ? (m.status?.() ?? null) : null;
       text.innerHTML =
         `<span class="layer-name">${m.label}</span>` +
         `<span class="layer-hint">${m.question}</span>` +
-        (reason ? `<span class="layer-reason">⚠ ${reason}</span>` : "");
+        (reason ? `<span class="layer-reason">⚠ ${reason}</span>` : "") +
+        (status ? `<span class="layer-count">${status}</span>` : "");
       row.append(cb, text);
       layersEl.append(row);
+
+      if (m.filter && state.get(m.key)) {
+        const f = document.createElement("label");
+        f.className = "layer-filter";
+        const fcb = document.createElement("input");
+        fcb.type = "checkbox";
+        fcb.checked = filters.get(m.key) ?? m.filter.defaultOn;
+        fcb.addEventListener("change", () => {
+          filters.set(m.key, fcb.checked);
+          m.filter!.onChange(fcb.checked);
+          render();
+        });
+        const span = document.createElement("span");
+        span.textContent = m.filter.label;
+        f.append(fcb, span);
+        layersEl.append(f);
+      }
     }
     renderLegends();
   };
@@ -123,6 +157,7 @@ export function mountSwitcher(
 
   return {
     isOn: (k) => state.get(k) ?? false,
+    refresh: render,
     setLevel: (l) => {
       level = l;
       render();
