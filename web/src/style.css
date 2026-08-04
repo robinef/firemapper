@@ -367,14 +367,28 @@ body.compare-mode #timeline { display: none; }
   max-width: 420px; }
 
 /* Desktop: 56px strip at the left edge, panel slides out beside it. */
-#rail { flex-direction: column; top: 12px; left: 12px; }
-#view { top: 12px; left: 68px; width: 320px; max-height: calc(100% - 130px);
-  border-radius: 12px; padding: 8px 12px 12px;
-  box-shadow: 0 2px 20px rgba(0,0,0,.55); }
+/* Reset the desktop-era absolute positioning these three carried from when
+   they floated over the map independently. Unguarded on purpose: it holds at
+   both widths, and both layouts build on it. */
 #sidebar { position: static; width: auto; max-height: none; inset: auto;
   box-shadow: none; background: none; padding: 0; margin: 0;
   mask-image: none; display: flex; flex-direction: column; gap: 10px; }
 #panel { position: static; width: auto; max-width: none; height: auto;
   inset: auto; box-shadow: none; background: none; padding: 0;
   backdrop-filter: none; }
-#timeline { left: 80px; }
+
+/* Desktop: 56px strip at the left edge, panel slides out beside it.
+   EXPLICITLY guarded, not left unguarded to be overridden by the mobile
+   block: that block lives EARLIER in this file, and Task 8 appends the
+   mobile #view/#rail rules to it. Same specificity, later wins — so an
+   unguarded desktop rule here would beat the mobile one it is supposed to
+   defer to, and `left: 68px; width: 320px` would push #view off the side of
+   a 375px phone. jsdom does no layout, so no test in this suite can catch
+   that; only the min-width guard can. */
+@media (min-width: 641px) {
+  #rail { flex-direction: column; top: 12px; left: 12px; }
+  #view { top: 12px; left: 68px; width: 320px; max-height: calc(100% - 130px);
+    border-radius: 12px; padding: 8px 12px 12px;
+    box-shadow: 0 2px 20px rgba(0,0,0,.55); }
+  #timeline { left: 80px; }
+}
