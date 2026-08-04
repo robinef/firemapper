@@ -48,8 +48,12 @@ export function createShell(deps: ShellDeps): Shell {
   const compareBar = document.getElementById("compare-bar");
 
   /** Fire cards open peeked: the map, and the fire's own histogram scrubbing,
-   *  stay visible. Tapping the strip commits to the full card. Held per
-   *  detail entry so returning from the layers view restores what you left.
+   *  stay visible. Tapping the strip commits to the full card.
+   *
+   *  Closure state, deliberately NOT per-entry: sync() re-applies it on every
+   *  stack change, so a card keeps its size across a round trip through the
+   *  layers view without any per-entry restore thunk. openDetail resets it to
+   *  "peek" so a newly opened card never inherits the previous card's size.
    *  Declared here (before `sync`, not after `openDetail`) so `sync`'s first
    *  synchronous call below can read it without a temporal-dead-zone crash. */
   let detailSize: "peek" | "full" = "peek";
@@ -158,7 +162,11 @@ export function createShell(deps: ShellDeps): Shell {
     const entry = {
       view: "detail" as const,
       title,
-      restore: () => applySize(detailSize),
+      // No `restore` needed: sync()'s detail branch re-applies applySize(detailSize)
+      // unconditionally on every stack change, so a thunk here would only write
+      // the same value a moment before sync writes it again. The size survives a
+      // round trip through another view because detailSize is closure state, not
+      // per-entry state.
     };
     const top = nav.top.view;
     if (top === "map" || top === "search") nav.push(entry);

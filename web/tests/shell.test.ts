@@ -381,3 +381,25 @@ describe("detail sizing", () => {
     expect(document.body.dataset.size).toBeUndefined(); // cleared, not merely stale
   });
 });
+
+describe("level-2 toggles from a peeked card", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("⚙ over a peeked card opens layers and back returns to the peeked card", () => {
+    const { nav, view } = setup();
+    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    emitUi("detail:open");
+    expect(view.dataset.size).toBe("peek");
+    expect(document.body.dataset.size).toBe("peek"); // what #rail keys off
+
+    document.getElementById("rail-layers")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail", "layers"]);
+
+    nav.back();
+    expect(nav.top.view).toBe("detail");
+    expect(view.dataset.size).toBe("peek");
+    expect(document.body.dataset.size).toBe("peek"); // what #rail keys off
+  });
+});
