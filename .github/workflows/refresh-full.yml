@@ -16,7 +16,13 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Raised alongside refresh-fast's ceiling, for the same reason: this tier
+    # does everything the fast one does and then FIRMS, EFFIS and GIBS on top,
+    # so the work the FRP fix re-enabled (a real wind fetch, meteosat rows to
+    # cluster) lands here too. Leaving this at 40 while fast needs 45 would just
+    # move the kill to the tier that has more to lose — refresh-full is the only
+    # one that refreshes the archive the whole map is rebuilt from.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
