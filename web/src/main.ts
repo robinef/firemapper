@@ -50,7 +50,8 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
-import { createSheet } from "./sheet";
+import { createNav } from "./nav";
+import { createShell } from "./shell";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
@@ -226,7 +227,8 @@ async function boot() {
       map,
       manifest,
     );
-    createSheet(); // no-op above 640px; re-parents the panels below it
+    const nav = createNav();
+    const shell = createShell({ nav, map });
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
@@ -402,7 +404,9 @@ async function boot() {
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
     }
 
-    // Boot done + layers mounted → drop the cold-start splash.
+    // Boot done + layers mounted → drop the cold-start splash and let the rail
+    // be used; ⚙ before this point would open an unmounted registry.
+    shell.ready();
     const splash = document.getElementById("loading");
     if (splash) {
       splash.classList.add("done");

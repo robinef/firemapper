@@ -14,16 +14,31 @@
     </div>
     <div id="header"></div>
     <div id="banner"></div>
-    <aside id="sidebar">
-      <!-- The only entry point that survives the rolling windows: every other
-           route into a fire's card needs you to know where it burned, or to
-           catch it before its marker disappears. -->
-      <button id="find-fire" type="button">Find a fire…</button>
-      <div id="layers"></div>
-      <div id="notice"></div>
-      <div id="legend"></div>
-    </aside>
-    <div id="panel" class="hidden"></div>
+    <!-- Hidden until boot finishes: tapping ⚙ into an unmounted registry
+         would open an empty layer list. shell.ts reveals it. -->
+    <nav id="rail" class="hidden">
+      <button id="rail-layers" type="button" aria-label="Layers">⚙</button>
+      <button id="rail-search" type="button" aria-label="Find a fire">🔍</button>
+      <button id="rail-info" type="button" aria-label="Data freshness and sources">ℹ</button>
+    </nav>
+    <!-- One container for every non-map view. data-view picks which child
+         shows; data-size is the fire card's peek/full state on mobile. -->
+    <div id="view" data-view="map">
+      <div id="view-bar"></div>
+      <aside id="sidebar">
+        <div id="layers"></div>
+        <div id="legend"></div>
+      </aside>
+      <div id="panel" class="hidden"></div>
+      <div id="info"></div>
+    </div>
+    <!-- Compare's chrome lives OUTSIDE #view: compare shows the bare map with
+         the swipe divider, so #view is hidden for it — a back bar rendered
+         inside would be hidden along with it. -->
+    <div id="compare-bar"></div>
+    <!-- Top level, not inside #sidebar: the compare banner is the only way out
+         of compare mode and must not depend on the sidebar being shown. -->
+    <div id="notice"></div>
     <div id="timeline"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

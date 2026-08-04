@@ -183,8 +183,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   background: linear-gradient(90deg, #3aa7e0, #8fd36b 40%, #ff8c00 70%, #ff2d2d); }
 .fc-ramp-lbl { display: flex; justify-content: space-between; font-size: 10px; }
 .fc-arrival-hint { margin-top: 6px; color: #8fd8ff; }
-/* Keep the bottom histogram clear of the card while focused. */
-body.fire-focus #timeline { right: 356px; }
 /* Says why the chart is blank instead of drawing 30 empty bars. */
 .timeline-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 10px 0; }
 .badge { display: inline-block; padding: 5px 12px; border-radius: 6px; font-weight: 800;
@@ -218,134 +216,24 @@ body.fire-focus #timeline { right: 356px; }
   overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ---- Mobile: one bottom sheet, map stays hero ---------------------- */
-/* Everything above 640px untouched, so desktop layout cannot regress. */
+/* ---- Mobile ------------------------------------------------------- */
 @media (max-width: 640px) {
-  .sheet {
-    position: absolute; left: 0; right: 0; bottom: 0; z-index: 7;
-    background: var(--panel); border-radius: 14px 14px 0 0;
-    box-shadow: 0 -2px 16px rgba(0,0,0,.5);
-    display: flex; flex-direction: column; gap: 8px;
-    padding: 0 12px 12px;
-    transition: height .18s ease-out;
-    overflow-y: auto; overscroll-behavior: contain;
-    /* handle owns drag; body scrolls */
-    touch-action: pan-y;
-  }
-  .sheet-handle {
-    position: relative; /* containing block for ::before's grab zone below */
-    flex: 0 0 auto; align-self: center;
-    /* Must outrank #timeline's order: -1 below, or the handle — default
-       order: 0 otherwise — renders AFTER the histogram in flex-order and is
-       pushed below the peek detent's 100px fold: unreachable and, on a short
-       phone, entirely off-screen. Confirmed only by measuring real layout
-       (getBoundingClientRect) in a browser; jsdom never lays out flex order. */
-    order: -2;
-    width: 44px; height: 4px;
-    /* 20px above (not the original 8px) so the 44px grab zone computed below
-       fits entirely inside .sheet's own scrollport: .sheet clips at its own
-       content-box top (padding-top: 0), and a zone centred on a handle any
-       closer to that edge would have its top slice clipped and unclickable. */
-    margin: 20px 0 4px;
-    border-radius: 2px; background: rgba(255,255,255,.35);
-    /* handle must not scroll sheet while dragging it */
-    touch-action: none; cursor: grab;
-  }
-  /* A 44px grab target around the 4px visual line, centred via translateY.
-     Relies on .sheet-handle's own position: relative above — without it this
-     positions against .sheet instead and lands nowhere near the handle. */
-  .sheet-handle::before {
-    content: ""; position: absolute; left: 0; right: 0;
-    height: 44px; transform: translateY(-20px);
-  }
-
-  /* Panels keep rendering into the same ids; only their box changes now that
-     they live inside the sheet instead of floating over the map.
-     position: relative (not static) — #panel's .panel-close/.fc-close and
-     #timeline's .tl-tip are position: absolute and need their own element
-     back as the containing block. static would hand that role up to .sheet
-     instead: the close buttons would then sit at the top of the whole
-     sheet (overlapping the handle's grab zone) and scroll with .sheet's
-     content rather than staying pinned to their own panel, and .tl-tip's
-     inline `left` (computed in timeline.ts against #timeline's own
-     bounding rect) would be measured from .sheet's edge instead, landing
-     up to 12px (.sheet's left padding) off horizontally. inset: auto keeps
-     this a pure "become a containing block" change with no positional
-     shift: relative honours top/right/bottom/left, unlike static, so
-     without also resetting them here the leftover desktop offsets
-     (#sidebar's top/left, #panel's top/right, #timeline's inset) would
-     have shoved these boxes away from their normal flex-flow position. */
-  #sidebar, #panel, #timeline {
-    position: relative; width: auto; max-width: none; max-height: none;
-    height: auto; inset: auto; box-shadow: none; background: none;
-    padding: 0; margin: 0;
-  }
-  #sidebar { mask-image: none; }
-  /* #timeline is appended first in sheet.ts's mount order, so it is already
-     first in the DOM (after .sheet-handle); order: -1 makes that a guarantee
-     instead of an incidental side effect, since #timeline must stay above
-     the fold at the peek detent — second only to .sheet-handle's order: -2
-     above, which the handle needs to remain grabbable at all. */
-  #timeline { order: -1; }
-  /* body.fire-focus #timeline { right: 356px } above is a desktop-only rule
-     (shrinks the histogram to make room for the fixed-position #sidebar
-     panel it floats beside) but has no media guard of its own, and its
-     selector — one class + one id — is exactly as specific as the mobile
-     reset a few lines up that sets `inset: auto`. Equal specificity means
-     source order decides, and that desktop rule sits earlier in the file,
-     so it loses here anyway — but only by accident of file order. Restating
-     it explicitly, same selector, same specificity, guarantees the win
-     regardless of future reordering: without it, opening a fire card on a
-     375px phone left `right: 356px` in effect and squeezed the whole
-     histogram into the left ~19px of the screen (this is what actually
-     produced the clipped red bar and truncated label in the original
-     fire-detail screenshot). */
-  body.fire-focus #timeline { right: auto; }
-  /* Spec: detail mode is "fire card, then level-2 toggles, then active
-     legends" — #panel must outrank #sidebar, or the flex default (order: 0
-     for both) falls back to DOM order (#sidebar mounted before #panel in
-     sheet.ts), putting the fire's own card LAST and pushed to the bottom
-     edge, cut off, behind the layer toggles the user didn't tap for.
-     #timeline keeps its own order: -1 above in every mode, including
-     detail — the peek detent must still show the histogram before a fire
-     is ever opened, and detail only reorders #panel vs #sidebar. */
-  .sheet[data-mode="detail"] #panel { order: -1; }
-  .sheet[data-mode="detail"] #sidebar { order: 0; }
-
-  .sheet[data-mode="overview"] #panel { display: none; }
-  /* Hide the layer list/legend, not #sidebar itself: #notice (the compare
-     banner) is a child of #sidebar in index.html, and it must stay visible
-     — even with the rest of the sidebar hidden — while a compare is active,
-     or the user loses the only way out of compare mode. Hiding #sidebar
-     outright would take #notice down with it regardless of #notice's own
-     display value. */
-  .sheet[data-mode="aircraft"] #sidebar > #layers,
-  .sheet[data-mode="aircraft"] #sidebar > #legend { display: none; }
-  .sheet[data-detent="peek"] #sidebar > #layers,
-  .sheet[data-detent="peek"] #sidebar > #legend,
-  .sheet[data-detent="peek"] #panel { display: none; }
-
-  /* Touch targets: 44x44 minimum (Apple HIG / WCAG 2.5.8). */
+  /* Touch targets: 44x44 min (Apple HIG / WCAG 2.5.8). */
   .layer-row { min-height: 44px; align-items: center; }
-  .panel-close, .fc-close, .compare-exit, .scrub-play {
+  /* .compare-exit is deliberately absent: Task 7 removes it, since the
+     shell's back bar is now the only way out of compare. */
+  .panel-close, .fc-close, .scrub-play {
     min-width: 44px; min-height: 44px;
   }
-  /* The histogram is ONE 44px+ target, not 30 individually-sized bars — the
-     desktop height: 54px on .tl-bars already clears 44px; this is a floor
-     against that ever shrinking on mobile. */
+  /* The histogram is ONE 44px+ target, not 30 individually-sized bars. */
   #timeline .tl-bars { min-height: 44px; }
-
-  /* Touch targets: the whole point of the scrubber is that every bin is
-     reachable regardless of its bar's height, so the control itself must not
-     be the thing that is too small to hit. */
   .scrub-play { width: 44px; height: 44px; font-size: 15px; }
+
   /* WebKit/Blink ignore width/height on ::-webkit-slider-thumb unless
-     -webkit-appearance: none is set on BOTH the input and the thumb — without
-     it the native thumb wins and stays ~12px on iOS Safari / Chrome Android,
+     -webkit-appearance: none is set on BOTH the input and the thumb —
+     without it the native thumb stays ~12px on iOS Safari / Chrome Android,
      the two mobile engines that matter most here. Resetting appearance also
-     drops the native track, so the track is restyled by hand below or the
-     slider becomes an invisible line. Scoped to mobile only: the desktop rule
-     above 640px is untouched and keeps the native (lower-risk) slider. */
+     drops the native track, so the track is restyled by hand below. */
   .scrub-range {
     -webkit-appearance: none; appearance: none; height: 44px; background: transparent;
   }
@@ -362,32 +250,21 @@ body.fire-focus #timeline { right: 356px; }
   .scrub-range::-moz-range-thumb {
     width: 28px; height: 28px; border: none; border-radius: 50%; background: #ff6b00;
   }
-  /* The label competes with the slider for width on a 375px screen; the slider
-     matters more, so the label gives up its floor. flex-shrink is 0 in the
-     base rule above (:216), so min-width alone is inert here — flex: 0 1 auto
-     is what actually lets the label shrink instead of just being allowed to
-     stop at 0 width it never reaches. */
+  /* The label competes with the slider for width on a 375px screen; the
+     slider matters more. flex-shrink is 0 in the base rule, so min-width
+     alone is inert — flex: 0 1 auto is what lets the label actually shrink. */
   .scrub-label { flex: 0 1 auto; min-width: 0; font-size: 11px; }
 
-  /* Compare banner: fixed over everything, not dismissible, always shows
-     the way out — sheet.ts collapses to peek on compare:enter, and the
-     sidebar-child hiding rules above keep this reachable even then. */
-  #notice { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9;
-    border-radius: 0; padding: 10px 12px; }
-
-  /* Header badge on one line instead of wrapping/overflowing a narrow viewport. */
+  /* Header badge on one line instead of wrapping a narrow viewport. */
   #header { font-size: 12px; max-width: 92vw; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
 
   /* Compare-mode divider must own its horizontal drag or the browser claims
-     it for scrolling and pointermove never fires — the divider would feel
-     completely dead on a phone while working fine with a mouse. Single-finger
-     map pan is disabled for the duration (see compare_lock.ts) so this is the
-     only horizontal gesture in play; two-finger pinch-zoom is untouched. */
+     it for scrolling and pointermove never fires — dead on a phone while
+     fine with a mouse. Single-finger map pan is disabled for the duration
+     (compare_lock.ts); two-finger pinch-zoom is untouched. */
   .swipe-divider { touch-action: none; }
-  /* 44px grab zone around the 3px visual line, same pattern as .sheet-handle
-     above: widens the whole column so the divider is grabbable anywhere near
-     it, not just on the hairline itself. */
+  /* 44px grab zone around the 3px visual line. */
   .swipe-divider::before {
     content: ""; position: absolute; top: 0; bottom: 0;
     left: -21px; width: 44px;
@@ -427,3 +304,77 @@ body.fire-focus #timeline { right: 356px; }
 .fl-row:hover { background: rgba(255,255,255,.12); border-color: #ff6b00; }
 .fl-row b { font-size: 13px; }
 .fl-row span { font-size: 11px; color: var(--muted); }
+
+/* ---- Navigation shell --------------------------------------------- */
+/* Height the docked time bar reserves at the bottom on mobile: the peeked
+   card sits directly above it and the rail above that, so all three read
+   the same number. */
+:root { --timebar: 120px; }
+
+/* One container for every non-map view. data-view picks the child that
+   shows; everything else is hidden regardless of its own display value. */
+#view { position: absolute; z-index: 8; display: none; }
+#view[data-view="map"], #view[data-view="compare"] { display: none; }
+#view:not([data-view="map"]):not([data-view="compare"]) { display: flex; }
+#view { flex-direction: column; gap: 10px;
+  background: var(--panel); overflow-y: auto; overscroll-behavior: contain; }
+
+#view > #sidebar, #view > #panel, #view > #info { display: none; }
+#view[data-view="layers"] > #sidebar { display: flex; }
+#view[data-view="detail"] > #panel:not(.hidden) { display: block; }
+#view[data-view="search"] > #panel:not(.hidden) { display: block; }
+#view[data-view="info"] > #info { display: block; }
+
+#view-bar { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex: 0 0 auto; }
+#view-bar:empty { display: none; }
+.view-back, .view-close {
+  background: none; border: none; color: var(--fg); font: inherit;
+  font-size: 15px; cursor: pointer; padding: 10px 4px;
+  min-height: 44px; display: inline-flex; align-items: center;
+}
+.view-back { font-weight: 600; }
+.view-close { font-size: 20px; min-width: 44px; justify-content: center; }
+.view-back:hover, .view-close:hover { color: #ffcf8f; }
+
+#rail { position: absolute; z-index: 9; display: flex; gap: 6px; }
+#rail button {
+  width: 44px; height: 44px; border-radius: 10px; cursor: pointer;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid rgba(255,255,255,.14);
+  box-shadow: 0 2px 12px rgba(0,0,0,.45); font-size: 17px; line-height: 1;
+}
+#rail button:hover { border-color: #ff6b00; }
+
+/* Compare owns the whole map surface: no rail at any width (nothing may
+   compete with the divider drag, and on desktop the rail sits at the left
+   edge where a drag can begin), and no histogram (there is nothing to
+   scrub while two dated images are being compared). */
+body.compare-mode #rail,
+body.compare-mode #timeline { display: none; }
+
+/* Compare's own chrome, outside #view because #view is hidden for it. */
+#compare-bar { position: absolute; top: 12px; left: 12px; right: 12px;
+  z-index: 9; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; background: var(--panel); border-radius: 10px; padding: 0 6px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.5); }
+#compare-bar:empty { display: none; }
+
+/* #notice is the compare strip: dates, day-step, source. It is top-level
+   now, so it needs its own placement at both widths instead of inheriting
+   the sidebar's. */
+#notice { position: absolute; left: 12px; bottom: 12px; z-index: 9;
+  max-width: 420px; }
+
+/* Desktop: 56px strip at the left edge, panel slides out beside it. */
+#rail { flex-direction: column; top: 12px; left: 12px; }
+#view { top: 12px; left: 68px; width: 320px; max-height: calc(100% - 130px);
+  border-radius: 12px; padding: 8px 12px 12px;
+  box-shadow: 0 2px 20px rgba(0,0,0,.55); }
+#sidebar { position: static; width: auto; max-height: none; inset: auto;
+  box-shadow: none; background: none; padding: 0; margin: 0;
+  mask-image: none; display: flex; flex-direction: column; gap: 10px; }
+#panel { position: static; width: auto; max-width: none; height: auto;
+  inset: auto; box-shadow: none; background: none; padding: 0;
+  backdrop-filter: none; }
+#timeline { left: 80px; }
