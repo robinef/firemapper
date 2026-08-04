@@ -2,7 +2,9 @@ import json
 
 from pipeline.config import load_settings
 from pipeline.events import cluster
-from pipeline.export import export, prune_generations, validate_generation
+from pipeline.events import METEOSAT_CELL_KM2
+from pipeline.export import export, prune_generations, size_class, validate_generation
+from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
 
 
@@ -128,3 +130,39 @@ def test_size_class_boundaries_are_the_acre_conversions(tmp_path):
     acre_km2 = 0.00404686
     assert MEDIUM_KM2 == round(1000 * acre_km2, 2)  # NWCG F
     assert MAJOR_KM2 == round(5000 * acre_km2, 1)   # NWCG G
+
+
+def test_a_single_sensor_pixel_is_not_a_thousand_acre_fire():
+    """Measured in production 2026-08-04: `cum_cells == 1` split 1118 minor and
+    1117 medium. Identical footprint — one cell — opposite class.
+
+    area_km2 is cells x SENSOR cell size: 0.7 km2 for VIIRS, 5.2 km2 for
+    Meteosat. NWCG's F boundary is 4.05 km2, which falls BETWEEN the two, so a
+    single Meteosat pixel — the smallest thing that sensor can express — claimed
+    NWCG class F. The class tracked which satellite saw the fire, not how big it
+    was. (The invented 15/50 thresholds this replaced avoided it by accident:
+    15 sits above the coarse quantum.)
+
+    A one-cell footprint means "detected, not measured". NWCG applies once at
+    least two cells actually resolve an extent.
+    """
+    assert size_class(METEOSAT_CELL_KM2, cells=1) == "minor"
+    assert size_class(CELL_KM2, cells=1) == "minor"
+    # Two Meteosat cells DO resolve an extent, and 10.4 km2 is genuinely NWCG F.
+    assert size_class(2 * METEOSAT_CELL_KM2, cells=2) == "medium"
+    # A single cell is never promoted, however the area was arrived at.
+    assert size_class(500.0, cells=1) == "minor"
+
+
+def test_size_class_still_follows_nwcg_once_the_extent_is_resolved():
+    assert size_class(4.05, cells=2) == "medium"   # NWCG F, 1000 acres
+    assert size_class(4.04, cells=2) == "minor"
+    assert size_class(20.2, cells=5) == "major"    # NWCG G, 5000 acres
+    assert size_class(20.19, cells=5) == "medium"
+
+
+def test_size_class_defaults_to_measured_when_the_count_is_unknown():
+    """Callers that have no cell count (tests, ad-hoc use) keep NWCG semantics
+    rather than silently getting everything as minor."""
+    assert size_class(20.2) == "major"
+    assert size_class(4.05) == "medium"

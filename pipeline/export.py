@@ -94,7 +94,7 @@ def _events_features(events, liveness, places, alerts, now):
                     # Europe-wide, smaller ones reveal as you zoom in, so no
                     # scale is cluttered (multi-scale generalisation). See
                     # size_class() for why the boundaries are NWCG's.
-                    "size_class": size_class(a),
+                    "size_class": size_class(a, cells=len({m["cell"] for m in members})),
                     "cum_cells": series[-1]["cum_cells"],
                     "movement": movement(series, now), "state": status(series, now),
                     "freshness": {"viirs": newest.isoformat(), "meteosat": met["latest"] if met else None},
@@ -172,8 +172,25 @@ MEDIUM_KM2 = 4.05   # NWCG F, 1000 acres
 MAJOR_KM2 = 20.2    # NWCG G, 5000 acres
 
 
-def size_class(area_km2_value: float) -> str:
-    """NWCG size class, collapsed to the three this pipeline can resolve."""
+def size_class(area_km2_value: float, cells: int | None = None) -> str:
+    """NWCG size class, collapsed to the three this pipeline can resolve.
+
+    A one-cell footprint is never sized. area_km2 is cells x SENSOR cell size —
+    0.7 km2 for VIIRS, 5.2 km2 for Meteosat — and NWCG's F boundary of 4.05 km2
+    falls BETWEEN the two. So a single Meteosat pixel, the smallest thing that
+    sensor can express, came out as class F while a single VIIRS pixel came out
+    minor. Measured in production 2026-08-04: of the events with exactly one
+    cell, 1118 were minor and 1117 medium — identical footprint, opposite class,
+    decided by which satellite happened to see the fire.
+
+    One cell means detected, not measured: the true burned area is anywhere
+    between a fraction of a km2 and the whole cell. NWCG applies from two cells
+    up, where the extent is actually resolved.
+
+    `cells=None` keeps plain NWCG semantics for callers that have no count.
+    """
+    if cells is not None and cells <= 1:
+        return "minor"
     if area_km2_value >= MAJOR_KM2:
         return "major"
     if area_km2_value >= MEDIUM_KM2:
