@@ -392,3 +392,6 @@ body.compare-mode #timeline { display: none; }
     box-shadow: 0 2px 20px rgba(0,0,0,.55); }
   #timeline { left: 80px; }
 }
+
+#info .fc-stat span { text-transform: capitalize; }
+.info-warn { color: #ffcf8f; }

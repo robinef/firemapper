@@ -52,6 +52,7 @@ import {
 import { mountSwitcher, type LayerModule } from "./registry";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
+import { infoHtml } from "./info";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
@@ -228,7 +229,7 @@ async function boot() {
       manifest,
     );
     const nav = createNav();
-    const shell = createShell({ nav, map });
+    const shell = createShell({ nav, map, infoContent: () => infoHtml(manifest) });
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
