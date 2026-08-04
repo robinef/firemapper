@@ -57,7 +57,10 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # one source, or the markers and outlines describe different fires.
     if frp_points is None:
         frp_result = attempt(
-            lambda: fetch_frp_points(EUROPE_BBOX), label="mtg-frp-points", now=now,
+            # Same clock the generation is stamped with, so the fetch window and
+            # the freshness record cannot describe different moments — and a
+            # replayed run with an injected `now` asks for that run's window.
+            lambda: fetch_frp_points(EUROPE_BBOX, now=now), label="mtg-frp-points", now=now,
             default=[], observed=lambda pts: newest_timestamp(p.get("time") for p in pts),
         )
         frp_points = frp_result.data
