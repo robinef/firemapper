@@ -1,6 +1,7 @@
 from pipeline.config import load_settings
 from pipeline.events import cluster
 import json
+from urllib.parse import quote
 
 from pipeline.fetch_meteosat import (
     FRP_ATTEMPTS,
@@ -70,13 +71,80 @@ FRP_FC = {
 }
 
 
-def test_frp_url_sorts_newest_first():
-    # The service returns features oldest-first and count caps the result, so
-    # without a descending time sort the freshest detections get truncated.
+def test_frp_url_windows_by_time_and_never_sorts():
+    """Recency must come from the filter, not a sort.
+
+    The service answers ANY sortBy on this layer with a server-side
+    NullPointerException (HTTP 400) — deterministically, as of 2026-08-04 — so a
+    sorted request is a dead request. A bounded time window makes `count`
+    irrelevant instead, because the whole window fits under it.
+    """
+    from datetime import datetime, timezone
+
     from pipeline.fetch_meteosat import _wfs_points_url
 
-    url = _wfs_points_url((-25.0, 34.0, 45.0, 72.0), 30000)
-    assert "sortBy=time+D" in url
+    since = datetime(2026, 8, 4, 2, 30, tzinfo=timezone.utc)
+    url = _wfs_points_url((-25.0, 34.0, 45.0, 72.0), 20000, since)
+    assert "sortBy" not in url
+    assert "CQL_FILTER=" in url
+    assert quote("time AFTER 2026-08-04T02:30:00Z") in url
+
+
+def test_frp_url_puts_the_bbox_inside_the_filter():
+    """GeoServer answers a `bbox` parameter alongside CQL_FILTER with a 500, so
+    the spatial constraint has to be a BBOX() predicate in the same filter — and
+    BBOX() takes lon/lat, unlike the EPSG-urn bbox parameter it replaces."""
+    from datetime import datetime, timezone
+
+    from pipeline.fetch_meteosat import _wfs_points_url
+
+    url = _wfs_points_url((-25.0, 34.0, 45.0, 72.0), 20000, datetime(2026, 8, 4, tzinfo=timezone.utc))
+    assert "&bbox=" not in url
+    assert quote("BBOX(geom,-25.0,34.0,45.0,72.0)") in url
+
+
+def test_frp_window_is_measured_from_now():
+    """The window is relative, so a fixed `now` must move the filter with it."""
+    from datetime import datetime, timezone
+
+    seen: list[str] = []
+
+    def capture(url: str) -> str:
+        seen.append(url)
+        return json.dumps({"type": "FeatureCollection", "features": []})
+
+    fetch_frp_points(
+        (-25.0, 34.0, 45.0, 72.0),
+        http_text=capture,
+        window_h=6,
+        now=datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),
+    )
+    assert quote("time AFTER 2026-08-04T06:00:00Z") in seen[0]
+
+
+def test_frp_warns_when_the_window_overflows_the_cap(capsys):
+    """A truncated window is stale data wearing a fresh label: the server cuts
+    from the OLD end, so the caller must be told rather than quietly publishing
+    the wrong half."""
+    fc = {
+        "type": "FeatureCollection",
+        "numberMatched": 32397,
+        "features": FRP_FC["features"],
+    }
+    fetch_frp_points(
+        (-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc), count=8000
+    )
+    assert "truncated" in capsys.readouterr().out
+
+
+def test_frp_is_quiet_when_the_whole_window_fits(capsys):
+    fc = {
+        "type": "FeatureCollection",
+        "numberMatched": len(FRP_FC["features"]),
+        "features": FRP_FC["features"],
+    }
+    fetch_frp_points((-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc))
+    assert "truncated" not in capsys.readouterr().out
 
 
 def test_fetch_frp_points_parses_rounds_and_filters():

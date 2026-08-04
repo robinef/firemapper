@@ -8,7 +8,9 @@ continues in degraded mode (no live tier).
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Callable
+from urllib.parse import quote
 
 import h3
 
@@ -20,13 +22,25 @@ from .fetch_firms import _src_id, append_hotspots
 EUMETVIEW_WMS = "https://view.eumetsat.int/geoserver/ows"
 MTG_FRP_LAYER = "mtg_fd:frp"
 
-# The service throws an intermittent server-side NullPointerException, returned
-# as HTTP 400 with exceptionCode=NoApplicableCode, on a request it answers fine
-# seconds later — measured at roughly one call in three while otherwise up, with
-# occasional 503s alongside. The request is not at fault, so the only remedy is
-# to ask again. Three attempts turns a ~1-in-3 flake into a ~1-in-27 loss.
+# The service still throws the occasional server-side fault (a bare
+# NullPointerException as HTTP 400, or a 503) on a request it answers fine
+# seconds later, so a spent attempt is worth one more. This is NOT the remedy
+# for the sortBy fault below: that one is deterministic and retrying it only
+# burns the refresh budget.
 FRP_ATTEMPTS = 3
 FRP_BACKOFF_S = 2.0
+
+# How far back to ask for. The cap below can only truncate from the OLD end (see
+# _wfs_points_url), so the window has to be short enough that a busy day still
+# fits under FRP_COUNT. Measured 2026-08-04 over Europe: 2 h ≈ 2.1k features,
+# 6 h ≈ 5.0k, 12 h ≈ 6.4k, 24 h ≈ 32k. Six hours leaves a wide margin against
+# FRP_COUNT while comfortably outliving a missed refresh — MTG publishes every
+# ~10 min, and the layer's own budget is one hour.
+FRP_WINDOW_H = 6
+# Sized above the worst measured window by ~4x. A window that overflows this is
+# silently truncated to its OLDEST features, which is exactly the stale-data
+# failure this module exists to avoid — fetch_frp_points warns when it happens.
+FRP_COUNT = 20000
 # Per-attempt cap. Successful calls land in seconds; anything near this is the
 # service being down, where retrying is pointless — so keep the ceiling low
 # enough that three attempts cannot stall a refresh (3 x 60 s worst case, and
@@ -34,20 +48,38 @@ FRP_BACKOFF_S = 2.0
 FRP_TIMEOUT_S = 60
 
 
-def _wfs_points_url(bbox: tuple[float, float, float, float], count: int) -> str:
+def _wfs_points_url(
+    bbox: tuple[float, float, float, float], count: int, since: datetime
+) -> str:
+    """A time-windowed request. Recency comes from the FILTER, never from a sort.
+
+    The service returns features OLDEST-first and `count` caps the result, so the
+    naive request hands back data days old while the server holds detections
+    minutes old. The obvious remedy, sortBy=time+D, is unusable: the server
+    answers ANY sortBy on this layer with a bare java.lang.NullPointerException
+    (HTTP 400, exceptionCode=NoApplicableCode). That was intermittent once and is
+    now deterministic — measured 2026-08-04 at 5/5 failures, ~55 s apiece, which
+    is how frp and the wind layer downstream of it went dark for days while three
+    retries burned three minutes of every refresh.
+
+    So constrain time instead of ordering it: ask only for the last few hours and
+    the cap stops mattering, because the whole window fits under it. The bbox has
+    to move into the same CQL filter — GeoServer rejects a `bbox` parameter and
+    CQL_FILTER together with a 500 — and BBOX() takes lon/lat order, unlike the
+    EPSG-urn bbox parameter this replaces.
+
+    NOTE: do not send propertyName — restricting it makes GeoServer return
+    features with a null geometry, which silently yields an empty heatmap.
+    """
     lon_min, lat_min, lon_max, lat_max = bbox
-    # WFS 2.0 with an EPSG urn uses lat,lon axis order.
-    # NOTE: do not send propertyName — restricting it makes GeoServer return
-    # features with a null geometry, which silently yields an empty heatmap.
-    # CRITICAL: sortBy=time+D (descending). The service returns features
-    # OLDEST-first, and `count` caps the result, so without this the cap slices
-    # off everything recent — the map would show data days old while the server
-    # has detections minutes old.
+    stamp = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cql = quote(
+        f"time AFTER {stamp} AND BBOX(geom,{lon_min},{lat_min},{lon_max},{lat_max})"
+    )
     return (
         f"{EUMETVIEW_WMS}?service=WFS&version=2.0.0&request=GetFeature"
         f"&typeNames={MTG_FRP_LAYER}&outputFormat=application/json&srsName=EPSG:4326"
-        f"&count={count}&sortBy=time+D"
-        f"&bbox={lat_min},{lon_min},{lat_max},{lon_max},urn:ogc:def:crs:EPSG::4326"
+        f"&count={count}&CQL_FILTER={cql}"
     )
 
 
@@ -78,12 +110,11 @@ def _retrying(
 def fetch_frp_points(
     bbox: tuple[float, float, float, float],
     http_text: Callable[[str], str] | None = None,
-    # Newest-first (sortBy in the URL), so this is the freshest N detections.
-    # ~8k comfortably covers active Europe over the last day and keeps the
-    # server-side sort fast; 30k made GeoServer sort the global set and stall.
-    count: int = 8000,
+    count: int = FRP_COUNT,
     min_confidence: int = 0,
     sleep: Callable[[float], None] | None = None,
+    window_h: int = FRP_WINDOW_H,
+    now: datetime | None = None,
 ) -> list[dict]:
     """Fetch individual MTG FRP pixels (MW) as points, for a weighted heatmap.
 
@@ -111,8 +142,24 @@ def fetch_frp_points(
     # forward. The caller (pipeline.run.process) wraps this in attempt(), which
     # is where the degradation decision belongs — so a spent retry budget must
     # still raise.
-    raw = _retrying(http_text, sleep)(_wfs_points_url(bbox, count))
+    since = (now or datetime.now(timezone.utc)) - timedelta(hours=window_h)
+    raw = _retrying(http_text, sleep)(_wfs_points_url(bbox, count, since))
     fc = _json.loads(raw)
+
+    # numberMatched is what the filter found; len(features) is what fitted under
+    # `count`. When they diverge the server has truncated from the OLD end, so
+    # what we hold is a stale slice of the window — the precise failure the time
+    # filter exists to prevent, just reached by a different route (an unusually
+    # busy window rather than an unbounded query). Warn loudly: the layer still
+    # publishes, but it is no longer the freshest data available.
+    matched = fc.get("numberMatched")
+    features = fc.get("features", [])
+    if isinstance(matched, int) and matched > len(features):
+        print(
+            f"[warn] MTG FRP window truncated: {matched} matched, {len(features)} "
+            f"returned (count={count}). Data is the OLDEST of the last {window_h}h; "
+            f"raise FRP_COUNT or shorten FRP_WINDOW_H."
+        )
 
     out: list[dict] = []
     for f in fc.get("features", []):
