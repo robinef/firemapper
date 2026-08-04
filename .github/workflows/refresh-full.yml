@@ -49,6 +49,13 @@ jobs:
       # archive is what put a 30-day timeline of zeroes on the live map.
       - run: uv run python -m scripts.refresh_remote full
         env:
+          # Python block-buffers stdout when it is not a TTY, so a run that is
+          # cancelled or times out loses every [info]/[warn] marker it printed —
+          # which is exactly what happened to the two runs killed at the old
+          # 20-minute ceiling: 20 minutes of silence, indistinguishable from a
+          # hang. Every diagnosis of this pipeline reads the gaps between those
+          # markers, so they have to survive a kill.
+          PYTHONUNBUFFERED: "1"
           # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
           # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
           # id is a bearer token for a whole OGC configuration and lives only in

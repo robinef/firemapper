@@ -18,7 +18,16 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Raised from 20 after every run following the FRP fix (b91bb67) was killed
+    # at exactly 20.3 min. The fix did not make the job slower by itself — it
+    # re-enabled work that had been silently skipped for days: with FRP
+    # returning 0 pixels, run.py skipped the wind fetch outright and clustered
+    # no meteosat rows. Now FRP returns ~5.9k pixels and all of that executes.
+    #
+    # 45 is a stopgap chosen to restore service, not a measurement. The step now
+    # runs unbuffered (see PYTHONUNBUFFERED below) so the next run finally shows
+    # where the time actually goes; size this properly once it does.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -49,6 +58,13 @@ jobs:
           sha256sum data/places/cities15000.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run python -m scripts.refresh_remote fast
         env:
+          # Python block-buffers stdout when it is not a TTY, so a run that is
+          # cancelled or times out loses every [info]/[warn] marker it printed —
+          # which is exactly what happened to the two runs killed at the old
+          # 20-minute ceiling: 20 minutes of silence, indistinguishable from a
+          # hang. Every diagnosis of this pipeline reads the gaps between those
+          # markers, so they have to survive a kill.
+          PYTHONUNBUFFERED: "1"
           # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
           # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
           # id is a bearer token for a whole OGC configuration and lives only in
