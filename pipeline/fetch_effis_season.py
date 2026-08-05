@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from .fetch_effis import EFFIS_TYPENAME, EFFIS_WFS, _features_from_text, _first, _parse_date
-from .store import _naive_utc, connect, write_polygons
+from .store import _naive_utc, _sql_path, connect, write_polygons
 
 PAGE_SIZE = 1000
 MIN_AGE_HOURS = 6.0
@@ -129,6 +130,36 @@ def snapshot_path(settings) -> Path:
     return settings.data_dir / "raw" / "effis_ba.parquet"
 
 
+def _is_feature_collection(text: str) -> bool:
+    """True when the body IS a feature collection, however empty it is.
+
+    `_features_from_text` yields [] for a genuinely empty FeatureCollection and
+    for an OWS ExceptionReport alike, which makes end-of-data indistinguishable
+    from the backend falling over mid-pagination. That difference decides
+    whether an empty page completes a season or truncates one, so it has to be
+    read off the body itself.
+
+    Deliberately strict: anything we cannot positively identify as a collection
+    is a failure. Over-rejecting costs one skipped refresh; over-accepting
+    publishes a partial season as the authoritative total.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    if text[0] in "{[":
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            return False
+        return isinstance(doc, dict) and isinstance(doc.get("features"), list)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return False
+    # An ExceptionReport parses perfectly well; only the tag tells them apart.
+    return "featurecollection" in root.tag.rsplit("}", 1)[-1].lower()
+
+
 def _page_url(start_index: int) -> str:
     return (
         f"{EFFIS_WFS}?service=WFS&version=2.0.0&request=GetFeature"
@@ -145,14 +176,19 @@ def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS
 
     Age comes from the snapshot's own `fetched_at` column, NOT the file mtime:
     the file is rewritten by an R2 hydrate on every CI run, so its mtime says
-    when we downloaded it, not when EFFIS was last asked."""
+    when we downloaded it, not when EFFIS was last asked. That same column is
+    what the page's "as of" date is published from (season._polled_at).
+
+    The path is interpolated into SQL, so it goes through `_sql_path`. Raw, an
+    apostrophe in the data directory breaks the query, the `except` below reads
+    it as an unreadable snapshot, and the 6-hour gate is silently disabled."""
     if not path.exists():
         return True
     con = None
     try:
         con = connect()
         newest = con.execute(
-            f"SELECT max(fetched_at) FROM read_parquet('{path.as_posix()}')"
+            f"SELECT max(fetched_at) FROM read_parquet('{_sql_path(path)}')"
         ).fetchone()[0]
     except Exception:  # noqa: BLE001 - an unreadable snapshot is worth refetching
         return True
@@ -190,9 +226,20 @@ def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
             payload = {}
         matched, _returned = completeness(payload)
         if matched is not None:
-            expected = matched  # remember it: a later error page reports nothing
+            # MONOTONIC, not last-wins: a later page reporting a SMALLER
+            # numberMatched than one already seen would otherwise satisfy the
+            # completion check below early and publish a truncated season as
+            # authoritative. The largest figure the server ever claimed is the
+            # one it has to make good on.
+            expected = matched if expected is None else max(expected, matched)
 
         if not features:
+            if not _is_feature_collection(text):
+                # No features AND not a collection: an exception report or
+                # garbage, not the end of the data. Without this an error page
+                # closes the pagination and whatever we happened to have
+                # collected so far is published as the complete season.
+                return None
             if start == 0:
                 return None  # down, exception report, or genuinely nothing
             if expected is not None and seen < expected:
@@ -217,7 +264,12 @@ def fetch_season_snapshot(
 
     Guaranteed non-raising: any failure leaves the previous snapshot exactly as
     it was, so a bad EFFIS week degrades the page to "as of <date>" rather than
-    blanking it."""
+    blanking it.
+
+    That degradation is only real because the untouched snapshot keeps its
+    original `fetched_at`, and season._polled_at publishes THAT — not the run's
+    clock. Stamp the page with the export time and this function still returns
+    "stale" while the page silently re-dates a frozen figure to today."""
     path = snapshot_path(settings)
     try:
         if not should_fetch(path, now):
