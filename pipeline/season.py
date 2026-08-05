@@ -18,7 +18,7 @@ from .store import connect
 _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "Albania": ("AL", "ALB", "albania", "shqiperia"),
     "Andorra": ("AD", "AND", "andorra"),
-    "Austria": ("AT", "AUT", "austria", "osterreich"),
+    "Austria": ("AT", "AUT", "austria", "osterreich", "Österreich"),
     "Belarus": ("BY", "BLR", "belarus"),
     "Belgium": ("BE", "BEL", "belgium", "belgie", "belgique"),
     "Bosnia and Herzegovina": ("BA", "BIH", "bosnia and herzegovina", "bosna i hercegovina"),
@@ -33,7 +33,7 @@ _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "Germany": ("DE", "DEU", "germany", "deutschland"),
     "Greece": ("GR", "EL", "GRC", "greece", "ellada", "hellas"),
     "Hungary": ("HU", "HUN", "hungary", "magyarorszag"),
-    "Iceland": ("IS", "ISL", "iceland", "island", "ísland"),
+    "Iceland": ("IS", "ISL", "iceland", "island", "Ísland"),
     "Ireland": ("IE", "IRL", "ireland", "eire"),
     "Italy": ("IT", "ITA", "italy", "italia"),
     "Kosovo": ("XK", "XKX", "kosovo"),
@@ -55,7 +55,7 @@ _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "Serbia": ("RS", "SRB", "serbia", "srbija"),
     "Slovakia": ("SK", "SVK", "slovakia", "slovensko"),
     "Slovenia": ("SI", "SVN", "slovenia", "slovenija"),
-    "Spain": ("ES", "ESP", "spain", "espana"),
+    "Spain": ("ES", "ESP", "spain", "espana", "España"),
     "Sweden": ("SE", "SWE", "sweden", "sverige"),
     "Switzerland": ("CH", "CHE", "switzerland", "schweiz", "suisse"),
     "Ukraine": ("UA", "UKR", "ukraine"),
@@ -108,7 +108,7 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
         ).fetchall()
 
         # area_count counts MAPPED PERIMETERS, not fires. Nothing establishes that
-        # one EFFIS feature is one fire — a single incident can be mapped as
+        # one ercc.ba feature is one fire — a single incident can be mapped as
         # several perimeters — so the field and the page copy both say "mapped burn
         # areas". Calling them fires would be a quotable number that is not true.
         total_ha = 0.0

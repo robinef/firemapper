@@ -1,7 +1,7 @@
 from datetime import date
 from pathlib import Path
 
-from pipeline.season import normalize_country, season_totals
+from pipeline.season import normalize_country, season_totals, _LOOKUP, _fold
 from pipeline.store import write_polygons
 
 POLY = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"
@@ -114,5 +114,17 @@ def test_country_normalisation_variants():
 
 
 def test_accented_alias_resolves():
-    # Accent folding must work for both lookup key and query side.
+    # Under old .lower()-only build, "Österreich" would be keyed as "österreich"
+    # but folded query produces "osterreich", so they never match. With _fold-based
+    # keys, both sides go through same normalization and it works.
+    assert normalize_country("Österreich") == "Austria"
+    # Same for other accented locals.
+    assert normalize_country("España") == "Spain"
     assert normalize_country("Ísland") == "Iceland"
+
+
+def test_lookup_keys_are_folded():
+    # Invariant: all lookup keys must be folded, so they can never miss an accented
+    # query. Under old .lower()-only build, this fails the moment any accented
+    # alias is added to the table.
+    assert all(key == _fold(key) for key in _LOOKUP)
