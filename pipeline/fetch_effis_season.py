@@ -148,14 +148,17 @@ def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS
     when we downloaded it, not when EFFIS was last asked."""
     if not path.exists():
         return True
+    con = None
     try:
         con = connect()
         newest = con.execute(
             f"SELECT max(fetched_at) FROM read_parquet('{path.as_posix()}')"
         ).fetchone()[0]
-        con.close()
     except Exception:  # noqa: BLE001 - an unreadable snapshot is worth refetching
         return True
+    finally:
+        if con is not None:
+            con.close()
     if newest is None:
         return True
     try:
@@ -177,6 +180,7 @@ def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
     rows: list[dict] = []
     seen = 0
     start = 0
+    expected: int | None = None
     for _ in range(MAX_PAGES):
         text = http_get(_page_url(start))
         features = _features_from_text(text)
@@ -185,11 +189,13 @@ def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
         except ValueError:
             payload = {}
         matched, _returned = completeness(payload)
+        if matched is not None:
+            expected = matched  # remember it: a later error page reports nothing
 
         if not features:
             if start == 0:
                 return None  # down, exception report, or genuinely nothing
-            if matched is not None and seen < matched:
+            if expected is not None and seen < expected:
                 return None  # server promised more and then stopped: truncated
             return rows  # nothing left to page, and nothing outstanding
 
@@ -197,9 +203,9 @@ def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
         rows.extend(rows_from_features(features))
         start += len(features)  # advance by what ARRIVED, never by numberReturned
 
-        if matched is not None and seen >= matched:
+        if expected is not None and seen >= expected:
             return rows
-        if matched is None and len(features) < PAGE_SIZE:
+        if expected is None and len(features) < PAGE_SIZE:
             return rows  # no counters to verify, but a short page ends the set
     return None  # MAX_PAGES exhausted: the server never finished
 
@@ -237,6 +243,8 @@ def fetch_season_snapshot(
     try:
         deduped = {r["id"]: r for r in rows if "id" in r}
         stamped = [{**r, "fetched_at": _naive_utc(now)} for r in deduped.values()]
+        if not stamped:
+            return "stale"
         write_polygons(stamped, path)
     except Exception:  # noqa: BLE001 - write failure should not blank the snapshot
         return "stale"

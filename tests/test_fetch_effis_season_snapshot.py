@@ -225,3 +225,80 @@ def test_should_fetch_is_true_when_parquet_exists_but_empty(tmp_path):
 
     # should_fetch should return True since max(fetched_at) is None
     assert should_fetch(snapshot_path(settings), NOW) is True
+
+
+def test_empty_later_page_with_nothing_outstanding_returns_rows_fresh(tmp_path, monkeypatch):
+    """Test the branch: empty later page when nothing is outstanding returns rows as complete."""
+    settings = FakeSettings(tmp_path)
+    # Monkeypatch PAGE_SIZE to 2 to control pagination
+    import pipeline.fetch_effis_season as module
+    monkeypatch.setattr(module, "PAGE_SIZE", 2)
+
+    pages = [
+        # Page 1: 2 features, no numberMatched (server omits the counter)
+        json.dumps({
+            "type": "FeatureCollection",
+            "features": [feat("ba.1"), feat("ba.2")],
+        }),
+        # Page 2: empty feature collection
+        json.dumps({
+            "type": "FeatureCollection",
+            "features": [],
+        }),
+    ]
+    calls = []
+
+    def http_get(url):
+        calls.append(url)
+        return pages[len(calls) - 1]
+
+    assert fetch_season_snapshot(settings, NOW, http_get) == "fresh"
+    assert len(calls) == 2
+    # Verify both rows were written
+    import duckdb
+    con = duckdb.connect()
+    rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{snapshot_path(settings).as_posix()}')").fetchone()[0]
+    assert rows == 2
+
+
+def test_page_1_with_matched_5000_page_2_exception_is_stale(tmp_path):
+    """Critical: server dies after page 1. Carry expected forward; exception page shouldn't truncate."""
+    settings = FakeSettings(tmp_path)
+    # Seed good snapshot
+    fetch_season_snapshot(settings, NOW, lambda u: page([feat("ba.1")], 1, 1))
+    before = snapshot_path(settings).read_bytes()
+
+    pages = [
+        # Page 1: 2 features, claims 5000 matched
+        page([feat("ba.1"), feat("ba.2")], matched=5000, returned=2),
+        # Page 2: OWS ExceptionReport (no counters)
+        '<?xml version="1.0"?><ExceptionReport><Exception/></ExceptionReport>',
+    ]
+    calls = []
+
+    def http_get(url):
+        calls.append(url)
+        return pages[len(calls) - 1]
+
+    later = NOW + timedelta(hours=7)
+    assert fetch_season_snapshot(settings, later, http_get) == "stale"
+    assert snapshot_path(settings).read_bytes() == before
+
+
+def test_should_fetch_true_when_parquet_lacks_fetched_at_column(tmp_path):
+    """Exercise the intended branch: parquet exists but has no fetched_at column."""
+    settings = FakeSettings(tmp_path)
+    # Create the raw directory
+    (tmp_path / "raw").mkdir()
+    # Create a parquet with data but no fetched_at column
+    import duckdb
+    con = duckdb.connect()
+    con.execute(f"""
+        COPY (
+            SELECT 'ba.1' as id, 100 as area_ha
+        ) TO '{snapshot_path(settings).as_posix()}' (FORMAT PARQUET)
+    """)
+    con.close()
+
+    # should_fetch should return True: max(fetched_at) will fail or return None
+    assert should_fetch(snapshot_path(settings), NOW) is True
