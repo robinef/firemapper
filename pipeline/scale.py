@@ -1,0 +1,58 @@
+"""Turn a burned-area total into a count of a familiar place.
+
+A FIXED trio, used at every magnitude, so a returning reader learns the ladder
+instead of meeting a new ref each visit. Rungs are 15.5x and 14.9x apart,
+which is what stretches three units across 20 - 70,000 km2.
+
+Coverage is near-total but NOT gapless: each unit spans 15x (band 3-45), so the
+15.5x Gibraltar->Paris rung leaves a sliver at 306-316 km2 that falls back. That
+is accepted — closing it costs a fourth unit or a wider band, both worse trades.
+"""
+from __future__ import annotations
+from math import log
+
+# (name, km2). Boundaries are the disputed kind and are pinned deliberately:
+# Paris is the commune INCLUDING the two Bois (87 km2 without); Greater London
+# is the administrative region; Gibraltar is the whole territory.
+UNITS: list[tuple[str, float]] = [
+    ("Gibraltar", 6.8),
+    ("Paris", 105.4),
+    ("Greater London", 1572.0),
+]
+
+BAND_MIN = 3.0
+BAND_MAX = 45.0
+TARGET = 12.0
+
+
+def in_band(count: float) -> bool:
+    """Check if a tile count is within the readable band."""
+    return BAND_MIN <= count <= BAND_MAX
+
+
+def pick_unit(total_km2: float) -> dict:
+    """The unit whose tile count sits nearest TARGET while inside the readable
+    band; if none qualifies, the nearest-ratio unit with an honest count.
+    Raises ValueError on a non-positive total: log(0) is undefined, and a zero
+    season is a distinct page state handled upstream, not a grid of no tiles.
+
+    Note: At boundary values (count = 3.0 or 45.0), the fallback path returns
+    the same unit as the in-band path, making band inclusivity unobservable in
+    results. Boundary behavior is asserted directly via in_band() tests.
+    """
+    if total_km2 <= 0:
+        raise ValueError("pick_unit requires a positive total; zero is a separate state")
+
+    def distance(km2: float) -> float:
+        count = total_km2 / km2
+        return abs(log(count / TARGET))
+
+    candidates_in_band = [
+        (name, km2) for name, km2 in UNITS
+        if in_band(total_km2 / km2)
+    ]
+
+    candidates = candidates_in_band or UNITS
+    name, km2 = min(candidates, key=lambda u: distance(u[1]))
+
+    return {"name": name, "km2": km2, "count": round(total_km2 / km2, 1)}

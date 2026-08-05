@@ -1,14 +1,16 @@
+"""Response-body parsing for the EFFIS WFS wire format.
+
+fetch_effis_ba no longer touches the network (see
+test_fetch_effis_snapshot_backed.py); _features_from_text is what still reads
+EFFIS responses, on behalf of fetch_effis_season, so the guard against a
+down backend is asserted here where the behaviour actually lives.
+"""
 import json
 
-from pipeline.fetch_effis import fetch_effis_ba
+from pipeline.fetch_effis import _features_from_text
 
-
-class _Settings:
-    pass
-
-
-# Two burned-area polygons. Fire dates are years in the past so `after` is always
-# firedate + 14 (well before today-1) regardless of the machine clock.
+# Two burned-area polygons, synthetic. Fire dates are years in the past so
+# nothing here depends on the machine clock.
 _GEOJSON = json.dumps({
     "type": "FeatureCollection",
     "features": [
@@ -47,51 +49,20 @@ _EXCEPTION_XML = (
 )
 
 
-def test_geojson_features_become_scars():
-    scars = fetch_effis_ba(_Settings(), http_get=lambda url: _GEOJSON)
-    assert len(scars) == 2
-
-    # Sorted by area desc → the 1000 ha Gironde scar first.
-    a, b = scars
-    assert a["kind"] == "past" and b["kind"] == "past"
-
-    # Centroid = bbox midpoint of the polygon.
-    assert a["lon"] == 8.1 and a["lat"] == 45.1
-    assert b["lon"] == -0.8 and b["lat"] == 40.2
-
-    # Dates: before = firedate - 6, after = firedate + 14 (settled).
-    assert a["started"] == "2022-07-10"
-    assert a["before"] == "2022-07-04"
-    assert a["after"] == "2022-07-24"
-    assert a["label"] == "Gironde · 2022"
-
-    # No place attribute → generic dated label.
-    assert b["started"] == "2021-08-05"
-    assert b["before"] == "2021-07-30"
-    assert b["after"] == "2021-08-19"
-    assert b["label"] == "Burn scar · 2021-08-05"
-
-    # The internal sort key never leaks into the manifest.
-    assert "_area_ha" not in a and "_area_ha" not in b
+def test_geojson_body_yields_its_features():
+    feats = _features_from_text(_GEOJSON)
+    assert len(feats) == 2
+    assert feats[0]["properties"]["province"] == "Gironde"
+    assert feats[1]["properties"]["FIREDATE"] == "2021-08-05"
 
 
-def test_limit_caps_results():
-    scars = fetch_effis_ba(_Settings(), http_get=lambda url: _GEOJSON, limit=1)
-    assert len(scars) == 1
-    assert scars[0]["label"] == "Gironde · 2022"  # largest area kept
+def test_oracle_exception_report_yields_no_features():
+    assert _features_from_text(_EXCEPTION_XML) == []
 
 
-def test_oracle_exception_report_yields_empty():
-    scars = fetch_effis_ba(_Settings(), http_get=lambda url: _EXCEPTION_XML)
-    assert scars == []
+def test_garbage_body_yields_no_features():
+    assert _features_from_text("not json or xml {[") == []
 
 
-def test_http_error_yields_empty():
-    def boom(url: str) -> str:
-        raise RuntimeError("connection reset")
-
-    assert fetch_effis_ba(_Settings(), http_get=boom) == []
-
-
-def test_garbage_body_yields_empty():
-    assert fetch_effis_ba(_Settings(), http_get=lambda url: "not json or xml {[") == []
+def test_empty_body_yields_no_features():
+    assert _features_from_text("") == []

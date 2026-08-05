@@ -1,16 +1,22 @@
 """EFFIS burned areas as a best-effort auto source of historical "past" scars.
 
 EFFIS (the EU's Emergency Management Service fire component) publishes a WFS
-burned-area layer covering the current season. We query it, turn each burned
-polygon into a before/after scar (same shape as build_scars() output), and hand
-them to build_imagery() alongside our own FIRMS-derived scars.
+burned-area layer covering the current season. fetch_effis_season fetches it at
+most once per gate window and stores the perimeters as a GeoParquet snapshot;
+fetch_effis_ba reads THAT snapshot, turns each burned polygon into a before/after
+scar (same shape as build_scars() output), and hands them to build_imagery()
+alongside our own FIRMS-derived scars. One fragile backend, one request.
+
+This module also owns the response parsing (_features_from_text and friends),
+which fetch_effis_season imports to read the wire format.
 
 IMPORTANT: the endpoint's Oracle Spatial backend is frequently DOWN and answers
 a perfectly-formed HTTP 200 whose body is an OWS ExceptionReport
 ("OracleSpatial error … Connection failure"), not features. So every path here is
-guarded: on ANY error — HTTP failure, exception report, malformed body, empty or
-non-feature response — fetch_effis_ba returns [] and NEVER raises. EFFIS is a
-bonus tier; the map must never depend on it being up.
+guarded: a body that is not a feature collection parses to no features, and on
+ANY error — missing snapshot, unreadable snapshot, malformed row — fetch_effis_ba
+returns [] and NEVER raises. EFFIS is a bonus tier; the map must never depend on
+it being up.
 """
 from __future__ import annotations
 
@@ -26,21 +32,6 @@ EFFIS_TYPENAME = "ercc.ba"
 
 BASELINE_LEAD_DAYS = 6   # "before" image this many days pre-fire
 SCAR_SETTLE_DAYS = 14    # "after" this long post-ignition (settled black scar)
-
-# Attribute names vary by server/version; try these in order (case matters in
-# GeoJSON properties, so we list both casings).
-_AREA_KEYS = ("area_ha", "AREA_HA", "area", "AREA")
-_DATE_KEYS = ("firedate", "FIREDATE", "lastupdate", "LASTUPDATE",
-              "initialdate", "INITIALDATE")
-_PLACE_KEYS = ("place_name", "PLACE_NAME", "province", "PROVINCE",
-               "commune", "COMMUNE", "country", "COUNTRY")
-
-
-def _build_url() -> str:
-    return (
-        f"{EFFIS_WFS}?service=WFS&version=2.0.0&request=GetFeature"
-        f"&typename={EFFIS_TYPENAME}&outputformat=geojson&srsname=EPSG:4326"
-    )
 
 
 def _first(props: dict, keys) -> object | None:
@@ -70,80 +61,6 @@ def _parse_date(value) -> date | None:
         return datetime.strptime(head, "%Y-%m-%d").date()
     except ValueError:
         return None
-
-
-def _iter_coords(geom: object):
-    """Yield every (lon, lat) pair from an arbitrarily-nested GeoJSON coord tree."""
-    if isinstance(geom, (list, tuple)):
-        if (
-            len(geom) >= 2
-            and isinstance(geom[0], (int, float))
-            and isinstance(geom[1], (int, float))
-        ):
-            yield float(geom[0]), float(geom[1])
-        else:
-            for item in geom:
-                yield from _iter_coords(item)
-
-
-def _centroid(geometry: dict | None) -> tuple[float, float] | None:
-    """bbox midpoint of a GeoJSON geometry (good enough to place a scar pin)."""
-    if not isinstance(geometry, dict):
-        return None
-    coords = list(_iter_coords(geometry.get("coordinates")))
-    if not coords:
-        return None
-    lons = [c[0] for c in coords]
-    lats = [c[1] for c in coords]
-    return (min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2
-
-
-def _scar_from_feature(feat: dict, today: date) -> dict | None:
-    if not isinstance(feat, dict):
-        return None
-    props = feat.get("properties") or {}
-    if not isinstance(props, dict):
-        props = {}
-    centroid = _centroid(feat.get("geometry"))
-    if centroid is None:
-        return None
-    lon, lat = centroid
-
-    fire_date = _parse_date(_first(props, _DATE_KEYS))
-    if fire_date is None:
-        return None
-
-    yesterday = today - timedelta(days=1)
-    before = fire_date - timedelta(days=BASELINE_LEAD_DAYS)
-    after = min(fire_date + timedelta(days=SCAR_SETTLE_DAYS), yesterday)
-    after = max(after, fire_date)  # never before ignition
-
-    place = _first(props, _PLACE_KEYS)
-    if place:
-        label = f"{place} · {fire_date.year}"
-    else:
-        label = f"Burn scar · {fire_date.isoformat()}"
-
-    area = _first(props, _AREA_KEYS)
-    try:
-        area_ha = float(area) if area is not None else 0.0
-    except (TypeError, ValueError):
-        area_ha = 0.0
-
-    scar = {
-        "id": f"effis-{fire_date.isoformat()}-{round(lon, 3)}-{round(lat, 3)}",
-        "label": label,
-        "kind": "past",
-        "lon": round(lon, 4),
-        "lat": round(lat, 4),
-        "started": fire_date.isoformat(),
-        "before": before.isoformat(),
-        "after": after.isoformat(),
-        "_area_ha": area_ha,  # internal, used only for sorting
-    }
-    if place:
-        scar["place"] = str(place)
-    return scar
 
 
 def _features_from_text(text: str) -> list[dict]:
@@ -232,37 +149,68 @@ def _parse_gml_coords(text: str, swap: bool) -> list[list[float]]:
 def fetch_effis_ba(
     settings, http_get: Callable[[str], str] | None = None, limit: int = 12,
 ) -> list[dict]:
-    """Best-effort EFFIS burned-area scars (largest `limit`, area desc).
+    """The largest `limit` burned-area scars, read from the stored perimeter
+    archive rather than the network.
 
-    Guaranteed non-raising: any failure (network, HTTP error, OWS exception
-    report, malformed body, no features) yields []. `http_get` mirrors
-    fetch_firms so tests can inject a fake; the default does a real GET."""
-    if http_get is None:
-        import requests
+    EFFIS is fetched once per pipeline run at most (see fetch_effis_season),
+    and everything reads that snapshot — one fragile backend, one request.
+    `http_get` is accepted for signature compatibility and ignored.
 
-        def http_get(url: str) -> str:  # pragma: no cover - network
-            r = requests.get(url, timeout=60)
-            r.raise_for_status()
-            return r.text
+    Guaranteed non-raising: a missing or unreadable snapshot yields []."""
+    from .fetch_effis_season import snapshot_path
+    from .store import _sql_path, connect
 
+    con = None
     try:
-        text = http_get(_build_url())
-        features = _features_from_text(text)
-    except Exception:  # noqa: BLE001 - EFFIS is best-effort, never fatal
+        path = snapshot_path(settings)
+        if not path.exists():
+            return []
+        con = connect()
+        # NOTE: `limit` is applied by SQL, i.e. BEFORE the per-row guard below,
+        # whereas the old network implementation applied it after dropping
+        # malformed features. So a row the loop skips shrinks the result below
+        # `limit` rather than being backfilled. Only reachable with a
+        # foreign-written snapshot, which degrades to [] anyway.
+        rows = con.execute(
+            f"""SELECT id, firedate, place,
+                       ST_X(ST_Centroid(geometry)) AS lon,
+                       ST_Y(ST_Centroid(geometry)) AS lat
+                FROM read_parquet('{_sql_path(path)}')
+                WHERE firedate IS NOT NULL AND geometry IS NOT NULL
+                ORDER BY area_ha DESC
+                LIMIT {int(limit)}"""
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a bad snapshot must not break the map
         return []
+    finally:
+        if con is not None:
+            con.close()
 
     today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
     scars: list[dict] = []
-    for feat in features:
+    for fid, fire_date, place, lon, lat in rows:
         try:
-            scar = _scar_from_feature(feat, today)
-        except Exception:  # noqa: BLE001 - skip a malformed feature, keep going
-            scar = None
-        if scar is not None:
-            scars.append(scar)
-
-    scars.sort(key=lambda s: s.get("_area_ha", 0.0), reverse=True)
-    top = scars[:limit]
-    for s in top:
-        s.pop("_area_ha", None)  # strip internal sort key from the output
-    return top
+            before = fire_date - timedelta(days=BASELINE_LEAD_DAYS)
+            # Settled black scar, but never a date we cannot have imagery for
+            # yet, and never before ignition.
+            after = max(min(fire_date + timedelta(days=SCAR_SETTLE_DAYS), yesterday), fire_date)
+            scar = {
+                "id": str(fid),
+                "label": (
+                    f"{place} · {fire_date.year}" if place
+                    else f"Burn scar · {fire_date.isoformat()}"
+                ),
+                "kind": "past",
+                "lon": round(float(lon), 4),
+                "lat": round(float(lat), 4),
+                "started": fire_date.isoformat(),
+                "before": before.isoformat(),
+                "after": after.isoformat(),
+            }
+        except Exception:  # noqa: BLE001 - skip a malformed row, keep going
+            continue
+        if place:
+            scar["place"] = str(place)
+        scars.append(scar)
+    return scars

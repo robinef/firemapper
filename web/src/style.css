@@ -463,3 +463,16 @@ body.compare-mode #timeline { display: none; }
 }
 .layer-filter input { accent-color: #ff6b00; flex: 0 0 auto; }
 .layer-filter:hover { color: var(--fg); }
+
+/* Secondary nav out of the map and into the season scale page. Sits last in the
+   sidebar with a little bottom margin, so the sidebar's 14px bottom mask fades
+   empty space rather than the link text. */
+#scale-link {
+  flex: none;
+  margin-bottom: 16px;
+  background: var(--panel); color: var(--muted);
+  border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
+  padding: 9px 12px; font-size: 13px; text-decoration: none;
+  box-shadow: 0 2px 12px rgba(0,0,0,.45);
+}
+#scale-link:hover { border-color: #ff6b00; color: #ffcf8f; }

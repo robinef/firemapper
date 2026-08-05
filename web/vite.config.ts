@@ -1,6 +1,8 @@
 import { copyFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { defineConfig, type Plugin } from "vite";
 
 /** maplibre's ESM distribution, served as the three sibling files it expects. */
@@ -57,10 +59,32 @@ function maplibreAssets(): Plugin {
   };
 }
 
+// Two HTML entries, so the build emits scale.html as a real asset. It has to be
+// a real asset: wrangler.jsonc sets not_found_handling to "single-page-application"
+// and never sets html_handling, so anything that fails to resolve is answered
+// with index.html — the map — and a 200. A page that failed to build would look
+// like a page that works.
+//
+// No URL spelling defends against that, so the guard is here at build time
+// instead: tests/scale_render.test.ts asserts this input map still names both
+// entries. (On the serving side, html_handling defaults to auto-trailing-slash,
+// which makes the extensionless /scale canonical and 307s /scale.html onto it —
+// both resolve, so links use /scale.)
+const entry = (name: string) => fileURLToPath(new URL(name, import.meta.url));
+
 export default defineConfig({
   plugins: [maplibreAssets()],
   build: {
     rollupOptions: {
+      // The KEY names the emitted chunk: "index" keeps the map's entry at
+      // assets/index-<hash>.js. With a single entry rollup derived that name
+      // from the HTML file; naming this key "main" instead renamed the chunk
+      // and broke CI's maplibre assertion, which locates the entry by globbing
+      // index-*.js and silently resolved to "." when it matched nothing.
+      input: {
+        index: entry("./index.html"),
+        scale: entry("./scale.html"),
+      },
       // Not bundled. `output.paths` rewrites the bare specifier to the copied
       // file, so the browser fetches maplibre itself and resolves `shared` and
       // the worker relative to it. Only the exact id is external — the separate

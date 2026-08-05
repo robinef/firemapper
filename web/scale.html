@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>How much has burned? — FireMapper</title>
+    <meta
+      name="description"
+      content="This year's burned area in Europe, converted into a countable grid of a familiar place."
+    />
+    <link rel="stylesheet" href="/src/scale.css" />
+  </head>
+  <body class="scale-body">
+    <header class="scale-top">
+      <!-- Extensionless paths are canonical. Workers Assets defaults
+           html_handling to auto-trailing-slash and wrangler.jsonc never
+           overrides it, so /index.html 307s onto / and /scale.html 307s onto
+           /scale. Both forms reach the page; the canonical one saves a hop.
+
+           The hazard is not the URL form, it is a MISSING asset: with
+           not_found_handling "single-page-application", anything that fails to
+           resolve is answered with index.html and a 200, so a page that failed
+           to build is served as the map and looks like it works. That is caught
+           at build time by the shell guards in tests/scale_render.test.ts,
+           which is where it belongs — no URL spelling defends against it. -->
+      <a class="scale-back" href="/">← Live fire map</a>
+    </header>
+    <main id="scale">
+      <!-- Filled by src/scale.ts. Before the fetch lands there is no honest
+           number to show, so the shell stays empty rather than flashing a zero. -->
+    </main>
+    <script type="module" src="/src/scale.ts"></script>
+  </body>
+</html>
