@@ -25,11 +25,20 @@ BAND_MAX = 45.0
 TARGET = 12.0
 
 
+def in_band(count: float) -> bool:
+    """Check if a tile count is within the readable band."""
+    return BAND_MIN <= count <= BAND_MAX
+
+
 def pick_unit(total_km2: float) -> dict:
     """The unit whose tile count sits nearest TARGET while inside the readable
     band; if none qualifies, the nearest-ratio unit with an honest count.
     Raises ValueError on a non-positive total: log(0) is undefined, and a zero
     season is a distinct page state handled upstream, not a grid of no tiles.
+
+    Note: At boundary values (count = 3.0 or 45.0), the fallback path returns
+    the same unit as the in-band path, making band inclusivity unobservable in
+    results. Boundary behavior is asserted directly via in_band() tests.
     """
     if total_km2 <= 0:
         raise ValueError("pick_unit requires a positive total; zero is a separate state")
@@ -38,12 +47,12 @@ def pick_unit(total_km2: float) -> dict:
         count = total_km2 / km2
         return abs(log(count / TARGET))
 
-    in_band = [
+    candidates_in_band = [
         (name, km2) for name, km2 in UNITS
-        if BAND_MIN <= total_km2 / km2 <= BAND_MAX
+        if in_band(total_km2 / km2)
     ]
 
-    candidates = in_band or UNITS
+    candidates = candidates_in_band or UNITS
     name, km2 = min(candidates, key=lambda u: distance(u[1]))
 
     return {"name": name, "km2": km2, "count": round(total_km2 / km2, 1)}

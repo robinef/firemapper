@@ -1,5 +1,5 @@
 import pytest
-from pipeline.scale import UNITS, pick_unit
+from pipeline.scale import UNITS, pick_unit, in_band
 
 
 def test_europe_record_season_lands_on_greater_london():
@@ -56,21 +56,6 @@ def test_two_units_in_band_prefers_nearest_target():
     assert got["count"] == 44.8
 
 
-def test_band_lower_boundary_is_inclusive():
-    # 4716.0 / 1572.0 = 3.0 (exactly at BAND_MIN)
-    # Greater London at exactly 3.0 must be treated as in-band
-    # Also, Paris at 4716/105.4=44.76 is in band and closer to TARGET=12
-    got = pick_unit(4716.0)
-    assert got["name"] == "Paris"
-    assert got["count"] == 44.7
-
-
-def test_band_upper_boundary_is_inclusive():
-    # 306.0 / 6.8 = 45.0 (exactly at BAND_MAX)
-    # Gibraltar must be treated as in-band
-    got = pick_unit(306.0)
-    assert got["name"] == "Gibraltar"
-    assert got["count"] == 45.0
 
 
 def test_zero_is_rejected():
@@ -81,6 +66,26 @@ def test_zero_is_rejected():
 def test_negative_is_rejected():
     with pytest.raises(ValueError):
         pick_unit(-1.0)
+
+
+def test_in_band_includes_lower_boundary():
+    assert in_band(3.0) is True
+
+
+def test_in_band_includes_upper_boundary():
+    assert in_band(45.0) is True
+
+
+def test_in_band_excludes_below_lower():
+    assert in_band(2.9) is False
+
+
+def test_in_band_excludes_above_upper():
+    assert in_band(45.1) is False
+
+
+def test_in_band_includes_middle():
+    assert in_band(12.0) is True
 
 
 def test_units_are_the_pinned_trio():
