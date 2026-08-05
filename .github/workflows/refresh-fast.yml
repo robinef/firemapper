@@ -11,10 +11,13 @@ on:
   #
   # Every six hours, not hourly. `queue: max` means a colliding run is QUEUED,
   # never discarded, and this group is strictly serial — so an hourly fallback
-  # is not free insurance, it is ~14 min of every 60 spent re-doing what the
-  # Worker already did. Together with two Worker-driven runs and refresh-full
-  # that came to ~58 min of work per 60-min hour: saturation, where any slow run
-  # pushes the queue permanently backwards and the cadence gets LESS regular.
+  # is not free insurance, it is another full run re-doing what the Worker
+  # already did. Measured over 18 h to 2026-08-05: refresh-fast 10.5-18.7 min
+  # (median 13.2), refresh-full 11.6-17.9. Two Worker-driven runs plus
+  # refresh-full already fill ~41 min of every 60, and 55 at their worst; adding
+  # an hourly fallback puts the median at ~55 and the worst case past 60 —
+  # saturation, where any slow run pushes the queue permanently backwards and
+  # the cadence gets LESS regular.
   #
   # Six-hourly still catches a dead Worker or an expired token within one cycle,
   # which is the job. Offset from refresh-full's ":07" so they do not collide.

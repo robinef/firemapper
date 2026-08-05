@@ -210,16 +210,23 @@ export default {
    * that was never happening. Cron Triggers here fire reliably, so the schedule
    * in the workflow stays only as a fallback for when this Worker is broken.
    *
-   * This does NOT yet meet aircraft's 20-minute budget, and it is worth being
-   * precise about why: a layer is inside its budget from publish until budget
-   * expiry, so meeting it needs interval + time-to-publish <= 20 min. At a
-   * 30-minute interval, aircraft is fresh for roughly 20 minutes in every 60 and
-   * stale the rest — better than vanishing, but not fixed. The binding
-   * constraint is job DURATION, not trigger cadence: the refresh currently takes
-   * ~13 min, nearly all of it the doomed FRP retries (#25), against ~2 min when
-   * healthy. Once that lands and the real duration is measured, this interval
-   * can tighten and aircraft becomes continuously coverable. Until then, do not
-   * describe the plane layer as fixed.
+   * Why 30 minutes specifically. A layer is inside its budget from publish until
+   * expiry, so a budget is met when interval + time-to-publish <= budget. The
+   * tightest budget is `frp` at 60 min (pipeline/freshness.py); everything else
+   * is 3 h or more. Measured on healthy main over 18 h to 2026-08-05, a
+   * refresh-fast run takes 10.5-18.7 min, median 13.2 — so a half-hourly trigger
+   * lands at 49 min worst case, inside the hour with headroom, where a
+   * three-quarter-hourly one (45 + 19 = 64) would not fit at all.
+   * The throttled cadence this replaces (60-200 min between runs) misses that
+   * budget outright, which is the concrete thing being fixed.
+   *
+   * An earlier revision justified this by the aircraft layer's 20-minute budget
+   * and predicted the job would fall to ~2 min once the FRP fetch was repaired
+   * (#25). Both are wrong and the second is instructive: the repair made runs
+   * LONGER, because a working FRP fetch re-enabled the wind fetch and meteosat
+   * clustering that had been silently skipped while it returned zero pixels. A
+   * profile taken through a broken path only describes the broken path. The
+   * aircraft layer was later retired — no interval could meet 20 min.
    */
   async scheduled(event: { cron?: string }, env: Env) {
     if (!env.GH_DISPATCH_TOKEN) {
