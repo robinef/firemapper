@@ -31,7 +31,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # 24, not 20. Node 20 is past end-of-life and GitHub already forces
           # actions off it onto 24 — so the runner disagreed with this pin, and
