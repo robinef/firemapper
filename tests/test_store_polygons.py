@@ -22,7 +22,7 @@ def test_writes_polygon_geometry(tmp_path: Path):
 def test_drops_the_wkt_src_column(tmp_path: Path):
     path = tmp_path / "ba.parquet"
     con = connect()
-    write_polygons([{"id": "a", "geometry_wkt": SQUARE}], path)
+    write_polygons([{"area_ha": 50.0, "geometry_wkt": SQUARE}], path)
     cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
     assert "geometry_wkt" not in cols
     assert "geometry" in cols

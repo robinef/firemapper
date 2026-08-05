@@ -182,13 +182,14 @@ def write_polygons(rows: list[dict], path: Path, geom_key: str = "geometry_wkt")
     """Persist burn perimeters as a GeoParquet snapshot — overwrites, so it is
     always the latest complete fetch. Scalar dict fields become columns; the WKT
     in `geom_key` becomes a POLYGON/MULTIPOLYGON geometry column and is itself
-    dropped. Returns the row count."""
+    dropped. Returns the row count. Empty snapshots carry no attribute schema, so
+    callers must treat a zero-row file as having no columns guaranteed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     con = connect()
     if not rows:
         # Still emit an (empty) file so downstream tooling can rely on it existing.
         con.execute(
-            f"COPY (SELECT NULL::VARCHAR AS id, NULL::GEOMETRY AS geometry WHERE false) "
+            f"COPY (SELECT NULL::GEOMETRY AS geometry WHERE false) "
             f"TO '{_sql_path(path)}' (FORMAT PARQUET)"
         )
         return 0
