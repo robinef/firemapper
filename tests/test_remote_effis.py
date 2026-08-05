@@ -5,13 +5,19 @@ from pipeline.remote import effis_archive_key, hydrate, publish
 
 
 class FakeClient:
-    """Minimal in-memory S3 stand-in: put/get/list over a dict."""
+    """Minimal in-memory S3 stand-in: put/get/list over a dict.
+
+    Records put_object call order to verify load-bearing invariants
+    (e.g., archives uploaded before the manifest that names them).
+    """
 
     def __init__(self, objects=None):
         self.objects = dict(objects or {})
+        self.put_order = []  # List of Keys in put_object call order
 
     def put_object(self, Bucket, Key, Body, ContentType=None):
         self.objects[Key] = Body
+        self.put_order.append(Key)
 
     def get_object(self, Bucket, Key):
         if Key not in self.objects:
@@ -73,9 +79,12 @@ def _gen(settings, name="gen-1"):
 def test_publish_uploads_the_effis_snapshot(tmp_path):
     settings = FakeSettings(tmp_path)
     gen = _gen(settings)
-    snapshot = settings.data_dir / "raw" / "effis_ba.parquet"
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
-    snapshot.write_bytes(b"PAR1-effis")
+
+    # Create both hotspots and EFFIS snapshots
+    raw = settings.data_dir / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "hotspots.parquet").write_bytes(b"PAR1-hotspots")
+    (raw / "effis_ba.parquet").write_bytes(b"PAR1-effis")
 
     client = FakeClient()
     publish(settings, gen, client)
@@ -84,14 +93,24 @@ def test_publish_uploads_the_effis_snapshot(tmp_path):
     manifest = json.loads(client.objects["data/manifest.json"])
     assert manifest["effis_archive"] == effis_archive_key("gen-1")
 
+    # Load-bearing invariant: archives uploaded before manifest (atomicity guarantee).
+    manifest_idx = client.put_order.index("data/manifest.json")
+    effis_idx = client.put_order.index(effis_archive_key("gen-1"))
+    hotspot_idx = client.put_order.index("archive/hotspots-gen-1.parquet")
+    assert effis_idx < manifest_idx, "EFFIS archive must be uploaded before manifest"
+    assert hotspot_idx < manifest_idx, "Hotspot archive must be uploaded before manifest"
+
 
 def test_hydrate_restores_the_effis_snapshot(tmp_path):
     settings = FakeSettings(tmp_path)
+    # Store the archive at a deliberately different key to verify hydrate reads
+    # the manifest pointer, not guessing a key based on generation name.
+    other_key = "data/archive/other-effis-ba.parquet"
     client = FakeClient({
         "data/manifest.json": json.dumps(
-            {"generation": "gen-1", "effis_archive": effis_archive_key("gen-1")}
+            {"generation": "gen-1", "effis_archive": other_key}
         ).encode(),
-        effis_archive_key("gen-1"): b"PAR1-effis",
+        other_key: b"PAR1-effis",
     })
 
     hydrate(settings, client)

@@ -34,6 +34,17 @@ def archive_key(generation: str) -> str:
 
 
 def effis_archive_key(generation: str) -> str:
+    """Generation-addressed R2 key for EFFIS (burn perimeter) snapshot.
+
+    CI runs fresh checkout every time: a snapshot written only to data/raw/
+    would never be seen again, taking the 6-hour fetch gate and the
+    retain-on-failure guarantee with it. R2 durability (alongside hotspots)
+    solves this.
+
+    Note: key sits under data/archive/, inside the published site namespace,
+    while hotspot archive is at sibling archive/. This is safe only because
+    _generation_names filters on startswith("gen-") and discards data/.
+    """
     return f"{DATA_PREFIX}archive/{generation}-effis-ba.parquet"
 
 
