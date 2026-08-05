@@ -86,3 +86,55 @@ jobs:
             echo "::error::$entry does not import /assets/maplibre-gl.mjs - maplibre got bundled again"
             exit 1
           }
+
+  smoke:
+    name: web (browser smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+
+      # The suite needs artifacts to render, and web/public/data is gitignored
+      # (it is ~90 MB of generated GeoJSON). make_sample builds them, and with
+      # no FIRMS_MAP_KEY it falls back to the deterministic synthetic fires the
+      # README promises work with no account — so this job needs NO secrets and
+      # runs on a forked PR like any other.
+      - name: Build fixture artifacts
+        run: uv run python -m scripts.make_sample
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+      # Chromium only. What this catches is layout and asset resolution, not
+      # engine differences, and three browsers would treble the slowest job in
+      # CI to re-answer the same question.
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      # Drives the BUILT output through a real browser. The unit suite runs in
+      # jsdom, which computes no layout and never loads a map, so nothing else
+      # in CI can see a panel covering the time bar, a rail sitting on a peek
+      # strip, or a map that silently never finishes loading — all of which
+      # shipped while every check here was green.
+      - name: Browser smoke
+        working-directory: web
+        run: npm run smoke
+
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
