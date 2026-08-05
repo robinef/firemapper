@@ -27,6 +27,8 @@ def test_totals_and_country_ranking(tmp_path):
     got = season_totals(path, 2026)
     assert got["total_km2"] == 2000.0
     assert got["area_count"] == 3
+    assert got["unassigned_count"] == 0
+    assert got["undated_count"] == 0
     assert got["countries"][0] == {"name": "Spain", "km2": 1400.0, "areas": 2}
     assert got["countries"][1] == {"name": "Greece", "km2": 600.0, "areas": 1}
 
@@ -36,6 +38,9 @@ def test_top_n_limits_the_list(tmp_path):
             for i, c in enumerate(["ES", "GR", "PT", "IT", "FR", "HR"])]
     got = season_totals(snapshot(tmp_path, rows), 2026, top_n=5)
     assert len(got["countries"]) == 5
+    # Verify that the smallest country (ES with 1000 ha = 10 km2) is excluded.
+    assert got["countries"][-1]["name"] == "Greece"
+    assert [c["name"] for c in got["countries"]] == ["Croatia", "France", "Italy", "Portugal", "Greece"]
 
 
 def test_prior_year_rows_are_excluded(tmp_path):
@@ -106,3 +111,8 @@ def test_country_normalisation_variants():
     assert normalize_country("MA") is None       # Morocco: not in scope
     assert normalize_country("TR") is None       # Turkey: deliberately excluded
     assert normalize_country("RU") is None       # Russia: deliberately excluded
+
+
+def test_accented_alias_resolves():
+    # Accent folding must work for both lookup key and query side.
+    assert normalize_country("Ísland") == "Iceland"

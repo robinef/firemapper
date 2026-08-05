@@ -33,7 +33,7 @@ _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "Germany": ("DE", "DEU", "germany", "deutschland"),
     "Greece": ("GR", "EL", "GRC", "greece", "ellada", "hellas"),
     "Hungary": ("HU", "HUN", "hungary", "magyarorszag"),
-    "Iceland": ("IS", "ISL", "iceland", "island"),
+    "Iceland": ("IS", "ISL", "iceland", "island", "ísland"),
     "Ireland": ("IE", "IRL", "ireland", "eire"),
     "Italy": ("IT", "ITA", "italy", "italia"),
     "Kosovo": ("XK", "XKX", "kosovo"),
@@ -66,15 +66,18 @@ _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
 # excluding Russia and Turkey" so the headline matches its own label.
 
 _LOOKUP: dict[str, str] = {}
-for _canonical, _aliases in _COUNTRY_ALIASES.items():
-    for _alias in (_canonical, *_aliases):
-        _LOOKUP[_alias.strip().lower()] = _canonical
 
 
 def _fold(value: str) -> str:
     """Strip accents so 'España' matches 'espana'."""
     decomposed = unicodedata.normalize("NFKD", value)
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip().lower()
+
+
+# Build lookup table with folded keys so accent variants all resolve.
+for _canonical, _aliases in _COUNTRY_ALIASES.items():
+    for _alias in (_canonical, *_aliases):
+        _LOOKUP[_fold(_alias)] = _canonical
 
 
 def normalize_country(value: str | None) -> str | None:
@@ -88,48 +91,70 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
     """Season total, per-country ranking, and the two exclusion counts.
 
     Returns None when no snapshot exists — the caller renders "unavailable",
-    which is a different thing from a total of zero."""
+    which is a different thing from a total of zero.
+
+    The country list is the top `top_n` by area and is not expected to
+    reconcile with `total_km2` (rounding is independent; top_n is a slice).
+
+    `undated_count` is archive-wide across all years, not season-scoped,
+    because an undated row has no year to filter on.
+    """
     if not path.exists():
         return None
     con = connect()
-    rows = con.execute(
-        f"SELECT area_ha, firedate, country FROM read_parquet('{path.as_posix()}')"
-    ).fetchall()
+    try:
+        rows = con.execute(
+            f"SELECT area_ha, firedate, country FROM read_parquet('{path.as_posix()}')"
+        ).fetchall()
 
-    # area_count counts MAPPED PERIMETERS, not fires. Nothing establishes that
-    # one ercc.ba feature is one fire — a single incident can be mapped as
-    # several perimeters — so the field and the page copy both say "mapped burn
-    # areas". Calling them fires would be a quotable number that is not true.
-    total_ha = 0.0
-    area_count = 0
-    undated = 0
-    unassigned = 0
-    by_country: dict[str, list[float]] = {}
+        # area_count counts MAPPED PERIMETERS, not fires. Nothing establishes that
+        # one EFFIS feature is one fire — a single incident can be mapped as
+        # several perimeters — so the field and the page copy both say "mapped burn
+        # areas". Calling them fires would be a quotable number that is not true.
+        total_ha = 0.0
+        area_count = 0
+        undated = 0
+        unassigned = 0
+        by_country: dict[str, list[float]] = {}
 
-    for area_ha, firedate, country in rows:
-        if firedate is None:
-            undated += 1
-            continue
-        if firedate.year != year:
-            continue
-        name = normalize_country(country)
-        if name is None:
-            unassigned += 1
-            continue
-        total_ha += float(area_ha)
-        area_count += 1
-        by_country.setdefault(name, []).append(float(area_ha))
+        for area_ha, firedate, country in rows:
+            if firedate is None:
+                # Undated rows are archive-wide, not season-scoped.
+                undated += 1
+                continue
+            if firedate.year != year:
+                continue
+            # Skip rows with null or unparseable area.
+            if area_ha is None:
+                unassigned += 1
+                continue
+            name = normalize_country(country)
+            if name is None:
+                unassigned += 1
+                continue
+            try:
+                area_value = float(area_ha)
+            except (TypeError, ValueError):
+                unassigned += 1
+                continue
+            total_ha += area_value
+            area_count += 1
+            by_country.setdefault(name, []).append(area_value)
 
-    countries = sorted(
-        ({"name": n, "km2": round(sum(a) / 100.0, 1), "areas": len(a)}
-         for n, a in by_country.items()),
-        key=lambda c: c["km2"], reverse=True,
-    )
-    return {
-        "season_year": year,
-        "total_km2": round(total_ha / 100.0, 1),
-        "area_count": area_count,
-        "unassigned_count": unassigned,
-        "undated_count": undated,
-        "countries": countries[:top_n],
-    }
+        # Sort by area descending, then by name for determinism (no tie-breaking
+        # on dict insertion order).
+        countries = sorted(
+            ({"name": n, "km2": round(sum(a) / 100.0, 1), "areas": len(a)}
+             for n, a in by_country.items()),
+            key=lambda c: (-c["km2"], c["name"]),
+        )
+        return {
+            "season_year": year,
+            "total_km2": round(total_ha / 100.0, 1),
+            "area_count": area_count,
+            "unassigned_count": unassigned,
+            "undated_count": undated,
+            "countries": countries[:top_n],
+        }
+    finally:
+        con.close()
