@@ -19,6 +19,12 @@ from .metrics import CELL_KM2, area_km2, bins_series, local_spread_vectors, move
 
 RECENT_DAYS = 7
 
+# EFFIS's rapid damage assessment maps burns from 30 ha up, so its season total
+# is a floor, not a census. This travels INSIDE season.json rather than living in
+# the page's caveat copy: the number the caveat quotes and the archive it
+# describes then cannot drift apart, whichever one changes first.
+EFFIS_MIN_FIRE_HA = 30
+
 
 def dedupe_frp_points(aged: list[dict]) -> list[dict]:
     """Collapse repeat observations of the same MTG pixel into one record.
@@ -231,10 +237,9 @@ def export(
     settings: Settings, events, liveness, places, alerts, now,
     live_frp=None, frp_points=None, wind=None, aircraft=None,
     imagery=None, timeline=None, day_slices=None, results=None,
-    # Accepted so the orchestrator can hand the season over from the run it was
-    # computed in. Task 9 renders them (season.json + a manifest layer entry);
-    # until then they are deliberately unused, which keeps this signature
-    # backward-compatible and every existing caller working.
+    # Handed over from the run the season was computed in, and rendered below as
+    # season.json plus a manifest layer entry. Both keep defaults so every caller
+    # that has no season to give still publishes: no season is not an error.
     season=None, season_status: str = "unavailable",
 ) -> Path:
     out = settings.out_dir
@@ -442,6 +447,49 @@ def export(
     layers["gibs_tiles"] = layer_entry(
         "gibs_tiles", FetchResult("ok", None, now, now), now=now, source="nasa-gibs",
     )
+
+    # The season page is educational, not operational: a missing season.json must
+    # never block a generation that carries live fire data, so this layer is
+    # written best-effort and validate_generation does not require it.
+    #
+    # Not a layer_entry(): season_status speaks a different vocabulary
+    # (fresh/stale/reused/unavailable, from fetch_season_snapshot) than a
+    # FetchResult's, and MAX_AGE_S holds no budget for an archive that updates
+    # over days to weeks. Inventing either would be a claim we cannot support.
+    if season is not None:
+        (gen / "season.json").write_text(
+            json.dumps(
+                {
+                    "season_year": season["season_year"],
+                    # EFFIS publishes no currency timestamp, and observed_at is
+                    # reserved for the newest observation INSIDE the payload
+                    # (fetch_result.py). So observed_at stays null and the page's
+                    # "as of" date renders from fetched_at. Swapping the two would
+                    # date the archive by when we happened to poll it.
+                    "fetched_at": now.isoformat(),
+                    "observed_at": None,
+                    "status": season_status,
+                    "total_km2": season["total_km2"],
+                    "area_count": season["area_count"],
+                    "min_fire_ha": EFFIS_MIN_FIRE_HA,
+                    "unassigned_count": season["unassigned_count"],
+                    "undated_count": season["undated_count"],
+                    # Absent whenever there is no honest unit — a zero total, for
+                    # which pick_unit refuses to invent one (run.py:_attach_units).
+                    # Emitted as null so a zero season stays a state the page can
+                    # render, not a missing key it has to guess at.
+                    "unit": season.get("unit"),
+                    "countries": season["countries"],
+                }
+            )
+        )
+
+    layers["season"] = {
+        "status": season_status,
+        # Only ever set when a payload was actually written: this is the flag a
+        # client reads to know whether there is a season.json to go and fetch.
+        "fetched_at": now.isoformat() if season is not None else None,
+    }
 
     problems = validate_generation(gen, layers=layers, carry_available=carry_available)
     if problems:
