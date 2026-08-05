@@ -14,7 +14,7 @@ drafted at least once:
    where one upstream 400 froze the whole map.
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 SEASON = {
     "season_year": 2026, "total_km2": 10240.3, "area_count": 1184,
@@ -132,3 +132,96 @@ def test_validate_generation_passes_without_season_json(export_gen):
     gen = export_gen(season=None, season_status="unavailable", now=NOW)
     assert not (gen / "season.json").exists()
     assert validate_generation(gen) == []
+
+
+# The "as of" date is the snapshot's poll time, never this export's clock. The
+# pipeline runs every 15 minutes; dating the archive by the run would tick the
+# published date forward forever over a snapshot that had not moved in weeks,
+# so the page would present a three-week-old figure as today's.
+
+POLLED = datetime(2026, 6, 20, 9, 30, tzinfo=timezone.utc)  # three weeks before NOW
+
+
+def seasoned(**over):
+    """SEASON as season_totals actually returns it — carrying the poll time."""
+    return {**SEASON, "fetched_at": POLLED, **over}
+
+
+def test_the_artifact_is_dated_by_the_snapshot_not_by_the_export_clock(export_gen):
+    gen = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert payload["fetched_at"] != NOW.isoformat()
+
+
+def test_the_manifest_is_dated_by_the_snapshot_too(export_gen):
+    """One generation must not carry two different answers to "when was EFFIS
+    last polled" — the client reads the manifest, the page reads the artifact."""
+    gen = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+    payload = json.loads((gen / "season.json").read_text())
+    assert entry["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert entry["fetched_at"] == payload["fetched_at"]
+
+
+def test_a_frozen_snapshot_does_not_re_date_itself_on_every_run(export_gen):
+    """The guarantee, stated as the thing a user would notice: two exports an
+    hour apart over the SAME snapshot publish the same date. Dating by `now`
+    gives two different dates for a figure that never moved."""
+    first = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    later = export_gen(
+        season=seasoned(), season_status="reused", now=NOW + timedelta(hours=1)
+    )
+    assert (
+        json.loads((first / "season.json").read_text())["fetched_at"]
+        == json.loads((later / "season.json").read_text())["fetched_at"]
+        == "2026-06-20T09:30:00+00:00"
+    )
+
+
+def test_a_snapshot_that_cannot_say_when_it_was_polled_falls_back_to_now(export_gen):
+    """An older writer left no `fetched_at` column, so season_totals reports
+    None. The page has to print something and a date is not optional, so the
+    fallback is the one instant we can vouch for — never null, never absent."""
+    gen = export_gen(season=seasoned(fetched_at=None), season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+    assert payload["fetched_at"] == NOW.isoformat()
+    assert entry["fetched_at"] == NOW.isoformat()
+
+
+def test_end_to_end_the_page_date_comes_off_a_real_weeks_old_snapshot(export_gen, tmp_path):
+    """The whole chain, on a real parquet: stamp a snapshot three weeks before
+    `now`, aggregate it, export it, and the artifact still says three weeks ago.
+    Under the export-clock version this read "2026-07-12" — today — for a
+    figure nobody had refreshed since June.
+
+    It is also the only test IN THIS FILE that can prove the UTC offset, being
+    the only one that starts from the stored column rather than from a datetime
+    written here. That column is naive (DuckDB TIMESTAMP carries no zone), so
+    the zone has to be re-attached on the way out; a bare "2026-06-20T09:30:00"
+    reaching the page is read as LOCAL time by the browser and can print the
+    wrong day. The sibling guard one layer down is
+    test_season.py::test_the_poll_time_carries_a_utc_offset — every other test
+    here hands `_season_polled_at` an already-aware datetime and so asserts
+    nothing about the zone at all."""
+    from pipeline.season import season_totals
+    from pipeline.store import _naive_utc, write_polygons
+
+    path = tmp_path / "snap" / "effis_ba.parquet"
+    write_polygons([{
+        "id": "ba.1", "area_ha": 10000.0, "country": "ES",
+        "firedate": date(2026, 6, 18), "place": None,
+        "geometry_wkt": "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
+        "fetched_at": _naive_utc(POLLED),
+    }], path)
+
+    season = season_totals(path, 2026)
+    assert season["total_km2"] == 100.0  # the snapshot really was aggregated
+
+    gen = export_gen(season=season, season_status="reused", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert not payload["fetched_at"].startswith("2026-07-12")
+    assert payload["fetched_at"].endswith("+00:00")
+    assert datetime.fromisoformat(payload["fetched_at"]).utcoffset() == timedelta(0)

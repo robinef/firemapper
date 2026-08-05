@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from pipeline.season import normalize_country, season_totals, _LOOKUP, _fold
-from pipeline.store import write_polygons
+from pipeline.store import _naive_utc, write_polygons
 
 POLY = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"
 AFRICA = "POLYGON((3 36.7, 3 36.8, 3.1 36.8, 3.1 36.7, 3 36.7))"  # Algiers
@@ -128,3 +128,68 @@ def test_lookup_keys_are_folded():
     # query. Under old .lower()-only build, this fails the moment any accented
     # alias is added to the table.
     assert all(key == _fold(key) for key in _LOOKUP)
+
+
+# The "as of" date. The snapshot carries its own poll time and that is the only
+# honest date for the page: the pipeline runs every 15 minutes, so dating the
+# archive by the run would tick the published date forward forever over a
+# snapshot that had not moved in weeks.
+
+POLLED = datetime(2026, 6, 20, 9, 30, tzinfo=timezone.utc)
+
+
+def polled_row(fid, area_ha, country, fetched_at=POLLED, **kw):
+    """A row as fetch_season_snapshot writes it: stamped with the poll time,
+    stored naive-UTC because DuckDB TIMESTAMP carries no zone."""
+    return {**row(fid, area_ha, country, **kw), "fetched_at": _naive_utc(fetched_at)}
+
+
+def test_the_poll_time_is_read_off_the_snapshot(tmp_path):
+    """Not the clock, not the file mtime: the column the snapshot was stamped
+    with. Without it the caller has nothing to date the page by but `now`."""
+    path = snapshot(tmp_path, [polled_row("1", 10000.0, "ES")])
+    assert season_totals(path, 2026)["fetched_at"] == POLLED
+
+
+def test_the_newest_poll_wins_when_rows_disagree(tmp_path):
+    """max(), not first-row: a snapshot rewritten in place can hold rows from
+    more than one fetch, and the page must date itself by the latest."""
+    older = POLLED - timedelta(days=9)
+    path = snapshot(tmp_path, [
+        polled_row("1", 10000.0, "ES", fetched_at=older),
+        polled_row("2", 10000.0, "GR"),
+    ])
+    assert season_totals(path, 2026)["fetched_at"] == POLLED
+
+
+def test_the_poll_time_carries_a_utc_offset(tmp_path):
+    """Stored naive (store._naive_utc), so the zone has to be re-attached here.
+    A bare "2026-06-20T09:30:00" reaching the page is parsed as LOCAL time by
+    the browser, which prints the wrong day either side of midnight."""
+    path = snapshot(tmp_path, [polled_row("1", 10000.0, "ES")])
+    got = season_totals(path, 2026)["fetched_at"]
+    assert got.tzinfo is not None
+    assert got.utcoffset().total_seconds() == 0
+    assert got.isoformat().endswith("+00:00")
+
+
+def test_a_snapshot_without_a_poll_column_reports_no_date(tmp_path):
+    """An older writer left no `fetched_at`. That is a fallback for the caller
+    to make, not a reason to fail the whole aggregation — the total is still
+    good, only its date is unknown."""
+    path = snapshot(tmp_path, [row("1", 10000.0, "ES")])
+    got = season_totals(path, 2026)
+    assert got["fetched_at"] is None
+    assert got["total_km2"] == 100.0
+
+
+def test_a_quote_in_the_data_dir_does_not_silently_drop_the_poll_time(tmp_path):
+    """Both reads here interpolate the path into SQL, so both go through
+    store._sql_path. Unescaped, the quote breaks the `fetched_at` query, the
+    except swallows it, and the page silently falls back to dating itself by
+    the export clock — the exact failure this layer exists to prevent."""
+    odd = tmp_path / "o'brien data"
+    path = snapshot(odd, [polled_row("1", 10000.0, "ES")])
+    got = season_totals(path, 2026)
+    assert got["fetched_at"] == POLLED
+    assert got["total_km2"] == 100.0

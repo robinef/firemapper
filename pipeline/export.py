@@ -26,6 +26,26 @@ RECENT_DAYS = 7
 EFFIS_MIN_FIRE_HA = 30
 
 
+def _season_polled_at(season: dict, now) -> str:
+    """The ISO instant the season page dates itself by.
+
+    `season_totals` reads it from the snapshot's own `fetched_at` column: the
+    moment EFFIS was last POLLED. Dating it by `now` instead — the export time —
+    would refresh the published "as of" date every 15 minutes for a snapshot
+    that had not moved in weeks, so the page would confidently present a stale
+    figure as current. That is the guarantee this whole layer exists to make.
+
+    `now` is the fallback, and only for a snapshot that cannot say when it was
+    taken (written by an older version). An absent date is not an option: the
+    page has to print something, and a wrong-but-recent date is the failure
+    mode, so the fallback is the one instant we can actually vouch for.
+    """
+    polled = season.get("fetched_at")
+    if polled is None:
+        return now.isoformat()
+    return polled.isoformat() if hasattr(polled, "isoformat") else str(polled)
+
+
 def dedupe_frp_points(aged: list[dict]) -> list[dict]:
     """Collapse repeat observations of the same MTG pixel into one record.
 
@@ -465,9 +485,10 @@ def export(
                     # EFFIS publishes no currency timestamp, and observed_at is
                     # reserved for the newest observation INSIDE the payload
                     # (fetch_result.py). So observed_at stays null and the page's
-                    # "as of" date renders from fetched_at. Swapping the two would
-                    # date the archive by when we happened to poll it.
-                    "fetched_at": now.isoformat(),
+                    # "as of" date renders from fetched_at — which is the poll
+                    # time carried up from the snapshot, NOT this export's clock.
+                    # See _season_polled_at.
+                    "fetched_at": _season_polled_at(season, now),
                     "observed_at": None,
                     "status": season_status,
                     "total_km2": season["total_km2"],
@@ -489,7 +510,9 @@ def export(
         "status": season_status,
         # Only ever set when a payload was actually written: this is the flag a
         # client reads to know whether there is a season.json to go and fetch.
-        "fetched_at": now.isoformat() if season is not None else None,
+        # Same instant as the artifact's, from the same helper — one generation
+        # must not carry two different answers to "when was EFFIS last polled".
+        "fetched_at": _season_polled_at(season, now) if season is not None else None,
         # Stated, not omitted, and for the same reason it is stated in the
         # artifact: EFFIS publishes no currency timestamp, so this layer HAS no
         # observation time. An absent key would leave a reader to guess whether

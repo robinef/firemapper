@@ -9,9 +9,10 @@ counted as unassigned — never guessed into a number people will quote.
 from __future__ import annotations
 
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .store import connect
+from .store import _sql_path, connect
 
 # Canonical name -> every spelling we accept for it. ISO-2, ISO-3, the EU's
 # non-ISO "EL" for Greece and "UK" for the United Kingdom, and local names.
@@ -62,8 +63,11 @@ _COUNTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "United Kingdom": ("UK", "GB", "GBR", "united kingdom", "great britain"),
 }
 # Deliberately absent: Turkey and Russia (overwhelmingly outside Europe, and
-# EFFIS covers both), and the whole Maghreb. The page caption says "Europe
-# excluding Russia and Turkey" so the headline matches its own label.
+# EFFIS covers both), and the whole Maghreb. Their area lands in
+# `unassigned_count`, so the page must SAY so: scale_render.ts prints the scope
+# in the kicker ("excluding Russia and Turkey") and names out-of-scope countries
+# in the exclusion line. Without that copy the reader sees deliberate scope
+# reported as missing data.
 
 _LOOKUP: dict[str, str] = {}
 
@@ -87,8 +91,36 @@ def normalize_country(value: str | None) -> str | None:
     return _LOOKUP.get(_fold(str(value)))
 
 
+def _polled_at(con, path: Path) -> datetime | None:
+    """When EFFIS was last POLLED, from the snapshot's own `fetched_at` column.
+
+    This is the only honest "as of" date for the page. The export time is not:
+    the pipeline runs every 15 minutes, so dating the archive by the run would
+    tick the published date forward forever while the snapshot underneath it sat
+    weeks old — the page confidently calling a three-week-old figure current.
+    The same column already gates refetching (fetch_effis_season.should_fetch).
+
+    None when the column is missing or empty (a snapshot written by an older
+    version, or a zero-row file, which carries no attribute schema at all). The
+    caller falls back rather than inventing a date.
+    """
+    try:
+        newest = con.execute(
+            f"SELECT max(fetched_at) FROM read_parquet('{_sql_path(path)}')"
+        ).fetchone()[0]
+    except Exception:  # noqa: BLE001 - no fetched_at column is a fallback, not a failure
+        return None
+    if not isinstance(newest, datetime):
+        return None
+    # Stored naive UTC (store._naive_utc). Re-attach the zone here so the
+    # published ISO string carries an offset: a bare "2026-07-12T04:11:00" is
+    # parsed as LOCAL time by the browser and can print the wrong day.
+    return newest.replace(tzinfo=timezone.utc) if newest.tzinfo is None else newest
+
+
 def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
-    """Season total, per-country ranking, and the two exclusion counts.
+    """Season total, per-country ranking, the two exclusion counts, and the
+    moment the archive was last polled.
 
     Returns None when no snapshot exists — the caller renders "unavailable",
     which is a different thing from a total of zero.
@@ -98,14 +130,18 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
 
     `undated_count` is archive-wide across all years, not season-scoped,
     because an undated row has no year to filter on.
+
+    `fetched_at` is the snapshot's own poll time (see `_polled_at`), or None
+    when the snapshot cannot say. It is what the page dates itself by.
     """
     if not path.exists():
         return None
     con = connect()
     try:
         rows = con.execute(
-            f"SELECT area_ha, firedate, country FROM read_parquet('{path.as_posix()}')"
+            f"SELECT area_ha, firedate, country FROM read_parquet('{_sql_path(path)}')"
         ).fetchall()
+        polled_at = _polled_at(con, path)
 
         # area_count counts MAPPED PERIMETERS, not fires. Nothing establishes that
         # one ercc.ba feature is one fire — a single incident can be mapped as
@@ -150,6 +186,7 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
         )
         return {
             "season_year": year,
+            "fetched_at": polled_at,
             "total_km2": round(total_ha / 100.0, 1),
             "area_count": area_count,
             "unassigned_count": unassigned,
