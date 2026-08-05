@@ -429,7 +429,13 @@ body.compare-mode #timeline { display: none; }
    that; only the min-width guard can. */
 @media (min-width: 641px) {
   #rail { flex-direction: column; top: 12px; left: 12px; }
-  #view { top: 12px; left: 68px; width: 320px; max-height: calc(100% - 130px);
+  /* --timebar is measured from #timeline at runtime (shell.ts), so this
+     tracks a time bar that grows when a fire card swaps its own series in.
+     The static 130px this replaced was a guess that ran 44px into the
+     scrubber at 1280x800 with a long card open — the same failure mode the
+     mobile rules already hit, and one no jsdom test can see. */
+  #view { top: 12px; left: 68px; width: 320px;
+    max-height: calc(100% - var(--timebar) - 24px);
     border-radius: 12px; padding: 8px 12px 12px;
     box-shadow: 0 2px 20px rgba(0,0,0,.55); }
   #timeline { left: 80px; }
