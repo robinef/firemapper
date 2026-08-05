@@ -28,6 +28,12 @@ export interface FireCount {
   inView: number;
   /** How many of those the current zoom actually draws. */
   shown: number;
+  /** Why the undrawn ones are missing, so the label can give advice that
+   *  actually works. The two cases need OPPOSITE instructions and used to
+   *  share one message: below the class gates you zoom IN, but past
+   *  CLASS_MAXZOOM the dots have handed over to the footprint and only
+   *  zooming OUT brings them back. */
+  hidden: "none" | "below-gate" | "past-handover";
 }
 
 export interface Bounds {
@@ -81,7 +87,9 @@ export function countFires(
     const min = known ? CLASS_MINZOOM[p.size_class as string] : Infinity;
     if (zoom >= (showAllSizes && known ? 0 : min) && zoom < CLASS_MAXZOOM) shown++;
   }
-  return { inView, shown };
+  const hidden =
+    shown === inView ? "none" : zoom >= CLASS_MAXZOOM ? "past-handover" : "below-gate";
+  return { inView, shown, hidden };
 }
 
 /**
@@ -90,6 +98,18 @@ export function countFires(
  */
 export function countLabel(c: FireCount): string | null {
   if (!c.inView) return null;
-  if (c.shown === c.inView) return `${c.inView} in view`;
-  return `${c.shown} of ${c.inView} in view · zoom in for the rest`;
+  if (c.hidden === "none") return `${c.inView} in view`;
+  // Past the handover the dots are gone for EVERY class, so `shown` is 0 and
+  // "zoom in for the rest" sends the reader further from what they want. It is
+  // also not safe to promise outlines instead: the footprint is one merged
+  // MultiPolygon built from the isochrones, and on 2026-08-05 only 38% of live
+  // fires fell inside it — the other 62% draw nothing at all up here. So the
+  // advice is the one thing that always works: go back down.
+  if (c.hidden === "past-handover") {
+    return `${c.inView} in view · zoomed in past the dots — zoom out to see them`;
+  }
+  // Below the gates. Zooming in works, but so does the size filter sitting
+  // directly under this line, and most readers never find it: on 2026-08-05,
+  // 2860 of 3728 live fires were `minor` and stayed hidden until z8.5.
+  return `${c.shown} of ${c.inView} in view · zoom in, or tick “Show every size”`;
 }
