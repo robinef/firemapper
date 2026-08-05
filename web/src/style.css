@@ -345,6 +345,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
    real height varies (its title re-renders per fire card and wraps
    differently), so shell.ts measures the live element and overwrites this
    custom property at runtime. */
+/* Load-bearing: do not delete. The desktop #view max-height is
+   calc(100% - var(--timebar) - 24px). If --timebar has no declaration at all,
+   var() substitution fails, the whole max-height goes invalid at
+   computed-value time, and #view falls back to `none` — unbounded, straight
+   through #timeline. jsdom computes no layout, so no test here would see it. */
 :root { --timebar: 120px; }
 
 /* One container for every non-map view. data-view picks the child that
