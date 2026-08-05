@@ -452,10 +452,11 @@ def export(
     # never block a generation that carries live fire data, so this layer is
     # written best-effort and validate_generation does not require it.
     #
-    # Not a layer_entry(): season_status speaks a different vocabulary
-    # (fresh/stale/reused/unavailable, from fetch_season_snapshot) than a
-    # FetchResult's, and MAX_AGE_S holds no budget for an archive that updates
-    # over days to weeks. Inventing either would be a claim we cannot support.
+    # Not a layer_entry(): season_status speaks a different vocabulary than a
+    # FetchResult's — fresh/reused/stale from fetch_season_snapshot, plus this
+    # function's own "unavailable" default for a run that had no season to hand
+    # over — and MAX_AGE_S holds no budget for an archive that updates over days
+    # to weeks. Inventing either would be a claim we cannot support.
     if season is not None:
         (gen / "season.json").write_text(
             json.dumps(
@@ -489,6 +490,11 @@ def export(
         # Only ever set when a payload was actually written: this is the flag a
         # client reads to know whether there is a season.json to go and fetch.
         "fetched_at": now.isoformat() if season is not None else None,
+        # Stated, not omitted, and for the same reason it is stated in the
+        # artifact: EFFIS publishes no currency timestamp, so this layer HAS no
+        # observation time. An absent key would leave a reader to guess whether
+        # that is a fact about the source or a gap in the export.
+        "observed_at": None,
     }
 
     problems = validate_generation(gen, layers=layers, carry_available=carry_available)

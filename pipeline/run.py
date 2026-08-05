@@ -155,8 +155,13 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
     print(f"[info] EFFIS burned-area scars: {len(effis)} (season: {season_status})")
 
-    # None means no snapshot at all, which export renders as "unavailable" —
-    # a different page state from a season total of zero.
+    # None means no snapshot to aggregate — a different page state from a season
+    # total of zero. export writes no season.json for it and stamps the manifest
+    # layer `fetched_at: null`, which is the flag the page reads. `season_status`
+    # travels UNALTERED alongside it and is not coerced to "unavailable": a null
+    # season under a "stale" status (we hold an old snapshot, the aggregation
+    # over it failed) is a different fault from one under "unavailable" (there
+    # is no snapshot at all), and only the pair distinguishes them.
     season = _safe(
         lambda: season_totals(snapshot_path(settings), now.year), default=None,
         label="season-totals",

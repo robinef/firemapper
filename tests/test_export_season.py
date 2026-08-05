@@ -14,7 +14,7 @@ drafted at least once:
    where one upstream 400 froze the whole map.
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SEASON = {
     "season_year": 2026, "total_km2": 10240.3, "area_count": 1184,
@@ -64,6 +64,19 @@ def test_status_travels_into_the_manifest(export_gen):
     manifest = json.loads((gen.parent / "manifest.json").read_text())
     assert manifest["layers"]["season"]["status"] == "stale"
     assert manifest["layers"]["season"]["fetched_at"] == "2026-07-12T04:11:00+00:00"
+
+
+def test_the_manifest_states_the_null_observed_at_rather_than_omitting_it(export_gen):
+    """Same reason the artifact states it: EFFIS has no currency timestamp, so
+    this layer HAS no observation time. Absent would read as an export gap."""
+    # Distinct `now` per case: the generation dir is named from it, so reusing
+    # one would leave the first case's season.json sitting in the second's.
+    for offset, (season, status) in enumerate(((SEASON, "fresh"), (None, "unavailable"))):
+        gen = export_gen(
+            season=season, season_status=status, now=NOW + timedelta(hours=offset)
+        )
+        entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+        assert "observed_at" in entry and entry["observed_at"] is None
 
 
 def test_no_season_means_no_file_and_unavailable_status(export_gen):
