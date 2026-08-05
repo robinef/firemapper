@@ -63,7 +63,10 @@ export function fireFadeExpression(): unknown {
 
 // Each size class appears from a different zoom, so no scale is ever
 // cluttered: major fires Europe-wide, smaller ones only once you zoom in.
-const CLASS_MINZOOM: Record<string, number> = { major: 3, medium: 6, minor: 8.5 };
+/** Exported so fire_count.ts can report what the current zoom actually draws
+ * without duplicating this table — a second copy would drift and the counter
+ * would then lie in exactly the case it exists to explain. */
+export const CLASS_MINZOOM: Record<string, number> = { major: 3, medium: 6, minor: 8.5 };
 
 export function addActiveFires(
   map: maplibregl.Map,
@@ -113,7 +116,8 @@ export function addActiveFires(
   // click targets for fires nothing on screen represents. MapLibre hit-tests
   // the RENDERED circle, and an 8-16px dot is far below the touch minimum, so
   // the halo is still needed — just scoped like its dot. Same enlarging trick
-  // as aircraft-halo (layer_aircraft.ts:79). Deliberately not in any legend:
+  // by drawing a second, larger, fully transparent circle beneath the dot.
+  // Deliberately not in any legend:
   // it is a target, not a symbol.
   for (const [cls, minz] of Object.entries(CLASS_MINZOOM)) {
     const filter = ["all", ["!=", ["get", "status"], "closed"], ["==", ["get", "size_class"], cls]];
@@ -241,3 +245,24 @@ export const CLOSED_LEGEND = {
     "Fires that have stopped burning but are still in the archive. Hidden from " +
     "the live view; turn on to find a recent fire and open its before/after.",
 };
+
+/**
+ * Drop the per-class zoom gates so every live fire draws at any zoom.
+ *
+ * The gates exist to stop 44px tap targets blanketing the continental view, and
+ * they are right by default. But 1335 of 1344 live fires are `minor`, so at
+ * that view the layer draws almost nothing — and a reader who wants "show me
+ * everything, I accept the clutter" had no way to say so. This is that way.
+ */
+export function setShowAllSizes(map: maplibregl.Map, all: boolean): void {
+  for (const cls of FIRE_CLASSES) {
+    const min = all ? 0 : CLASS_MINZOOM[cls];
+    for (const id of [`fires-${cls}`, `fire-halo-${cls}`]) {
+      if (map.getLayer(id)) map.setLayerZoomRange(id, min, 9.5);
+    }
+    // The burned-out layer mirrors the same gates and has no upper bound.
+    for (const id of [`fires-closed-${cls}`, `fire-closed-halo-${cls}`]) {
+      if (map.getLayer(id)) map.setLayerZoomRange(id, min, 24);
+    }
+  }
+}

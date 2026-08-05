@@ -1,8 +1,11 @@
 import json
+from datetime import timedelta
 
 from pipeline.config import load_settings
 from pipeline.events import cluster
-from pipeline.export import export, prune_generations, validate_generation
+from pipeline.events import METEOSAT_CELL_KM2
+from pipeline.export import export, prune_generations, size_class, validate_generation
+from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
 
 
@@ -90,3 +93,108 @@ def test_publishes_after_two_consecutive_upstream_failures(tmp_path):
     assert man2["generation"] == gen2.name != gen1.name
     assert man2["layers"]["wind"]["status"] == "failed"
     assert validate_generation(gen2) == []
+
+
+def test_size_class_follows_the_nwcg_standard(tmp_path):
+    """Size classes use the NWCG fire size standard (nwcg.gov/node/432922),
+    the US interagency scale every federal incident record uses:
+
+        A <=0.25 ac   B <10 ac    C <100 ac   D <300 ac
+        E <1000 ac    F <5000 ac  G 5000+ ac
+
+    In km2 (1 ac = 0.00404686 km2) the top three boundaries are 1.2 / 4 / 20.
+
+    The previous thresholds — major >=50, medium >=15 — were calibrated for
+    megafires and put nearly the whole distribution in one bucket. `major >= 50`
+    sits ABOVE NWCG's largest class.
+
+    Classes A-C cannot occur here: the smallest footprint we can express is one
+    H3 cell, already 0.7 km2 (VIIRS) or 5.2 km2 (Meteosat).
+
+    This exercises the `cells=None` path — plain NWCG on a bare area. In
+    production `size_class` is always given a cell count, and a one-cell
+    footprint is not sized at all; see
+    test_a_single_sensor_pixel_is_not_a_thousand_acre_fire for why, and for the
+    distribution this actually produces.
+    """
+    from pipeline.export import size_class
+
+    assert size_class(0.7) == "minor"     # below NWCG F
+    assert size_class(4.04) == "minor"    # just under 1000 ac (4.047 km2)
+    assert size_class(4.05) == "medium"   # NWCG F opens at 1000 ac
+    assert size_class(20.1) == "medium"   # just under 5000 ac (20.23 km2)
+    assert size_class(20.2) == "major"    # NWCG G opens at 5000 ac
+    assert size_class(167.3) == "major"   # largest live fire on 2026-08-04
+
+
+def test_size_class_boundaries_are_the_acre_conversions(tmp_path):
+    """Pinned so a later tweak cannot quietly drift off the published scale."""
+    from pipeline.export import MEDIUM_KM2, MAJOR_KM2
+
+    acre_km2 = 0.00404686
+    assert MEDIUM_KM2 == round(1000 * acre_km2, 2)  # NWCG F
+    assert MAJOR_KM2 == round(5000 * acre_km2, 1)   # NWCG G
+
+
+def test_a_single_sensor_pixel_is_not_a_thousand_acre_fire():
+    """Measured in production 2026-08-04: `cum_cells == 1` split 1118 minor and
+    1117 medium. Identical footprint — one cell — opposite class.
+
+    area_km2 is cells x SENSOR cell size: 0.7 km2 for VIIRS, 5.2 km2 for
+    Meteosat. NWCG's F boundary is 4.05 km2, which falls BETWEEN the two, so a
+    single Meteosat pixel — the smallest thing that sensor can express — claimed
+    NWCG class F. The class tracked which satellite saw the fire, not how big it
+    was. (The invented 15/50 thresholds this replaced avoided it by accident:
+    15 sits above the coarse quantum.)
+
+    A one-cell footprint means "detected, not measured". NWCG applies once at
+    least two cells actually resolve an extent.
+    """
+    assert size_class(METEOSAT_CELL_KM2, cells=1) == "minor"
+    assert size_class(CELL_KM2, cells=1) == "minor"
+    # Two Meteosat cells DO resolve an extent, and 10.4 km2 is genuinely NWCG F.
+    assert size_class(2 * METEOSAT_CELL_KM2, cells=2) == "medium"
+    # A single cell is never promoted, however the area was arrived at.
+    assert size_class(500.0, cells=1) == "minor"
+
+
+def test_size_class_still_follows_nwcg_once_the_extent_is_resolved():
+    assert size_class(4.05, cells=2) == "medium"   # NWCG F, 1000 acres
+    assert size_class(4.04, cells=2) == "minor"
+    assert size_class(20.2, cells=5) == "major"    # NWCG G, 5000 acres
+    assert size_class(20.19, cells=5) == "medium"
+
+
+def test_size_class_defaults_to_measured_when_the_count_is_unknown():
+    """Callers that have no cell count (tests, ad-hoc use) keep NWCG semantics
+    rather than silently getting everything as minor."""
+    assert size_class(20.2) == "major"
+    assert size_class(4.05) == "medium"
+
+
+def test_export_sizes_on_distinct_cells_not_on_detection_count(tmp_path):
+    """Guards the CALL SITE, which the pure-function tests above cannot reach.
+
+    Replacing `cells=len({m["cell"] for m in members})` with `cells=len(members)`
+    passed all 201 tests while silently restoring the very bug this fixes: a
+    single Meteosat pixel re-reported eleven times has one cell but eleven
+    members, so counting members promotes it straight back to `medium`.
+
+    One pixel seen repeatedly is still one pixel.
+    """
+    # Eleven Meteosat detections on ONE pixel, over two hours. Built through
+    # cluster() so the members carry the same bin/cell shape production has.
+    rows = [hs(44.0, -1.0, T(20, 0) + timedelta(minutes=10 * i), tier="meteosat") for i in range(11)]
+    ev = cluster(rows, now=T(20, 3))
+    (members,) = ev.values()
+    assert len({m["cell"] for m in members}) == 1 and len(members) == 11
+
+    s = _settings(tmp_path)
+    gen = export(s, ev, liveness={}, places=[], alerts=[], now=T(20, 3))
+    props = json.loads((gen / "events.geojson").read_text())["features"][0]["properties"]
+
+    assert props["cum_cells"] == 1, "eleven detections, one cell"
+    assert props["area_km2"] == METEOSAT_CELL_KM2
+    assert props["size_class"] == "minor", (
+        "a single Meteosat pixel is not a 1000-acre fire, however often it is seen"
+    )

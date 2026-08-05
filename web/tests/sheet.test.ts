@@ -84,12 +84,6 @@ describe("sheet", () => {
     expect(sheet.detent).toBe("peek");
   });
 
-  it("treats an aircraft tap as its own mode", () => {
-    const sheet = createSheet(640);
-    sheet.mount();
-    emitUi("aircraft:open");
-    expect(sheet.mode).toBe("aircraft");
-  });
 
   it("collapses to peek while comparing and restores afterwards", () => {
     const sheet = createSheet(640);

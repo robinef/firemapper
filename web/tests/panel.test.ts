@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
-import { minutesAgo, mountPanel, renderAircraftPanel, renderPanel, sparklinePath } from "../src/panel";
+import { minutesAgo, mountPanel, renderPanel, sparklinePath } from "../src/panel";
 import { emitUi, onUi } from "../src/ui_events";
 import type { EventProps, Track } from "../src/types";
 
@@ -53,21 +53,20 @@ describe("panel", () => {
 });
 
 // Regression: main.ts used to wire mountPanel("panel", () => undefined), so
-// closing the aircraft panel (the only content mountPanel ever shows — the
-// fire card bypasses it entirely) emitted nothing. style.css hides
-// #sidebar > #layers and #legend while the mobile sheet's mode is "aircraft",
-// and nothing left that mode without a detail:close announcement, so the
-// layer list and every legend stayed hidden at every detent until the user
-// separately opened and closed a fire card.
+// closing whatever mountPanel had shown (search results, the cell picker — the
+// fire card bypasses it entirely) emitted nothing. The mobile sheet hides its
+// layer list and legends while in "detail" mode, and nothing left that mode
+// without a detail:close announcement, so both stayed hidden at every detent
+// until the user separately opened and closed a fire card.
 describe("mountPanel close wiring", () => {
-  it("announces detail:close when the aircraft panel's close button is clicked", () => {
+  it("announces detail:close when the panel's close button is clicked", () => {
     document.body.innerHTML = `<div id="panel" class="hidden"></div>`;
     const seen: string[] = [];
     const off = onUi("detail:close", () => seen.push("close"));
 
     // Mirrors main.ts's real wiring exactly: mountPanel("panel", () => emitUi("detail:close")).
     const panel = mountPanel("panel", () => emitUi("detail:close"));
-    panel.showHtml(renderAircraftPanel({ role: "tanker", callsign: "TEST01", type: "CL-415" }));
+    panel.showHtml(`<button class="panel-close" aria-label="Close">x</button><div>any panel content</div>`);
 
     const closeBtn = document.querySelector(".panel-close") as HTMLButtonElement;
     expect(closeBtn).not.toBeNull();
@@ -75,5 +74,37 @@ describe("mountPanel close wiring", () => {
 
     expect(seen).toEqual(["close"]);
     off();
+  });
+});
+
+describe("stating an area we actually measured", () => {
+  /**
+   * The helper is unit-tested in area.test.ts; these guard the CALL SITES,
+   * which is where the equivalent pipeline fix was found to be unprotected.
+   * A one-cell footprint is `size_class: minor` precisely because one pixel
+   * says nothing about extent — the panel must not print a confident number
+   * for the same fire.
+   */
+  it("marks a single-cell footprint as an upper bound", () => {
+    const html = renderPanel({ ...props, area_km2: 5.2, cum_cells: 1 }, track, now);
+    expect(html).toContain("≤5.2 km²");
+    expect(html).toContain("(1 cell — size not resolved)");
+    expect(html).not.toContain("(1 cells)"); // the grammar bug, and the false claim
+  });
+
+  it("states a resolved extent plainly", () => {
+    const html = renderPanel(props, track, now); // 12.6 km², 18 cells
+    expect(html).toContain("12.6 km²");
+    expect(html).not.toContain("≤12.6");
+    expect(html).toContain("(18 cells)");
+  });
+
+  it("leaves no dangling parentheses when the count is missing", () => {
+    // cellsText owns its parens; the call site used to add them unconditionally
+    // and rendered "burning area ()".
+    const { cum_cells: _drop, ...noCount } = props;
+    const html = renderPanel(noCount as typeof props, track, now);
+    expect(html).not.toContain("()");
+    expect(html).toContain("12.6 km²");
   });
 });

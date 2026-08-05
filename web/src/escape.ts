@@ -1,12 +1,16 @@
 /**
  * Escaping for values that reach innerHTML.
  *
- * Most of this app's data is our own pipeline output, but three sources are
- * not: ADS-B callsigns (anyone with a transponder chooses what to broadcast),
- * the GDACS alert feed, and GeoNames place names. All three are interpolated
- * into panel markup, so they are escaped at the sink — the pipeline also
- * refuses malformed callsigns at ingest, and defence in depth means the sink
- * does not depend on that having happened.
+ * Most of this app's data is our own pipeline output, but two sources are not:
+ * the GDACS alert feed and GeoNames place names. Both are interpolated into
+ * panel markup, so both are escaped at the SINK. That placement is the point:
+ * it holds whatever the pipeline does or does not validate on the way in.
+ *
+ * There were three sources until the aircraft layer was retired. ADS-B
+ * callsigns were the sharpest case — anyone with a transponder chooses what to
+ * broadcast — and the pipeline screened them at ingest as well. That ingest
+ * check is gone with the fetch; this sink-side escaping is the half that was
+ * never allowed to depend on it.
  */
 
 const ENTITIES: Record<string, string> = {

@@ -1,3 +1,4 @@
+import { areaText, cellsText } from "./area";
 import { escapeHtml, safeHttpUrl } from "./escape";
 import type { EventProps, Track } from "./types";
 
@@ -62,7 +63,7 @@ export function renderPanel(props: EventProps, track: Track, now: Date = new Dat
     <button class="panel-close" aria-label="Close">×</button>
     <div class="${badgeClass}">${props.state.toUpperCase()}</div>
     <div class="panel-row muted">Started ${startedTxt} · ${props.status}</div>
-    <div class="panel-row"><b>${props.area_km2} km²</b> burning area (${props.cum_cells} cells)</div>
+    <div class="panel-row"><b>${areaText(props.area_km2, props.cum_cells)}</b> burning area${cellsText(props.cum_cells)}</div>
     <div class="panel-row">${move}</div>
     <svg class="spark" viewBox="0 0 120 30" preserveAspectRatio="none">
       <polyline points="${sparklinePath(track, 120, 30)}" fill="none" stroke="#ff6b00" stroke-width="2"/>
@@ -125,35 +126,6 @@ export function renderWindPanel(p: Record<string, unknown>, now: Date = new Date
     <div class="panel-row">Gusting to <b>${p.gust_kmh} km/h</b></div>
     ${temp !== null ? `<div class="panel-row">${temp} °C · ${rh}% humidity ${dry ? "<b>(very dry)</b>" : ""}</div>` : ""}
     <div class="panel-row small muted">Forecast surface wind at 10 m — this is not observed fire movement.</div>
-    ${SAFETY}
-  `;
-}
-
-/** Detail view for a firefighting aircraft. */
-export function renderAircraftPanel(p: Record<string, unknown>, now: Date = new Date()): string {
-  const alt = p.alt_m as number | null;
-  const spd = p.speed_kmh as number | null;
-  const hdg = p.heading as number | null;
-  // Epoch seconds, from OpenSky time_position: when the POSITION was fixed, not
-  // when the transponder was last heard. Grounded aircraft never get here — the
-  // pipeline drops them, along with fixes older than the publish budget.
-  const posTime = p.pos_time as number | null;
-  const ageMin = posTime ? Math.round((now.getTime() / 1000 - posTime) / 60) : null;
-  // A fast mover with an old fix is misleading — say how old, and warn.
-  const stale = ageMin !== null && ageMin > 5;
-  const ageLine =
-    ageMin === null
-      ? "position age unknown"
-      : `position ${ageMin < 1 ? "just now" : `${ageMin} min ago`}${stale ? " ⚠ may have moved" : ""}`;
-  return `
-    <button class="panel-close" aria-label="Close">×</button>
-    <div class="badge">AIRBORNE · ${escapeHtml(p.role)}</div>
-    <div class="panel-row"><b>${escapeHtml(p.callsign)}</b> · identified as ${escapeHtml(p.type)}</div>
-    <div class="panel-row">${spd ?? "?"} km/h · heading <b>${
-      hdg === null ? "?" : compass(hdg)
-    }</b>${alt !== null ? ` · ${alt} m` : ""}</div>
-    <div class="panel-row small ${stale ? "" : "muted"}">${ageLine}</div>
-    <div class="panel-row small muted">${escapeHtml(p.country)} · ADS-B via OpenSky · type inferred from callsign</div>
     ${SAFETY}
   `;
 }

@@ -4,6 +4,7 @@ import {
   FIRE_CLASSES,
   addActiveFires,
   addClosedFires,
+  setShowAllSizes,
   fireHaloIds,
   fireLayerIds,
 } from "../src/layer_fires";
@@ -117,5 +118,54 @@ describe("burned-out fires stay reachable", () => {
     addClosedFires(map as never);
     const closed = layers["fires-closed-major"].paint as Record<string, unknown>;
     expect(closed["circle-opacity"]).toBeLessThan(0.6);
+  });
+});
+
+describe("showing every fire size", () => {
+  // Most live fires are `minor` — 3079 of 4346 in the 2026-08-04 generation —
+  // and minor is gated to z8.5, so the continental view draws a fraction of
+  // what is burning and can look broken. A reader must be able to say "show
+  // everything, I accept the clutter".
+  function zoomMap() {
+    const { map, layers } = fakeMap();
+    const ranges: Record<string, [number, number]> = {};
+    (map as unknown as Record<string, unknown>).setLayerZoomRange = (
+      id: string, min: number, max: number,
+    ) => {
+      ranges[id] = [min, max];
+    };
+    return { map, layers, ranges };
+  }
+
+  it("ungates every class, dots and tap targets alike", () => {
+    const { map, ranges } = zoomMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    addClosedFires(map as never);
+    setShowAllSizes(map as never, true);
+    for (const cls of FIRE_CLASSES) {
+      expect(ranges[`fires-${cls}`][0], cls).toBe(0);
+      expect(ranges[`fire-halo-${cls}`][0], `halo ${cls}`).toBe(0);
+    }
+  });
+
+  it("restores each class to its own gate, not a shared one", () => {
+    const { map, ranges } = zoomMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    setShowAllSizes(map as never, true);
+    setShowAllSizes(map as never, false);
+    expect(ranges["fires-major"][0]).toBe(3);
+    expect(ranges["fires-medium"][0]).toBe(6);
+    expect(ranges["fires-minor"][0]).toBe(8.5);
+  });
+
+  it("keeps the upper bound each layer already had", () => {
+    // Live dots stop at 9.5 where the footprint takes over; burned-out markers
+    // have no such handover and must stay visible when zoomed in.
+    const { map, ranges } = zoomMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    addClosedFires(map as never);
+    setShowAllSizes(map as never, true);
+    expect(ranges["fires-minor"][1]).toBe(9.5);
+    expect(ranges["fires-closed-minor"][1]).toBeGreaterThan(9.5);
   });
 });
