@@ -1,10 +1,14 @@
 /**
- * A five-event bus so the mobile sheet can learn what the UI is doing without
- * any view module learning that mobile exists.
+ * A five-event bus so one listener can learn what the UI is doing without any
+ * view module learning that the listener exists. That listener is shell.ts,
+ * which turns these announcements into pushes and pops on the nav stack; the
+ * original one was the mobile sheet, and the point of the bus is that
+ * replacing it changed nothing on the emitting side.
  *
- * Deliberately tiny: no payloads, no wildcard, no async. The sheet only needs
- * "something opened / something closed", and every extra capability here is a
- * coupling point between modules that are otherwise independent.
+ * Deliberately tiny: no payloads, no wildcard, no async. The consumer only
+ * needs "something opened / something closed" — it reads the DOM for anything
+ * more, such as a card's title — and every extra capability here is a coupling
+ * point between modules that are otherwise independent.
  */
 export type UiEvent =
   | "detail:open"
@@ -31,7 +35,7 @@ export function uiSubscriberCount(event: UiEvent): number {
 
 export function emitUi(event: UiEvent): void {
   for (const fn of subscribers.get(event) ?? []) {
-    // One bad subscriber must not stop the others: the sheet and any future
+    // One bad subscriber must not stop the others: the shell and any future
     // listener are independent, and a thrown error here would otherwise leave
     // the UI half-updated.
     try {

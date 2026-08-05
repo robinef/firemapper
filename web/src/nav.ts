@@ -1,11 +1,14 @@
 /**
  * The view stack.
  *
- * One rule holds this together: `popstate` is the only code that moves the
- * cursor. `back()` and `reset()` ask the browser to navigate and return; the
- * stack changes when the browser says so. That is what makes a tap on "‹", the
- * Escape key, and Android's back gesture the same operation instead of three
- * implementations that drift apart.
+ * One rule holds this together, and it is asymmetric: going FORWARD is direct
+ * — `push()` appends an entry and moves the cursor itself, then tells the
+ * browser — but going BACK happens only through `popstate`. `back()` and
+ * `reset()` do not touch the cursor; they ask the browser to navigate and
+ * return, and the stack shortens when the browser says so. That is what makes
+ * a tap on "‹", the Escape key, and Android's back gesture the same operation
+ * instead of three implementations that drift apart. A forward push has no
+ * such rival entry points, so it has nothing to converge with.
  *
  * A pop TRUNCATES. Retaining popped entries so the browser's Forward button
  * could re-enter them was the original design, and it does not survive contact

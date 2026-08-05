@@ -37,8 +37,9 @@
          the swipe divider, so #view is hidden for it — a back bar rendered
          inside would be hidden along with it. -->
     <div id="compare-bar"></div>
-    <!-- Top level, not inside #sidebar: the compare banner is the only way out
-         of compare mode and must not depend on the sidebar being shown. -->
+    <!-- Top level, not inside #sidebar: compare hides #view, so a strip nested
+         in the sidebar would vanish exactly when compare needs to describe
+         itself. The way OUT of compare is #compare-bar's back control. -->
     <div id="notice"></div>
     <div id="timeline"></div>
     <script type="module" src="/src/main.ts"></script>

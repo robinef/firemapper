@@ -73,9 +73,8 @@ async function boot() {
   }
   // The aircraft panel is the only thing mountPanel closes (the fire card
   // bypasses mountPanel entirely) — without announcing detail:close here, the
-  // sheet's mode never leaves "aircraft" after the user closes it, hiding the
-  // layer list and legends at every detent until a fire card is separately
-  // opened and closed.
+  // shell never pops the detail entry the panel pushed, so the back bar keeps
+  // offering a way back out of a panel that is already gone.
   const panel = mountPanel("panel", () => emitUi("detail:close"));
 
   map.on("load", async () => {
@@ -469,7 +468,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   let entry = 0;
   // Tracks compare:enter/compare:exit balance. NOT `swipe != null`: entering
   // now awaits tile probes, so an exit during that window would otherwise skip
-  // compare:exit and leave the mobile sheet collapsed for good.
+  // compare:exit and strand a compare entry on the nav stack for good.
   let comparing = false;
 
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
@@ -558,7 +557,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     swipe?.destroy();
     swipe = null;
     // Announced on intent, not on arrival: probing the tiles takes seconds, and
-    // the sheet must collapse the moment the reader asks to compare.
+    // the chrome must switch to compare the moment the reader asks for it.
     comparing = true;
     emitUi("compare:enter");
     // Guard against re-entry (switching scars while already comparing):
@@ -573,7 +572,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // zone WOULD land on the map underneath and pan mid-comparison, so the
     // lock still earns its keep there. Gating on `(pointer: coarse)` rather
     // than a width breakpoint follows the actual ambiguity (touch vs mouse
-    // drag), not the viewport size the mobile sheet happens to use.
+    // drag), not the viewport width the mobile layout happens to switch at.
     if (!locked && window.matchMedia?.("(pointer: coarse)").matches) locked = lockMap(map);
     hideOverlays();
     // Never past the deepest tile the source has: over-zooming a 250 m MODIS
