@@ -303,7 +303,12 @@ describe("scale page shell", () => {
     // comment in vite.config.ts also says "scale.html", so a plain substring
     // check would still pass with the entry itself deleted.
     expect(viteConfig).toMatch(/\bscale:\s*entry\(\s*["']\.\/scale\.html["']\s*\)/);
-    expect(viteConfig).toMatch(/\bmain:\s*entry\(\s*["']\.\/index\.html["']\s*\)/);
+    // The key is "index", not "main": it names the emitted chunk, and CI's
+    // maplibre assertion locates the map's entry by globbing index-*.js.
+    // Renaming this key renames that chunk and the glob silently matches
+    // nothing, so the assertion resolves its directory to "." and reports a
+    // missing worker instead of a renamed file.
+    expect(viteConfig).toMatch(/\bindex:\s*entry\(\s*["']\.\/index\.html["']\s*\)/);
   });
 
   it("mounts the root that scale.ts renders into", () => {
