@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>How much has burned? — FireMapper</title>
+    <meta
+      name="description"
+      content="This year's burned area in Europe, converted into a countable grid of a familiar place."
+    />
+    <link rel="stylesheet" href="/src/scale.css" />
+  </head>
+  <body class="scale-body">
+    <header class="scale-top">
+      <!-- Always /scale.html and /index.html, never /scale: wrangler.jsonc sets
+           not_found_handling to single-page-app and never sets html_handling, so
+           an extensionless path that failed to resolve would quietly serve the
+           map instead of 404-ing, and nothing would look broken. -->
+      <a class="scale-back" href="/index.html">← Live fire map</a>
+    </header>
+    <main id="scale">
+      <!-- Filled by src/scale.ts. Before the fetch lands there is no honest
+           number to show, so the shell stays empty rather than flashing a zero. -->
+    </main>
+    <script type="module" src="/src/scale.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,179 @@
+/* The scale page. Same near-black + fire-orange language as the map
+   (src/style.css), but this is a reading page, not an instrument panel: it
+   scrolls, it has generous measure, and nothing is absolutely positioned. */
+
+:root {
+  --bg: #0a0a0f;
+  --fg: #f2f2f2;
+  --muted: #9a9a9a;
+  --fire: #ff6b00;
+  --ember: rgba(255, 107, 0, 0.16);
+  --rule: rgba(255, 255, 255, 0.1);
+}
+
+* { box-sizing: border-box; }
+
+.scale-body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 -apple-system, system-ui, sans-serif;
+}
+
+.scale-top { padding: 18px 24px 0; }
+
+.scale-back {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+.scale-back:hover { color: var(--fire); }
+
+#scale {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+}
+
+/* Hero: the sentence and its caveats sit BESIDE the grid on a wide screen, so a
+   reader meets the qualification at the same moment as the headline rather than
+   below the fold. Stacked below 860px, caveats still ahead of the countries. */
+.scale-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.scale-kicker {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scale-total {
+  margin: 0;
+  font-size: clamp(38px, 7vw, 68px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--fire);
+}
+
+.scale-sentence {
+  margin: 12px 0 20px;
+  font-size: clamp(17px, 2.2vw, 22px);
+  max-width: 26em;
+}
+.scale-sentence strong { color: var(--fg); }
+
+.scale-caveat,
+.scale-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 34em;
+}
+.scale-caveat strong { color: #ffcf8f; font-weight: 600; }
+
+.scale-asof {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* One tile = one unit. Fixed minimum tile size so the grid stays countable
+   rather than reflowing into an undifferentiated block. */
+.scale-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 6px;
+  max-width: 380px;
+}
+
+[data-tile] {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  background: var(--fire);
+}
+
+/* The partial tile is filled left-to-right by its fraction, with a hard colour
+   stop: a gradient fade would read as "about this much" when the number is
+   exact to one decimal. */
+[data-tile="partial"] {
+  background: linear-gradient(
+    to right,
+    var(--fire) calc(var(--frac, 0.5) * 100%),
+    var(--ember) 0
+  );
+}
+
+.scale-legend {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Countries: bars, never grids. See the note in scale_render.ts — two grids at
+   different units invite a comparison that is not valid. */
+.scale-countries { padding-top: 28px; }
+
+.scale-countries h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.scale-rows { list-style: none; margin: 0 0 14px; padding: 0; }
+
+.scale-row {
+  display: grid;
+  grid-template-columns: 9em minmax(0, 1fr) 6.5em 9em;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 14px;
+}
+
+.scale-row-name { font-weight: 600; }
+
+.scale-row-bar {
+  height: 9px;
+  border-radius: 999px;
+  background: var(--ember);
+  overflow: hidden;
+}
+.scale-row-bar i {
+  display: block;
+  height: 100%;
+  background: var(--fire);
+  border-radius: 999px;
+}
+
+.scale-row-value { color: var(--fg); font-variant-numeric: tabular-nums; }
+.scale-row-unit { color: var(--muted); font-size: 13px; }
+
+/* Zero and unavailable share a layout: a short line and its explanation, with
+   no grid and no number that could be mistaken for a total. */
+.scale-empty { padding-top: 12px; }
+
+.scale-zero {
+  margin: 0 0 16px;
+  font-size: clamp(22px, 3.4vw, 30px);
+  font-weight: 600;
+  max-width: 20em;
+}
+
+@media (max-width: 860px) {
+  .scale-hero { grid-template-columns: minmax(0, 1fr); gap: 26px; }
+  .scale-row { grid-template-columns: 7em minmax(0, 1fr) 5.5em; }
+  .scale-row-unit { grid-column: 2 / -1; }
+}
