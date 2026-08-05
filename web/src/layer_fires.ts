@@ -76,6 +76,21 @@ export function fireFadeExpression(): unknown {
     // A covered fire goes to nothing, leaving the observed edge to speak for
     // it. An uncovered one stays at full strength, because the dot is the only
     // record of it that exists.
+    //
+    // `case` on the bare ["get"] is load-bearing, and not interchangeable with
+    // an explicit ["==", ["get", "has_footprint"], true]. Artifacts published
+    // before the pipeline started stamping the property have no key at all, so
+    // the condition evaluates on null — and MapLibre falls through to the
+    // FALSE branch rather than erroring, which keeps every dot at full opacity
+    // on old data. Verified in Chrome against a feature with the property
+    // absent: opacity 1 at z9/z11/z13, no error event. That is the safe
+    // direction (nothing hidden that cannot be redrawn), and it is what makes
+    // the frontend deployable ahead of the first generation carrying the flag.
+    //
+    // No test pins this: it is MapLibre's coercion of a missing property, not
+    // a shape any structural assertion can see. An "equivalent" rewrite would
+    // behave identically once the data lands and differ only during a rollout
+    // or a pipeline outage — so it would look harmless and would not be.
     11,
     ["case", ["get", "has_footprint"], 0, fireOpacityExpression(1)],
   ];
