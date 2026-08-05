@@ -87,5 +87,12 @@ export default defineConfig({
   // maplibre-gl-shared.mjs sit as real siblings and resolve for free.
   optimizeDeps: { exclude: ["maplibre-gl"] },
   server: { port: 5173 },
-  test: { environment: "node" },
+  test: {
+    environment: "node",
+    // Vitest's default glob would collect smoke/*.spec.ts, which are Playwright
+    // tests: they call test.describe() outside a Playwright runner and fail
+    // with "did not expect test.describe() to be called here". Two runners,
+    // two directories — `npm test` is vitest, `npm run smoke` is Playwright.
+    exclude: ["node_modules/**", "dist/**", "smoke/**"],
+  },
 });
