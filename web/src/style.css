@@ -392,8 +392,14 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 body.compare-mode #rail,
 body.compare-mode #timeline { display: none; }
 
-/* Compare's own chrome, outside #view because #view is hidden for it. */
-#compare-bar { position: absolute; top: 12px; left: 12px; right: 12px;
+/* Compare's own chrome, outside #view because #view is hidden for it.
+   Starts BELOW #header (top 12px, z-index 5), not over it: this bar is opaque
+   and full-width at z-index 9, so at 12px it hid the data-freshness badge for
+   the whole compare session — the same collision #view-chip was moved down
+   for. 56px clears the header at every width. It cannot collide with the chip
+   in turn: the chip only shows under body[data-size="peek"], and sync() drops
+   data-size for every view that is not detail, compare included. */
+#compare-bar { position: absolute; top: 56px; left: 12px; right: 12px;
   z-index: 9; display: flex; align-items: center; justify-content: space-between;
   gap: 8px; background: var(--panel); border-radius: 10px; padding: 0 6px;
   box-shadow: 0 2px 12px rgba(0,0,0,.5); }
