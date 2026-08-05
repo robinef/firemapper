@@ -6,6 +6,8 @@ exact, and made-up ids/places.
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from pipeline.fetch_effis import fetch_effis_ba
 from pipeline.store import write_polygons
 
@@ -83,35 +85,41 @@ def test_imagery_window_brackets_the_fire_date(tmp_path):
 # of today and the clamps below — not the settled arithmetic above — are the
 # branch that actually runs in production. Dates are relative to today so these
 # keep exercising the clamps as the calendar moves.
-TODAY = datetime.now(timezone.utc).date()
-YESTERDAY = TODAY - timedelta(days=1)
 
 
-def test_after_is_clamped_to_yesterday_for_a_recent_fire(tmp_path):
+@pytest.fixture
+def today():
+    """Read at test time, not import time: fetch_effis_ba reads the clock on
+    every call, so a suite crossing UTC midnight would otherwise flake."""
+    return datetime.now(timezone.utc).date()
+
+
+def test_after_is_clamped_to_yesterday_for_a_recent_fire(tmp_path, today):
     """firedate + 14 is still in the future, so `after` is pulled back to the
     newest day imagery can exist for. Without min(..., yesterday) this would
     name a date GIBS has nothing behind yet."""
-    fire = TODAY - timedelta(days=5)
+    fire = today - timedelta(days=5)
     settings = seed(tmp_path, [row("a", 900.0, firedate=fire)])
     scar = fetch_effis_ba(settings)[0]
-    assert scar["after"] == YESTERDAY.isoformat()
+    assert scar["after"] == (today - timedelta(days=1)).isoformat()
     assert scar["after"] != (fire + timedelta(days=14)).isoformat()
 
 
-def test_after_is_never_before_ignition_for_a_fire_today(tmp_path):
+def test_after_is_never_before_ignition_for_a_fire_today(tmp_path, today):
     """A fire that started today: the yesterday ceiling would put `after`
     BEFORE the fire existed, so max(..., fire_date) must win. This is the
     lower clamp, and it is the case a fresh EFFIS row hits."""
-    settings = seed(tmp_path, [row("a", 900.0, firedate=TODAY)])
+    settings = seed(tmp_path, [row("a", 900.0, firedate=today)])
     scar = fetch_effis_ba(settings)[0]
-    assert scar["after"] == TODAY.isoformat()
-    assert scar["after"] != YESTERDAY.isoformat()
+    assert scar["after"] == today.isoformat()
+    assert scar["after"] != (today - timedelta(days=1)).isoformat()
 
 
-def test_after_equals_the_fire_date_for_a_fire_yesterday(tmp_path):
-    settings = seed(tmp_path, [row("a", 900.0, firedate=YESTERDAY)])
+def test_after_equals_the_fire_date_for_a_fire_yesterday(tmp_path, today):
+    yesterday = today - timedelta(days=1)
+    settings = seed(tmp_path, [row("a", 900.0, firedate=yesterday)])
     scar = fetch_effis_ba(settings)[0]
-    assert scar["after"] == YESTERDAY.isoformat() == scar["started"]
+    assert scar["after"] == yesterday.isoformat() == scar["started"]
 
 
 def test_missing_snapshot_returns_empty_and_never_raises(tmp_path):
@@ -140,7 +148,7 @@ def test_a_quote_in_the_data_dir_does_not_silently_blank_the_scars(tmp_path):
     """A path is interpolated into SQL, so it goes through store._sql_path.
     Unescaped, the quote breaks the query and the map loses every scar with no
     error anywhere."""
-    odd = tmp_path / "fred's data"
+    odd = tmp_path / "o'brien data"
     settings = seed(odd, [row("a", 900.0)])
     assert [s["id"] for s in fetch_effis_ba(settings)] == ["a"]
 
