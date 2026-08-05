@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 // ?raw rather than node:fs: the web tsconfig is DOM-only with no @types/node,
 // and vite/client already declares "*?raw" (see tests/wrangler_routes.test.ts).
 import shell from "../scale.html?raw";
+import mapShell from "../index.html?raw";
 // ?raw, not an import of the config module: importing vite.config pulls in vite
 // and therefore esbuild, which throws an invariant error under jsdom.
 import viteConfig from "../vite.config.ts?raw";
@@ -192,11 +193,17 @@ describe("renderScale", () => {
 });
 
 /**
- * The page only exists if the build emits it. wrangler.jsonc sets
- * not_found_handling to "single-page-application", so a scale page that failed to build
- * is not a 404 — the asset layer answers with index.html and a 200, and every
- * test above still passes against a map that is not this page. These guard the
- * two ways that can happen silently.
+ * The page only exists if the build emits it and something links to it.
+ *
+ * wrangler.jsonc sets not_found_handling to "single-page-application", so a
+ * scale page that failed to build is not a 404 — the asset layer answers with
+ * index.html and a 200, and every test above still passes against a map that is
+ * not this page. No URL spelling defends against that (html_handling defaults to
+ * auto-trailing-slash, so /scale is canonical and /scale.html merely 307s onto
+ * it; both resolve, and both fall through identically when the asset is gone).
+ * The defence has to be here, at build time. These guard the three ways the page
+ * can silently cease to exist: the entry dropped, the mount point drifting, and
+ * the last link to it disappearing.
  */
 describe("scale page shell", () => {
   it("declares scale.html as a build entry, so it is emitted at all", () => {
@@ -221,8 +228,19 @@ describe("scale page shell", () => {
     // map's ~1 MB), but that is only checked when someone reads a build log.
     // ?raw rather than the brief's node:fs: the web tsconfig is DOM-only with
     // no @types/node, so readFileSync would not typecheck.
+    //
+    // DIRECT imports only. A future module imported by these two that pulls
+    // maplibre itself would pass this and still bloat the bundle; the build log
+    // remains the check for transitive weight.
     expect(renderSource).not.toContain("maplibre");
     expect(entrySource).not.toContain("maplibre");
+  });
+
+  it("is linked from the map, or it is unreachable", () => {
+    // The page shipped once with nothing pointing at it. A build guard does not
+    // help when the asset is fine and simply has no door.
+    expect(mapShell).toContain('id="scale-link"');
+    expect(mapShell).toMatch(/<a[^>]*id="scale-link"[^>]*href="\/scale"|<a[^>]*href="\/scale"[^>]*id="scale-link"/);
   });
 });
 

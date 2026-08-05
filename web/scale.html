@@ -12,11 +12,18 @@
   </head>
   <body class="scale-body">
     <header class="scale-top">
-      <!-- Always /scale.html and /index.html, never /scale: wrangler.jsonc sets
-           not_found_handling to single-page-application and never sets html_handling, so
-           an extensionless path that failed to resolve would quietly serve the
-           map instead of 404-ing, and nothing would look broken. -->
-      <a class="scale-back" href="/index.html">← Live fire map</a>
+      <!-- Extensionless paths are canonical. Workers Assets defaults
+           html_handling to auto-trailing-slash and wrangler.jsonc never
+           overrides it, so /index.html 307s onto / and /scale.html 307s onto
+           /scale. Both forms reach the page; the canonical one saves a hop.
+
+           The hazard is not the URL form, it is a MISSING asset: with
+           not_found_handling "single-page-application", anything that fails to
+           resolve is answered with index.html and a 200, so a page that failed
+           to build is served as the map and looks like it works. That is caught
+           at build time by the shell guards in tests/scale_render.test.ts,
+           which is where it belongs — no URL spelling defends against it. -->
+      <a class="scale-back" href="/">← Live fire map</a>
     </header>
     <main id="scale">
       <!-- Filled by src/scale.ts. Before the fetch lands there is no honest
