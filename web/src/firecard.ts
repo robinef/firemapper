@@ -1,4 +1,4 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
 import { areaText, footprintNote } from "./area";
 import { loadTrack } from "./data";

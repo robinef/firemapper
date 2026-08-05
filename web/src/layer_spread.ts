@@ -1,4 +1,4 @@
-import type maplibregl from "maplibre-gl";
+import type * as maplibregl from "maplibre-gl";
 import { SPEED_STOPS } from "./palette";
 import { speedArrowExpression, speedArrowIconName } from "./map";
 

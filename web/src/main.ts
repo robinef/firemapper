@@ -1,4 +1,4 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   loadDaySlice,
@@ -457,11 +457,14 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
     ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS,
   ];
-  const overlayVis: Record<string, string> = {};
+  // Not Record<string, string>: maplibre 6 types `visibility` as a union, and
+  // it was only ever these two values — the wider type just deferred the error.
+  const overlayVis: Record<string, "visible" | "none"> = {};
   const hideOverlays = () => {
     for (const id of OVERLAY_LAYERS) {
       if (!map.getLayer(id)) continue;
-      overlayVis[id] = (map.getLayoutProperty(id, "visibility") as string) ?? "visible";
+      overlayVis[id] =
+        (map.getLayoutProperty(id, "visibility") as "visible" | "none" | undefined) ?? "visible";
       map.setLayoutProperty(id, "visibility", "none");
     }
   };

@@ -51,10 +51,13 @@ vi.mock("maplibre-gl", () => {
     }
     off() {}
   }
-  return { default: { Map: FakeMap } };
+  // A named export, not `{ default: ... }`: maplibre 6 is ESM-only and has no
+  // default export, so a default-shaped mock leaves `maplibregl.Map` undefined
+  // and the file fails to load before any test runs.
+  return { Map: FakeMap };
 });
 
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { ImagerySwipe } from "../src/layer_imagery";
 
 // A typed constructor view of the mocked Map so callers don't have to fight

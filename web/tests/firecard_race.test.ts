@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
-import type maplibregl from "maplibre-gl";
+import type * as maplibregl from "maplibre-gl";
 import type { Switcher } from "../src/registry";
 
 // maplibre-gl's module load path calls this in a browser-like global; jsdom
