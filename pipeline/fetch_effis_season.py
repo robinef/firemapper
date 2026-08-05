@@ -1,12 +1,7 @@
-"""The single EFFIS entry point: fetch the whole cur-season burned-area
-layer once, verify it is COMPLETE, and persist it as a perimeter archive.
-Everything downstream (the season total, and the map's top-12 scars) queries
-that snapshot. The EFFIS Oracle backend is frequently down and answers a
-perfectly-formed HTTP 200 whose body is an OWS ExceptionReport, so every path
-here is guarded and the public entry point never raises.
-Completeness matters more than usual: this feeds a num meant to be quoted.
-A WFS server may cap features even when the client sends no `count`, so a
-truncated res is REJECTED rather than silently aggregated.
+"""Pure functions for normalizing EFFIS WFS GeoJSON features into snapshot rows.
+
+rows_from_features: convert raw features to rows with validated geometry and area.
+completeness: extract WFS 2.0 response counters (numberMatched, numberReturned).
 """
 from __future__ import annotations
 
@@ -24,15 +19,20 @@ _PLACE_KEYS = ("place_name", "PLACE_NAME", "province", "PROVINCE",
 
 
 def _ring_wkt(ring) -> str | None:
-    """GeoJSON ring (linear array) -> WKT. None if empty or malformed."""
+    """GeoJSON ring (linear array) -> WKT. None if empty, malformed, or unclosed."""
     pts = []
     for point in ring or []:
         try:
             lon, lat = float(point[0]), float(point[1])
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, KeyError):
             return None
         pts.append(f"{lon} {lat}")
-    return f"({', '.join(pts)})" if len(pts) >= 4 else None
+    if len(pts) < 4:
+        return None
+    # Check ring closure: first and last coordinate must be equal
+    if ring[0] != ring[-1]:
+        return None
+    return f"({', '.join(pts)})"
 
 
 def _polygon_wkt(geometry) -> str | None:
@@ -53,6 +53,8 @@ def _polygon_wkt(geometry) -> str | None:
             if not rings or any(r is None for r in rings):
                 return None
             polys.append(f"({', '.join(rings)})")
+        if not polys:
+            return None
         return f"MULTIPOLYGON({', '.join(polys)})"
     return None
 
@@ -95,8 +97,8 @@ def rows_from_features(features: list[dict]) -> list[dict]:
             "geometry_wkt": wkt,
             "area_ha": area_ha,
             "firedate": _parse_date(_first(props, _DATE_KEYS)),
-            "country": str(country) if country else None,
-            "place": str(place) if place else None,
+            "country": str(country) if country is not None else None,
+            "place": str(place) if place is not None else None,
         })
     return rows
 

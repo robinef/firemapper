@@ -20,12 +20,12 @@ def test_polygon_survives_ingestion():
     assert rows[0]["id"] == "ba.1"
     assert rows[0]["area_ha"] == 120.5
     assert rows[0]["firedate"] == date(2026, 7, 1)
-    assert rows[0]["geometry_wkt"].startswith("POLYGON")
+    assert rows[0]["geometry_wkt"] == "POLYGON((0.0 0.0, 0.0 1.0, 1.0 1.0, 1.0 0.0, 0.0 0.0))"
 
 
 def test_multipolygon_survives_ingestion():
     rows = rows_from_features([feature(id="ba.2", geometry=MULTI, area_ha="9")])
-    assert rows[0]["geometry_wkt"].startswith("MULTIPOLYGON")
+    assert rows[0]["geometry_wkt"] == "MULTIPOLYGON(((2.0 2.0, 2.0 3.0, 3.0 3.0, 3.0 2.0, 2.0 2.0)))"
 
 
 def test_missing_feature_id_is_derived_deterministically():
@@ -41,6 +41,16 @@ def test_different_geometry_yields_a_different_derived_id():
     assert a[0]["id"] != b[0]["id"]
 
 
+def test_empty_multipolygon_coordinates_are_dropped():
+    empty_multi = {"type": "MultiPolygon", "coordinates": []}
+    assert rows_from_features([feature(geometry=empty_multi, area_ha="10")]) == []
+
+
+def test_unclosed_ring_is_dropped():
+    unclosed = {"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [1, 0]]]}
+    assert rows_from_features([feature(geometry=unclosed, area_ha="10")]) == []
+
+
 def test_non_polygon_geometry_is_dropped():
     point = {"type": "Point", "coordinates": [1, 2]}
     assert rows_from_features([feature(geometry=point, area_ha="10")]) == []
@@ -53,6 +63,10 @@ def test_zero_and_negative_area_are_dropped():
 
 def test_unparseable_area_is_dropped():
     assert rows_from_features([feature(id="u", area_ha="not-a-num")]) == []
+
+
+def test_missing_area_key_is_dropped():
+    assert rows_from_features([feature(id="m")]) == []
 
 
 def test_null_firedate_is_kept_as_none():
