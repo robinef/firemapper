@@ -48,8 +48,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      # v9.0.0, NOT v9 — astral stopped publishing bare-major tags after v7, so
+      # `@v9` resolves to nothing and the job dies in 3 s with "unable to find
+      # version". Confirmed against the remote: refs/tags/v7 exists, v8 and v9
+      # do not. This has to move by exact version; Dependabot does that.
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
+          # v9 flipped `prune-cache` to false by default, to spare PyPI the
+          # re-downloads that pruning causes. Kept at the new default rather
+          # than pinned back to true: the point of the change is upstream load,
+          # and this workflow is one of its heaviest callers at half-hourly.
+          # The cost lands on GitHub's 10 GB per-repo cache, which evicts
+          # least-recently-used — so if the gazetteer cache below starts missing
+          # and the GeoNames download reappears in every run, an unpruned uv
+          # cache crowding it out is the first thing to check.
           enable-cache: true
       - run: uv sync
       # Reverse-geocoding source for fire and scar labels. Without it run.py
