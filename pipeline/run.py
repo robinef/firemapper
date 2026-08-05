@@ -13,8 +13,11 @@ from .export import export
 from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_aircraft import fetch_aircraft
 from .fetch_effis import fetch_effis_ba
+from .fetch_effis_season import fetch_season_snapshot, snapshot_path
 from .fetch_imagery import build_imagery
 from .fetch_result import FetchResult, attempt, newest_timestamp
+from .scale import pick_unit
+from .season import season_totals
 from .timeline import build_timeline
 from .day_slices import build_day_slices
 
@@ -136,10 +139,34 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # clustered over a longer window so fires that have gone quiet persist as
     # "past" scars — no external burned-area service.
     scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    # EFFIS is asked at most once per run (and rate-limited to ~6 h inside
+    # fetch_season_snapshot): one fragile backend, one request. The ORDER below
+    # is load-bearing — fetch_effis_ba no longer talks to the network, it reads
+    # the snapshot this writes, so fetching second would publish a scarless map
+    # for a whole run on a cold start. fetch_season_snapshot is documented as
+    # non-raising; _safe wraps it anyway because a bad EFFIS week must never
+    # stop us publishing live fire data.
+    season_status = _safe(
+        lambda: fetch_season_snapshot(settings, now), default="stale",
+        label="effis-season",
+    )
     # EFFIS burned areas are a best-effort bonus tier: its Oracle backend is
     # often down, so fetch_effis_ba is self-guarding and _safe wraps it again.
     effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
-    print(f"[info] EFFIS burned-area scars: {len(effis)}")
+    print(f"[info] EFFIS burned-area scars: {len(effis)} (season: {season_status})")
+
+    # None means no snapshot at all, which export renders as "unavailable" —
+    # a different page state from a season total of zero.
+    season = _safe(
+        lambda: season_totals(snapshot_path(settings), now.year), default=None,
+        label="season-totals",
+    )
+    if season:
+        _safe(lambda: _attach_units(season), default=None, label="season-units")
+        print(
+            f"[info] season {season['season_year']}: {season['total_km2']} km2 "
+            f"over {season['area_count']} mapped burn areas"
+        )
     imagery_result = attempt(
         lambda: build_imagery(settings, scar_events, now, places, extra_scars=effis),
         label="imagery-scars", now=now, default=None,
@@ -179,8 +206,24 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     return export(
         settings, events, liveness, places, alerts, now,
         live_frp, frp_points, wind, aircraft, imagery, timeline, day_slices,
-        results=results,
+        results=results, season=season, season_status=season_status,
     )
+
+
+def _attach_units(season: dict) -> None:
+    """Give the season total and each country its scale unit, in place.
+
+    Every call is guarded because pick_unit raises on a non-positive total by
+    design: zero is a distinct page state, not a grid of no tiles. The guard is
+    per value, not per season — season_totals rounds each country
+    independently, so a 4 ha perimeter is 0.0 km2 under a healthy total. Where
+    there is no honest unit the key is simply absent, and export emits null.
+    """
+    if season.get("total_km2", 0) > 0:
+        season["unit"] = pick_unit(season["total_km2"])
+    for country in season.get("countries") or []:
+        if country.get("km2", 0) > 0:
+            country["unit"] = pick_unit(country["km2"])
 
 
 def _newest_epoch(values) -> datetime | None:
