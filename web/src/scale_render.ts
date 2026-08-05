@@ -175,7 +175,13 @@ export function renderScale(root: HTMLElement, data: SeasonData | null): void {
     return;
   }
 
-  if (data.total_km2 <= 0 || data.unit === null) {
+  // Routed on the TOTAL alone. A null unit must never reach this branch: a
+  // pick_unit failure is swallowed by _safe(..., default=None) in run.py:170,
+  // which leaves `unit` absent under a real, non-zero total. Routing on the
+  // unit would then print "no mapped burned areas" over a season that happened
+  // — the page stating the opposite of the truth. Zero is the only thing that
+  // licenses that sentence.
+  if (data.total_km2 <= 0) {
     root.innerHTML = `<section data-state="zero" class="scale-empty">
       ${kicker(data)}
       <p class="scale-zero">No mapped burned areas yet this year.</p>
@@ -184,17 +190,25 @@ export function renderScale(root: HTMLElement, data: SeasonData | null): void {
     return;
   }
 
+  // The total is real, so the number and its caveats are unconditional. Only
+  // the comparison is conditional, because only the comparison needs a unit.
+  const unit = data.unit;
+  const sentence = unit
+    ? `<p class="scale-sentence">That's
+        <strong>${count(unit.count)} × ${escapeHtml(unit.name)}</strong>,
+        burned since 1 January.</p>`
+    : `<p class="scale-sentence scale-nounit">No scale comparison is available
+        for this total.</p>`;
+
   root.innerHTML = `<section data-state="normal" class="scale-page">
     <div class="scale-hero">
       <div class="scale-hero-text">
         ${kicker(data)}
         <p class="scale-total">${km2(data.total_km2)}</p>
-        <p class="scale-sentence">That's
-          <strong>${count(data.unit.count)} × ${escapeHtml(data.unit.name)}</strong>,
-          burned since 1 January.</p>
+        ${sentence}
         ${caveats(data)}
       </div>
-      <div class="scale-hero-grid">${grid(data.unit)}</div>
+      <div class="scale-hero-grid">${unit ? grid(unit) : ""}</div>
     </div>
     ${countries(data)}
   </section>`;

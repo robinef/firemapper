@@ -12,6 +12,8 @@ import shell from "../scale.html?raw";
 // ?raw, not an import of the config module: importing vite.config pulls in vite
 // and therefore esbuild, which throws an invariant error under jsdom.
 import viteConfig from "../vite.config.ts?raw";
+import entrySource from "../src/scale.ts?raw";
+import renderSource from "../src/scale_render.ts?raw";
 
 import { loadSeason } from "../src/scale";
 import { renderScale, type SeasonData } from "../src/scale_render";
@@ -111,6 +113,19 @@ describe("renderScale", () => {
     expect(el.textContent).not.toContain("×");
   });
 
+  it("still reports a real total whose unit could not be computed", () => {
+    // run.py:170 wraps _attach_units in _safe(..., default=None), so a pick_unit
+    // failure leaves `unit` absent under a positive total and export emits null.
+    // Routing the zero copy on the unit would deny a season that happened.
+    const el = root();
+    renderScale(el, { ...DATA, unit: null });
+    expect(el.querySelector("[data-state]")?.getAttribute("data-state")).toBe("normal");
+    expect(el.textContent).toContain("10,240 km²");
+    expect(el.textContent).not.toContain("No mapped burned areas");
+    // No unit means no honest grid — but the number still stands.
+    expect(el.querySelectorAll("[data-tile]").length).toBe(0);
+  });
+
   it("renders missing data as unavailable, never as a zero", () => {
     const el = root();
     renderScale(el, null);
@@ -178,7 +193,7 @@ describe("renderScale", () => {
 
 /**
  * The page only exists if the build emits it. wrangler.jsonc sets
- * not_found_handling to "single-page-app", so a scale page that failed to build
+ * not_found_handling to "single-page-application", so a scale page that failed to build
  * is not a 404 — the asset layer answers with index.html and a 200, and every
  * test above still passes against a map that is not this page. These guard the
  * two ways that can happen silently.
@@ -199,6 +214,15 @@ describe("scale page shell", () => {
 
   it("is not the map shell", () => {
     expect(shell).not.toContain('id="map"');
+  });
+
+  it("never imports maplibre", () => {
+    // The build output already shows the split (scale-*.js is ~4 kB against the
+    // map's ~1 MB), but that is only checked when someone reads a build log.
+    // ?raw rather than the brief's node:fs: the web tsconfig is DOM-only with
+    // no @types/node, so readFileSync would not typecheck.
+    expect(renderSource).not.toContain("maplibre");
+    expect(entrySource).not.toContain("maplibre");
   });
 });
 
