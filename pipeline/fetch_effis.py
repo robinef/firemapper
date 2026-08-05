@@ -158,7 +158,7 @@ def fetch_effis_ba(
 
     Guaranteed non-raising: a missing or unreadable snapshot yields []."""
     from .fetch_effis_season import snapshot_path
-    from .store import connect
+    from .store import _sql_path, connect
 
     con = None
     try:
@@ -166,11 +166,16 @@ def fetch_effis_ba(
         if not path.exists():
             return []
         con = connect()
+        # NOTE: `limit` is applied by SQL, i.e. BEFORE the per-row guard below,
+        # whereas the old network implementation applied it after dropping
+        # malformed features. So a row the loop skips shrinks the result below
+        # `limit` rather than being backfilled. Only reachable with a
+        # foreign-written snapshot, which degrades to [] anyway.
         rows = con.execute(
             f"""SELECT id, firedate, place,
                        ST_X(ST_Centroid(geometry)) AS lon,
                        ST_Y(ST_Centroid(geometry)) AS lat
-                FROM read_parquet('{path.as_posix()}')
+                FROM read_parquet('{_sql_path(path)}')
                 WHERE firedate IS NOT NULL AND geometry IS NOT NULL
                 ORDER BY area_ha DESC
                 LIMIT {int(limit)}"""
