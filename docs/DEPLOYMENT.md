@@ -144,8 +144,22 @@ order they will actually reach you:
      | jq -r '.layers.events.attempted_at'
    ```
 
-   If that is hours old, the refresh is dead, whatever the cause. Worth an
-   external uptime check; nothing in this repo performs one yet.
+   If that is hours old, the refresh is dead, whatever the cause.
+
+   **The Worker now checks this itself.** After each successful dispatch the
+   scheduled handler reads the manifest from R2 and throws if the newest
+   `attempted_at` is over 90 minutes old, so the cron invocation records an
+   error. That closes the gap a bare dispatch leaves: HTTP 204 only means
+   GitHub *accepted* the request, and a job that then fails or publishes
+   nothing used to leave every invocation reporting "Ok" while the map froze.
+
+   90 minutes rides out one missed cycle (a half-hourly trigger plus a
+   19-minute job) without crying wolf. It is deliberately looser than
+   `MAX_AGE_S["frp"]` of 60 min: that budget says when the UI must stop calling
+   data current, this says when a human should be told the pipeline stopped.
+
+   Still worth an **external** check, since none of this fires if the Worker
+   itself is gone.
 2. **Cloudflare.** The scheduled handler throws on a failed dispatch, so the
    invocation is recorded as an error rather than "Ok" — visible under the
    Worker's Cron Events, and eligible for a Cloudflare notification.

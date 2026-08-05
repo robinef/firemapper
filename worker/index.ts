@@ -87,6 +87,84 @@ export async function dispatchRefresh(
   return { status: response.status, body: body.slice(0, 300) };
 }
 
+const MANIFEST_KEY = "data/manifest.json";
+
+/**
+ * How stale the published data may get before this is a fault, in minutes.
+ *
+ * A healthy cycle publishes every 30 min and the job takes 10.5-18.7 (measured
+ * over 18 h to 2026-08-05), so the manifest is normally under ~50 min old at
+ * the moment a cron tick reads it. One failed cycle puts it near 80. Ninety
+ * therefore rides out a single miss — which happens, and is what the retry and
+ * the six-hourly fallback exist for — while still catching a genuine stall
+ * inside a couple of hours.
+ *
+ * Deliberately NOT tied to MAX_AGE_S["frp"] (60 min). That budget describes
+ * when the UI must stop calling data current; this describes when a human
+ * should be told the pipeline has stopped. Greying a layer is the right
+ * response to one late refresh; waking someone is not.
+ */
+const STALE_AFTER_MIN = 90;
+
+/**
+ * Age of the newest `attempted_at` in the published manifest, in minutes.
+ *
+ * `attempted_at` is the honest signal: the pipeline stamps it on every refresh
+ * regardless of which layers succeeded, so it moves even when every fetch
+ * failed. `observed_at` does not — a feed can be quiet — and `fetched_at` stops
+ * on a failure, which is exactly when the value is needed. It lives per layer
+ * rather than at the top level, so this takes the newest across all of them.
+ *
+ * Returns null when the manifest is absent or unreadable, which the caller
+ * treats as its own kind of broken rather than as "fresh".
+ */
+export async function manifestAgeMin(
+  env: Pick<Env, "DATA">,
+  now: number,
+): Promise<number | null> {
+  const object = await env.DATA.get(MANIFEST_KEY);
+  if (!object) return null;
+  let manifest: { layers?: Record<string, { attempted_at?: string }> };
+  try {
+    manifest = JSON.parse(await new Response(object.body as BodyInit).text());
+  } catch {
+    return null;
+  }
+  const stamps = Object.values(manifest.layers ?? {})
+    .map((l) => Date.parse(l?.attempted_at ?? ""))
+    .filter((t) => Number.isFinite(t));
+  if (!stamps.length) return null;
+  return (now - Math.max(...stamps)) / 60_000;
+}
+
+/**
+ * Throw if the published data has stopped moving.
+ *
+ * A dispatch that returns 204 only proves GitHub ACCEPTED the request. The job
+ * can then fail, time out, or publish nothing, and the previous design had no
+ * way to notice: every cron invocation reported Ok while the map quietly froze.
+ * That is the failure this closes, and it is the one DEPLOYMENT.md admitted
+ * nothing was watching.
+ *
+ * Checked after dispatching, never instead of it — the refresh is the job, the
+ * alarm is a side effect, and a stale manifest is no reason to skip the very
+ * run that might fix it. Throwing here therefore reports a real fault while the
+ * refresh has already been requested.
+ */
+async function assertNotStale(env: Env, now: number): Promise<void> {
+  const age = await manifestAgeMin(env, now);
+  if (age === null) {
+    throw new Error("[refresh] manifest missing or unreadable — nothing is publishing");
+  }
+  if (age > STALE_AFTER_MIN) {
+    throw new Error(
+      `[refresh] data is ${Math.round(age)} min old (limit ${STALE_AFTER_MIN}) — ` +
+        "dispatch is being accepted but the job is not publishing; check the " +
+        "refresh-fast run log",
+    );
+  }
+}
+
 /** Why a dispatch failed, in the terms whoever reads the alert will need. */
 function explain(status: number): string {
   if (status === 401) return " — token invalid or expired";
@@ -255,6 +333,7 @@ export default {
       last = await dispatchRefresh(env.GH_DISPATCH_TOKEN);
       if (last.status === 204) {
         console.log(`[refresh] dispatched refresh-fast (cron ${event?.cron ?? "?"})`);
+        await assertNotStale(env, Date.now());
         return;
       }
       if (last.status < 500) break;

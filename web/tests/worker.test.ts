@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import worker, { dispatchRefresh, type Env } from "../../worker/index";
+import worker, { dispatchRefresh, manifestAgeMin, type Env } from "../../worker/index";
 
 function env(objects: Record<string, string>): Env {
   return {
@@ -157,8 +157,17 @@ describe("worker scheduled refresh trigger", () => {
   it("retries once on a server error, then succeeds", async () => {
     let n = 0;
     const f = stubFetch(() => new Response(null, { status: ++n === 1 ? 502 : 204 }));
+    // A current manifest, so the staleness alarm stays out of a test about
+    // retrying. Without one it throws "nothing is publishing" and this reads
+    // as a retry failure.
+    const fresh = JSON.stringify({
+      layers: { events: { attempted_at: new Date().toISOString() } },
+    });
     try {
-      await worker.scheduled!({}, { ...env({}), GH_DISPATCH_TOKEN: "x" } as Env);
+      await worker.scheduled!({}, {
+        ...env({ "data/manifest.json": fresh }),
+        GH_DISPATCH_TOKEN: "x",
+      } as Env);
       expect(f.calls.length).toBe(2);
     } finally {
       f.restore();
@@ -182,6 +191,106 @@ describe("worker scheduled refresh trigger", () => {
     } finally {
       console.log = spy;
       f.restore();
+    }
+  });
+});
+
+describe("worker staleness alarm", () => {
+  const NOW = Date.parse("2026-08-05T12:00:00Z");
+
+  /** A manifest whose layers were all attempted `minsAgo` minutes before NOW. */
+  function manifest(minsAgo: number): string {
+    const at = new Date(NOW - minsAgo * 60_000).toISOString();
+    return JSON.stringify({
+      layers: { events: { attempted_at: at }, frp: { attempted_at: at } },
+    });
+  }
+
+  function scheduledEnv(objects: Record<string, string>): Env {
+    return { ...env(objects), GH_DISPATCH_TOKEN: "tok" } as Env;
+  }
+
+  /** Accept the dispatch, so only the staleness check can fail the run. */
+  function stubOk() {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
+    return () => void (globalThis.fetch = real);
+  }
+
+  it("reads the NEWEST attempted_at across layers, not an arbitrary one", async () => {
+    // A single stale layer must not raise the alarm on its own: one feed can
+    // fail while the pipeline is publishing perfectly well.
+    const mixed = JSON.stringify({
+      layers: {
+        events: { attempted_at: new Date(NOW - 5 * 60_000).toISOString() },
+        frp: { attempted_at: new Date(NOW - 900 * 60_000).toISOString() },
+      },
+    });
+    expect(await manifestAgeMin(env({ "data/manifest.json": mixed }), NOW)).toBeCloseTo(5, 0);
+  });
+
+  it("treats a missing or unparseable manifest as broken, never as fresh", async () => {
+    // Returning 0 here would make a deleted manifest look like a healthy
+    // refresh — the failure would hide behind the alarm meant to catch it.
+    expect(await manifestAgeMin(env({}), NOW)).toBeNull();
+    expect(await manifestAgeMin(env({ "data/manifest.json": "not json" }), NOW)).toBeNull();
+    expect(
+      await manifestAgeMin(env({ "data/manifest.json": '{"layers":{}}' }), NOW),
+    ).toBeNull();
+  });
+
+  it("throws when dispatch succeeds but nothing has published for too long", async () => {
+    // The whole point: HTTP 204 only means GitHub ACCEPTED the request. Before
+    // this, a job that then failed left every cron invocation reporting "Ok".
+    const restore = stubOk();
+    const realNow = Date.now;
+    Date.now = () => NOW;
+    try {
+      await expect(
+        worker.scheduled!({}, scheduledEnv({ "data/manifest.json": manifest(200) })),
+      ).rejects.toThrow(/200 min old/);
+    } finally {
+      Date.now = realNow;
+      restore();
+    }
+  });
+
+  it("stays quiet through one missed cycle", async () => {
+    // 80 minutes is a single failed half-hourly refresh plus a slow job. Waking
+    // someone for that would train them to ignore the alarm.
+    const restore = stubOk();
+    const realNow = Date.now;
+    Date.now = () => NOW;
+    try {
+      await expect(
+        worker.scheduled!({}, scheduledEnv({ "data/manifest.json": manifest(80) })),
+      ).resolves.toBeUndefined();
+    } finally {
+      Date.now = realNow;
+      restore();
+    }
+  });
+
+  it("still dispatches before it complains", async () => {
+    // The refresh is the job; the alarm is a side effect. Skipping the dispatch
+    // because data looks stale would suppress the very run that fixes it.
+    const calls: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      calls.push(url);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const realNow = Date.now;
+    Date.now = () => NOW;
+    try {
+      await worker
+        .scheduled!({}, scheduledEnv({ "data/manifest.json": manifest(500) }))
+        .catch(() => {});
+      expect(calls.length).toBe(1);
+      expect(calls[0]).toContain("/dispatches");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = real;
     }
   });
 });
