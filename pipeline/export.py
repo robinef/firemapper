@@ -22,7 +22,7 @@ from .events import lifecycle, reactivation_links
 import h3
 
 from .events import METEOSAT_CELL_KM2, METEOSAT_RES
-from .isochrones import isochrone_features
+from .isochrones import FootprintIndex, isochrone_features, open_band_geometry
 from .metrics import CELL_KM2, area_km2, bins_series, local_spread_vectors, movement, status
 
 RECENT_DAYS = 7
@@ -353,16 +353,17 @@ def export(
     # next run can tell what actually changed.
     (gen / TRACK_MAP).write_text(json.dumps(track_map))
 
-    # events.geojson is written LAST of this group: every feature carries the
-    # generation that actually holds its track, and data.ts addresses it
-    # directly. That keeps worker/index.ts out of the request path entirely —
-    # loadTrack swallows a failed fetch and still renders the card, so a wrong
-    # pointer would otherwise be a fire card quietly missing its sparkline.
+    # Every feature carries the generation that actually holds its track, and
+    # data.ts addresses it directly. That keeps worker/index.ts out of the
+    # request path entirely — loadTrack swallows a failed fetch and still
+    # renders the card, so a wrong pointer would otherwise be a fire card
+    # quietly missing its sparkline.
+    #
+    # Stamped here, next to the track map it reads, but events.geojson itself
+    # is written further down: has_footprint needs the isochrone bands, and
+    # those need `pixels`, which is not assembled until after this point.
     for f in feats:
         f["properties"]["track_gen"] = track_map[f["properties"]["id"]][0]
-    (gen / "events.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": feats})
-    )
 
     # The id -> cells projection the NEXT generation needs, written once here so
     # hydrate can fetch one object instead of one per event. A track is ~6 KB
@@ -432,6 +433,28 @@ def export(
     iso_feats = isochrone_features(pixels)
     (gen / "isochrones.geojson").write_text(
         json.dumps({"type": "FeatureCollection", "features": iso_feats})
+    )
+
+    # Does this fire have a footprint outline to hand over to?
+    #
+    # The map fades the dot out above z9.5 because at street level the observed
+    # edge matters more than an abstract point. That is right for a fire the
+    # isochrones drew — and wrong for every other one, which simply vanished:
+    # the open band is interpolated from several detections, so a fire seen as
+    # a single pixel never earns an outline, and single-pixel fires are most of
+    # them. Stamping it here is what lets the map fade only the dots that have
+    # something to fade INTO, instead of hiding fires it cannot redraw.
+    #
+    # This is why events.geojson is written below rather than beside the other
+    # event files: the answer does not exist until the bands have been built,
+    # and `pixels` is not assembled until well after the features are.
+    footprint = FootprintIndex(open_band_geometry(iso_feats))
+    for f in feats:
+        lon, lat = f["geometry"]["coordinates"]
+        f["properties"]["has_footprint"] = footprint.contains(lon, lat)
+
+    (gen / "events.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": feats})
     )
 
     # Wind. `from_deg` is the meteorological convention (where wind comes

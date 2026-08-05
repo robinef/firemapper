@@ -4,6 +4,7 @@ import {
   FIRE_CLASSES,
   addActiveFires,
   addClosedFires,
+  fireFadeExpression,
   setShowAllSizes,
   fireHaloIds,
   fireLayerIds,
@@ -167,5 +168,39 @@ describe("showing every fire size", () => {
     setShowAllSizes(map as never, true);
     expect(ranges["fires-minor"][1]).toBe(9.5);
     expect(ranges["fires-closed-minor"][1]).toBeGreaterThan(9.5);
+  });
+});
+
+describe("high-zoom handover is per fire", () => {
+  // The dot layers used to carry maxzoom 9.5. MapLibre treats maxzoom as
+  // EXCLUSIVE, so at z9.5 every dot stopped drawing — and the only thing left
+  // was the footprint outline, which on the 2026-08-05 data covered just 1388
+  // of 3664 live fires. The other 62% were invisible AND untappable at z10 and
+  // z13, the two zooms cartographic rule 2 names explicitly.
+  it("draws dots past the handover instead of cutting them off", () => {
+    const { map, layers } = fakeMap();
+    addActiveFires(map as never, emptyFC, emptyFC);
+    for (const cls of FIRE_CLASSES) {
+      expect(layers[`fires-${cls}`].maxzoom, `fires-${cls} must not be cut off`)
+        .toBeUndefined();
+      expect(layers[`fire-halo-${cls}`].maxzoom, `fire-halo-${cls} must stay tappable`)
+        .toBeUndefined();
+    }
+  });
+
+  it("fades out only the fires that have an outline to fade into", () => {
+    // The whole point of has_footprint. A blanket fade would take the
+    // uncovered fires down with the covered ones, which is the bug wearing a
+    // different hat: they would be faint instead of absent, and still lost.
+    const fade = fireFadeExpression() as unknown[];
+    expect(fade[0]).toBe("interpolate");
+    const stops = fade.slice(3);
+    const z11 = stops[stops.indexOf(11) + 1] as unknown[];
+    expect(z11[0], "the z11 stop must branch per fire, not apply to all").toBe("case");
+    expect(z11[1]).toEqual(["get", "has_footprint"]);
+    // Covered: gone, so the observed edge speaks for it without competition.
+    expect(z11[2]).toBe(0);
+    // Uncovered: unchanged from the z9.5 stop — the dot is all it has.
+    expect(z11[3]).toEqual(fade[stops.indexOf(9.5) + 4]);
   });
 });

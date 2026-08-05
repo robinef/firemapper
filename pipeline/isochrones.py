@@ -211,3 +211,73 @@ def isochrone_features(points: list[dict], bands: list[int] | None = None) -> li
         {"type": "Feature", "geometry": b["geometry"], "properties": {"max_age": b["max_age"]}}
         for b in build_isochrones(points, bands)
     ]
+
+
+def _in_ring(lon: float, lat: float, ring: list) -> bool:
+    """Ray-casting crossing test for one linear ring."""
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+class FootprintIndex:
+    """Point-in-polygon test against the open-ended arrival band.
+
+    The frontend hands the fire dot over to this footprint outline at high
+    zoom, so a fire that is NOT inside it has nothing left to draw and simply
+    disappears. That is most of them: the band is interpolated from several
+    detections, so a fire seen as a single pixel — the dominant case — never
+    produces one. Stamping membership here lets the map fade only the dots
+    that have an outline to fade INTO.
+
+    Pure Python on purpose: shapely would do this in one call but is not a
+    dependency, and adding a compiled one to answer a boolean is a poor trade.
+    A bounding box per polygon keeps it cheap — nearly every (fire, polygon)
+    pair is rejected on four comparisons.
+    """
+
+    def __init__(self, geometry: dict | None) -> None:
+        self._polys: list[list] = []
+        self._boxes: list[tuple[float, float, float, float]] = []
+        if not geometry:
+            return
+        coords = geometry.get("coordinates") or []
+        polys = coords if geometry.get("type") == "MultiPolygon" else [coords]
+        for poly in polys:
+            if not poly or not poly[0]:
+                continue
+            xs = [p[0] for p in poly[0]]
+            ys = [p[1] for p in poly[0]]
+            self._polys.append(poly)
+            self._boxes.append((min(xs), min(ys), max(xs), max(ys)))
+
+    def __len__(self) -> int:
+        return len(self._polys)
+
+    def contains(self, lon: float, lat: float) -> bool:
+        for poly, (x0, y0, x1, y1) in zip(self._polys, self._boxes):
+            if lon < x0 or lon > x1 or lat < y0 or lat > y1:
+                continue
+            if not _in_ring(lon, lat, poly[0]):
+                continue
+            # Inside the exterior ring — but a hole puts it back outside.
+            if any(_in_ring(lon, lat, hole) for hole in poly[1:]):
+                continue
+            return True
+        return False
+
+
+def open_band_geometry(features: list[dict]) -> dict | None:
+    """The open-ended band's geometry, which is what the map draws as the
+    footprint. Returns None when this run produced no bands at all."""
+    for f in features:
+        if (f.get("properties") or {}).get("max_age") == OPEN_BAND:
+            return f.get("geometry")
+    return None

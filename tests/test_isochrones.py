@@ -160,3 +160,59 @@ def test_features_carry_max_age():
     feats = isochrone_features(_line(), bands=[720])
     assert feats[0]["properties"]["max_age"] == 720
     assert feats[0]["geometry"]["type"] == "MultiPolygon"
+
+
+def test_footprint_index_matches_polygon_interior():
+    from pipeline.isochrones import FootprintIndex
+
+    square = [[[0.0, 0.0], [0.0, 2.0], [2.0, 2.0], [2.0, 0.0], [0.0, 0.0]]]
+    idx = FootprintIndex({"type": "MultiPolygon", "coordinates": [square]})
+    assert len(idx) == 1
+    assert idx.contains(1.0, 1.0)
+    assert not idx.contains(3.0, 3.0)
+    # On the far side of the bounding box in each direction.
+    assert not idx.contains(-1.0, 1.0)
+    assert not idx.contains(1.0, -1.0)
+
+
+def test_footprint_index_treats_a_hole_as_outside():
+    from pipeline.isochrones import FootprintIndex
+
+    # A burned ring with an unburned centre: a fire whose centroid lands in the
+    # hole has no outline around it, so it must NOT be marked as covered.
+    holed = [
+        [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [0.0, 0.0]],
+        [[1.0, 1.0], [1.0, 3.0], [3.0, 3.0], [3.0, 1.0], [1.0, 1.0]],
+    ]
+    idx = FootprintIndex({"type": "MultiPolygon", "coordinates": [holed]})
+    assert idx.contains(0.5, 0.5)
+    assert not idx.contains(2.0, 2.0)
+
+
+def test_footprint_index_is_empty_without_bands():
+    from pipeline.isochrones import FootprintIndex
+
+    # A run that produced no isochrones at all must mark every fire as having
+    # no footprint, not crash — otherwise one empty band file takes the export
+    # down. Empty means "nothing to hand over to", which is the safe answer:
+    # the map then keeps drawing every dot.
+    for geometry in (None, {"type": "MultiPolygon", "coordinates": []}):
+        idx = FootprintIndex(geometry)
+        assert len(idx) == 0
+        assert not idx.contains(1.0, 1.0)
+
+
+def test_open_band_geometry_picks_the_open_ended_band():
+    from pipeline.isochrones import OPEN_BAND, open_band_geometry
+
+    feats = [
+        {"properties": {"max_age": 60}, "geometry": {"type": "MultiPolygon", "coordinates": [1]}},
+        {
+            "properties": {"max_age": OPEN_BAND},
+            "geometry": {"type": "MultiPolygon", "coordinates": [2]},
+        },
+    ]
+    # The open band is what the map draws as the footprint; picking a tighter
+    # band would mark fires as covered that the outline never reaches.
+    assert open_band_geometry(feats)["coordinates"] == [2]
+    assert open_band_geometry([]) is None

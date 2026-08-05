@@ -16,7 +16,9 @@ import type * as maplibregl from "maplibre-gl";
  *   z4–6  one proportional symbol per fire event
  *   z7+   name + area labels join
  *   z10+  the symbol hands over to the observed footprint outline — at
- *         street level the edge matters, not an abstract dot.
+ *         street level the edge matters, not an abstract dot. Only where
+ *         there IS an outline: a fire the isochrones never drew keeps its
+ *         dot at every zoom, because otherwise it has nothing at all.
  */
 
 export const FIRE_HUE = "#ff5a1f";
@@ -48,7 +50,22 @@ export function fireOpacityExpression(fade = 1): unknown {
 }
 
 /** Top-level zoom interpolate whose stops carry the status-dependent value:
- * full strength until z9.5, handing over to the footprint by z11. */
+ * full strength until z9.5, then handing over to the footprint by z11 — but
+ * ONLY for a fire that has a footprint to hand over to.
+ *
+ * `has_footprint` is stamped per event by the pipeline, because the answer is
+ * geometric and cannot be derived here: the outline is one merged MultiPolygon
+ * with no per-fire identity. It matters because the open band is interpolated
+ * from several detections, so a fire seen as a single pixel never earns one —
+ * and single-pixel fires are most of them. On the 2026-08-05 data only 1388 of
+ * 3664 live fires fell inside the outline.
+ *
+ * This layer used to carry maxzoom 9.5, which cut the dots off before this
+ * fade could run at all: the stops were unreachable, so the interpolate
+ * clamped to its first, and the dots simply vanished at z9.5 — taking 62% of
+ * fires off the map entirely at z10 and z13. Cartographic rule 2 names those
+ * exact zooms as ones the symbology must stay readable at.
+ */
 export function fireFadeExpression(): unknown {
   return [
     "interpolate",
@@ -56,8 +73,11 @@ export function fireFadeExpression(): unknown {
     ["zoom"],
     9.5,
     fireOpacityExpression(1),
+    // A covered fire goes to nothing, leaving the observed edge to speak for
+    // it. An uncovered one stays at full strength, because the dot is the only
+    // record of it that exists.
     11,
-    fireOpacityExpression(0.15),
+    ["case", ["get", "has_footprint"], 0, fireOpacityExpression(1)],
   ];
 }
 
@@ -83,8 +103,10 @@ export function addActiveFires(
   map.addSource("fires", { type: "geojson", data: events });
   map.addSource("fire-footprint", { type: "geojson", data: footprint });
 
-  // Observed footprint — the ONLY fire mark above z9, so the symbol and its
-  // own outline never overlap. Fades fully in by z9.
+  // Observed footprint. Above z9 it is the only mark for a fire it covers,
+  // so the symbol and its own outline never compete — the dot fades to
+  // nothing by z11 for exactly those fires. Fires it does not cover keep
+  // their dot instead. Fades fully in by z9.
   map.addLayer({
     id: "fire-footprint-fill",
     type: "fill",
@@ -107,8 +129,8 @@ export function addActiveFires(
     },
   });
 
-  // Proportional symbol per size class, each revealed at its own zoom and all
-  // gone by z9 where the footprint takes over. Its invisible 44px tap-target
+  // Proportional symbol per size class, each revealed at its own zoom and
+  // faded out past z9.5 wherever the footprint takes over. Its invisible 44px tap-target
   // halo is added right before it, one per class with the SAME filter and
   // zoom range as the dot it backs — a single halo covering every class (the
   // original design) would sit under classes not yet revealed at the current
@@ -126,7 +148,11 @@ export function addActiveFires(
       type: "circle",
       source: "fires",
       minzoom: minz,
-      maxzoom: 9.5,
+      // No maxzoom: the dot it backs now survives past z9.5 for any fire the
+      // isochrones never drew, and a visible fire that cannot be tapped is
+      // worse than one that is merely small. Covered fires keep a tap target
+      // here too, which is harmless — fire-footprint-fill is already a click
+      // target over the same ground and both open the same card.
       filter: filter as never,
       paint: { "circle-radius": 22, "circle-color": "rgba(0,0,0,0)" },
     });
@@ -135,7 +161,8 @@ export function addActiveFires(
       type: "circle",
       source: "fires",
       minzoom: minz,
-      maxzoom: 9.5,
+      // No maxzoom — see fireFadeExpression. The handover is done with
+      // opacity, per fire, so a fire with no outline is never cut off.
       filter: filter as never,
       paint: {
         "circle-color": FIRE_HUE,
