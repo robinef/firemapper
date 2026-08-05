@@ -76,8 +76,13 @@ export default defineConfig({
   plugins: [maplibreAssets()],
   build: {
     rollupOptions: {
+      // The KEY names the emitted chunk: "index" keeps the map's entry at
+      // assets/index-<hash>.js. With a single entry rollup derived that name
+      // from the HTML file; naming this key "main" instead renamed the chunk
+      // and broke CI's maplibre assertion, which locates the entry by globbing
+      // index-*.js and silently resolved to "." when it matched nothing.
       input: {
-        main: entry("./index.html"),
+        index: entry("./index.html"),
         scale: entry("./scale.html"),
       },
       // Not bundled. `output.paths` rewrites the bare specifier to the copied
