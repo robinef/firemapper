@@ -163,9 +163,12 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     )
     if season:
         _safe(lambda: _attach_units(season), default=None, label="season-units")
+        # .get() throughout: this is the only line in the block that would read
+        # the dict directly, and a log line must never be what kills the run.
         print(
-            f"[info] season {season['season_year']}: {season['total_km2']} km2 "
-            f"over {season['area_count']} mapped burn areas"
+            f"[info] season {season.get('season_year')}: "
+            f"{season.get('total_km2')} km2 over "
+            f"{season.get('area_count')} mapped burn areas"
         )
     imagery_result = attempt(
         lambda: build_imagery(settings, scar_events, now, places, extra_scars=effis),

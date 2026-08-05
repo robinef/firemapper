@@ -61,6 +61,11 @@ def captured(monkeypatch, tmp_path):
     monkeypatch.setattr(run, "fetch_aircraft", lambda *a, **k: [])
     monkeypatch.setattr(run, "build_imagery", lambda *a, **k: None)
     monkeypatch.setattr(run, "fetch_effis_ba", lambda *a, **k: [])
+    # Defaulted here, not per test: under a fresh tmp_path there is no snapshot,
+    # so should_fetch() says yes and the real EFFIS WFS request fires. A test
+    # that forgets to stub it would silently go to the network. Tests that care
+    # about the status override this afterwards.
+    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
 
     def fake_export(*args, **kwargs):
         seen.update(kwargs)
@@ -163,10 +168,16 @@ def test_the_total_and_every_country_get_a_scale_unit(monkeypatch, captured):
     assert [c["unit"]["name"] for c in season["countries"]] == ["Paris", "Paris"]
 
 
-def test_a_zero_season_gets_no_unit_and_does_not_crash(monkeypatch, captured):
+def test_a_zero_season_gets_no_unit_and_does_not_crash(monkeypatch, capsys, captured):
     """pick_unit raises on a non-positive total by design — zero is a separate
-    page state, not a grid of no tiles."""
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    page state, not a grid of no tiles.
+
+    The stderr assertion is what makes this test bite. Without it, deleting the
+    guard still passes: pick_unit would raise, _safe would swallow it, and the
+    unit would be absent for that reason instead of by decision. Asserting
+    nothing was swallowed distinguishes "we declined to pick a unit" from
+    "we crashed picking one and someone caught it".
+    """
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: a_season(
         total_km2=0.0, area_count=0, countries=[],
     ))
@@ -175,24 +186,31 @@ def test_a_zero_season_gets_no_unit_and_does_not_crash(monkeypatch, captured):
 
     assert season["total_km2"] == 0.0
     assert season.get("unit") is None
+    assert "season-units failed" not in capsys.readouterr().err
 
 
-def test_a_country_rounding_to_zero_does_not_crash_the_run(monkeypatch, captured):
+def test_a_country_rounding_to_zero_does_not_crash_the_run(monkeypatch, capsys, captured):
     """season_totals rounds each country independently of the total, so a 4 ha
-    perimeter becomes 0.0 km2 while the season total is healthy. Calling
-    pick_unit on it raises, and nothing above catches it."""
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    perimeter becomes 0.0 km2 while the season total is healthy.
+
+    The zero country is deliberately FIRST. Ordered last, this test passes with
+    the guard deleted — the total and Spain would already have their units
+    before pick_unit raised and _safe swallowed it, leaving every assertion
+    true. First, an unguarded call aborts the loop and Spain silently loses its
+    unit, which is what the assertions below catch.
+    """
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: a_season(countries=[
-        {"name": "Spain", "km2": 2940.1, "areas": 402},
         {"name": "Malta", "km2": 0.0, "areas": 1},
+        {"name": "Spain", "km2": 2940.1, "areas": 402},
     ]))
 
     season = captured()["season"]
 
     assert season["unit"]["name"] == "Greater London"
     by_name = {c["name"]: c for c in season["countries"]}
-    assert by_name["Spain"]["unit"]["name"] == "Paris"
     assert by_name["Malta"].get("unit") is None
+    assert by_name["Spain"]["unit"]["name"] == "Paris", "the loop must not abort"
+    assert "season-units failed" not in capsys.readouterr().err
 
 
 def test_no_snapshot_yields_a_null_season(monkeypatch, captured):

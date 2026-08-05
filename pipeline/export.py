@@ -231,6 +231,11 @@ def export(
     settings: Settings, events, liveness, places, alerts, now,
     live_frp=None, frp_points=None, wind=None, aircraft=None,
     imagery=None, timeline=None, day_slices=None, results=None,
+    # Accepted so the orchestrator can hand the season over from the run it was
+    # computed in. Task 9 renders them (season.json + a manifest layer entry);
+    # until then they are deliberately unused, which keeps this signature
+    # backward-compatible and every existing caller working.
+    season=None, season_status: str = "unavailable",
 ) -> Path:
     out = settings.out_dir
     results = results or {}
