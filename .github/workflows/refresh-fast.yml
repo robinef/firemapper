@@ -20,7 +20,11 @@ on:
   # the cadence gets LESS regular.
   #
   # Six-hourly still catches a dead Worker or an expired token within one cycle,
-  # which is the job. Offset from refresh-full's ":07" so they do not collide.
+  # which is the job. ":37" clears refresh-full's ":07" outright. It does still
+  # land inside a half-hourly Worker run (":30" plus a 13-min median), which is
+  # accepted rather than designed out: `queue: max` makes that a queued run, not
+  # a discarded one, so the cost is one redundant refresh four times a day — the
+  # premium on insurance that has to fire whether or not the Worker is alive.
   schedule:
     - cron: "37 */6 * * *"
   workflow_dispatch:

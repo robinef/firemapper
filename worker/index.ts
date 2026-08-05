@@ -90,7 +90,10 @@ export async function dispatchRefresh(
 /** Why a dispatch failed, in the terms whoever reads the alert will need. */
 function explain(status: number): string {
   if (status === 401) return " — token invalid or expired";
-  if (status === 403) return " — token lacks Actions: write";
+  // NOT simply "wrong scope": GitHub also answers 403 when a rate limit is
+  // exhausted. Asserting one of the two would send a reader chasing the wrong
+  // fault half the time; the body appended by the caller says which it is.
+  if (status === 403) return " — token lacks Actions: write, or rate limited";
   if (status === 404) return " — repo or workflow path wrong, or token cannot see it";
   if (status === 422) return " — bad ref, or the workflow is disabled";
   return "";
