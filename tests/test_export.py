@@ -1,10 +1,17 @@
 import json
+import shutil
 from datetime import timedelta
 
 from pipeline.config import load_settings
 from pipeline.events import cluster
 from pipeline.events import METEOSAT_CELL_KM2
-from pipeline.export import export, prune_generations, size_class, validate_generation
+from pipeline.export import (
+    _previous_ids_cells,
+    export,
+    prune_generations,
+    size_class,
+    validate_generation,
+)
 from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
 
@@ -198,3 +205,97 @@ def test_export_sizes_on_distinct_cells_not_on_detection_count(tmp_path):
     assert props["size_class"] == "minor", (
         "a single Meteosat pixel is not a 1000-acre fire, however often it is seen"
     )
+
+
+def test_generation_carries_a_track_index(tmp_path):
+    """Every generation publishes the id -> cells projection its successor needs.
+
+    `_previous_ids_cells` is the only consumer of a previous generation's
+    tracks, and it wants two of the five keys in a ~6 KB track file. Writing
+    that projection once, at export, is what lets hydrate skip ~9300 downloads.
+    """
+    s = _settings(tmp_path)
+    ev = cluster([hs(45.0, 8.0, T(20, 0)), hs(45.012, 8.0, T(20, 6))], now=T(20, 12))
+    gen = export(s, ev, {}, [], [], now=T(20, 12))
+
+    index = json.loads((gen / "tracks_index.json").read_text())
+    assert set(index) == set(ev)
+    # The projection must agree with the tracks it replaces, key for key.
+    for eid in ev:
+        track = json.loads((gen / "tracks" / f"{eid}.json").read_text())
+        assert index[eid] == track["cells"]
+
+
+def test_track_index_is_preferred_over_reading_every_track(tmp_path):
+    s = _settings(tmp_path)
+    ev = cluster([hs(45.0, 8.0, T(20, 0))], now=T(20, 12))
+    gen = export(s, ev, {}, [], [], now=T(20, 12))
+
+    # Prove the index is what gets read: contradict the tracks on disk and the
+    # index must win. If this passes with the tracks deleted but fails here,
+    # the fallback is being used and hydrate's saving is imaginary.
+    (gen / "tracks_index.json").write_text(json.dumps({"sentinel": ["8811aaa"]}))
+    assert _previous_ids_cells(s.out_dir) == {"sentinel": {"8811aaa"}}
+
+
+def test_track_index_falls_back_to_tracks_when_absent(tmp_path):
+    """The generation live at deploy time has no index, and hydrate downloads
+    its tracks precisely because of that. Losing the fallback would blank the
+    merge lineage for exactly one generation — silently."""
+    s = _settings(tmp_path)
+    ev = cluster([hs(45.0, 8.0, T(20, 0)), hs(45.012, 8.0, T(20, 6))], now=T(20, 12))
+    gen = export(s, ev, {}, [], [], now=T(20, 12))
+    (gen / "tracks_index.json").unlink()
+
+    prev = _previous_ids_cells(s.out_dir)
+    assert set(prev) == set(ev)
+    for eid in ev:
+        assert prev[eid] == set(json.loads((gen / "tracks" / f"{eid}.json").read_text())["cells"])
+
+
+def test_merge_lineage_survives_a_tracks_free_hydrate(tmp_path):
+    """End-to-end guard at the CALL SITE, not the helper.
+
+    This is the same shape hydrate now produces: a previous generation whose
+    tracks/ was never downloaded. `merged` lineage is the only consumer of
+    those cells, so if the index is not wired into export() this test — and
+    only this test — catches it. A helper-level test passes either way.
+    """
+    s = _settings(tmp_path)
+    a, c = [hs(45.0, 8.0, T(20, 0))], [hs(45.012, 8.0, T(20, 6))]
+    ev0 = cluster(a + c, now=T(20, 12))
+    assert len(ev0) == 2
+    gen0 = export(s, ev0, {}, [], [], now=T(20, 12))
+
+    # Exactly what hydrate leaves behind once it skips the tracks prefix.
+    shutil.rmtree(gen0 / "tracks")
+
+    ev1 = cluster(a + c + [hs(45.005, 8.0, T(20, 12))], now=T(21, 0))
+    assert len(ev1) == 1
+    gen1 = export(s, ev1, {}, [], [], now=T(21, 0))
+    lineage = json.loads((gen1 / "lineage.json").read_text())
+    gone = set(ev0) - set(ev1)
+    assert len(gone) == 1
+    assert lineage["merged"] == {gone.pop(): next(iter(ev1))}
+
+
+def test_a_corrupt_track_index_is_refused_before_publish(tmp_path):
+    """The validator's asymmetry, pinned.
+
+    Hydrate skips a generation's tracks exactly when the index is present, so
+    an unparseable index is trusted and then read by the NEXT refresh, which
+    dies. Refusing to publish keeps the previous consistent pair live.
+
+    A MISSING index is the opposite: nothing is skipped, the tracks are read as
+    before. Failing a run over that would turn a harmless state into an outage.
+    """
+    s = _settings(tmp_path)
+    ev = cluster([hs(45.0, 8.0, T(20, 0))], now=T(20, 12))
+    gen = export(s, ev, {}, [], [], now=T(20, 12))
+    assert validate_generation(gen) == []
+
+    (gen / "tracks_index.json").write_text("{not json")
+    assert validate_generation(gen) == ["invalid json: tracks_index.json"]
+
+    (gen / "tracks_index.json").unlink()
+    assert validate_generation(gen) == []

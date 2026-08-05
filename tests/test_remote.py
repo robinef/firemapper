@@ -35,8 +35,12 @@ class FakeS3:
         # of call COUNT, not bytes, so that is what the tests assert on.
         self.delete_calls = 0
         self.list_calls = 0
+        # Same reasoning on the read side: hydrate is bounded by how many
+        # objects it asks for, not how many bytes come back.
+        self.fetched: list[str] = []
 
     def get_object(self, Bucket, Key):
+        self.fetched.append(Key)
         if Key not in self.objects:
             raise FileNotFoundError(Key)
         return {"Body": _Body(self.objects[Key])}
@@ -376,3 +380,63 @@ def test_prune_falls_back_when_batch_delete_is_rejected(tmp_path):
 
     assert not [k for k in client.objects if k.startswith("data/gen-0/")]
     assert "data/gen-1/events.geojson" in client.objects
+
+
+def _generation_objects(gen: str, tracks: int) -> dict[str, bytes]:
+    """A published generation the shape production actually has: a handful of
+    layer files and thousands of per-event tracks."""
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen, "archive": archive_key(gen)}).encode(),
+        f"data/{gen}/events.geojson": b'{"type":"FeatureCollection","features":[]}',
+        f"data/{gen}/frp.geojson": b'{"type":"FeatureCollection","features":[]}',
+        f"data/{gen}/wind.geojson": b'{"type":"FeatureCollection","features":[]}',
+        archive_key(gen): b"PAR1",
+    }
+    for i in range(tracks):
+        objects[f"data/{gen}/tracks/e{i:05d}.json"] = json.dumps(
+            {"id": f"e{i:05d}", "series": [], "cells": ["8811aaa"], "cell_bins": {}}
+        ).encode()
+    objects[f"data/{gen}/tracks_index.json"] = json.dumps(
+        {f"e{i:05d}": ["8811aaa"] for i in range(tracks)}
+    ).encode()
+    return objects
+
+
+def test_hydrate_skips_tracks_when_the_generation_carries_an_index(tmp_path):
+    """Round-trip COUNT is what bounds hydrate, exactly as it bounds prune.
+
+    A generation is ~9300 objects and 9280 of them are tracks whose only
+    consumer wants `id` and `cells` — the two fields tracks_index.json already
+    carries. Downloading them cost 320s of a 16-minute refresh. This asserts on
+    the call count, because bytes were never the constraint.
+    """
+    gen = "gen-20260805T000000Z"
+    client = FakeS3(_generation_objects(gen, tracks=2000))
+    settings = _settings(tmp_path)
+
+    assert hydrate(settings, client) == gen
+
+    fetched = [k for k in client.fetched if k.startswith(f"data/{gen}/")]
+    assert not any("/tracks/" in k for k in fetched), "hydrate still walks every track"
+    # Layer files must still arrive: carry-forward copies them when a fetch fails.
+    assert f"data/{gen}/frp.geojson" in fetched
+    assert f"data/{gen}/tracks_index.json" in fetched
+    assert len(fetched) < 20, f"expected a handful of objects, got {len(fetched)}"
+    # The archive is the other half of hydrate's contract.
+    assert (settings.data_dir / "raw" / "hotspots.parquet").read_bytes() == b"PAR1"
+
+
+def test_hydrate_still_restores_tracks_without_an_index(tmp_path):
+    """The generation live at deploy time predates the index. Skipping its
+    tracks anyway would hand export() an empty previous-cells map, and the
+    merge lineage would silently vanish for one generation."""
+    gen = "gen-20260805T000000Z"
+    objects = _generation_objects(gen, tracks=50)
+    del objects[f"data/{gen}/tracks_index.json"]
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    assert hydrate(settings, client) == gen
+
+    restored = list((settings.out_dir / gen / "tracks").glob("*.json"))
+    assert len(restored) == 50
