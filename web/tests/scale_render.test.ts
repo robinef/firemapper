@@ -193,6 +193,98 @@ describe("renderScale", () => {
 });
 
 /**
+ * `status` was declared on SeasonData and read by nothing, so the page had no
+ * channel at all for "EFFIS was unreachable". With the as-of date now honest
+ * (it is the snapshot's poll time, not the export clock), a failed run shows a
+ * date that quietly stops moving and says nothing about why.
+ *
+ * Both directions are asserted. A test that only checks the stale case passes
+ * just as well against a line rendered unconditionally, which would tell every
+ * reader of a perfectly healthy page that the data could not be fetched.
+ */
+describe("reachability", () => {
+  it("says so when EFFIS could not be reached", () => {
+    const el = root();
+    renderScale(el, { ...DATA, status: "stale" });
+    expect(el.querySelector("[data-stale]")).not.toBeNull();
+    expect(el.querySelector("[data-stale]")?.textContent).toContain("could not be reached");
+    expect(el.textContent).toContain("may be incomplete");
+  });
+
+  it("stays silent on a healthy run", () => {
+    for (const status of ["fresh", "reused"]) {
+      const el = root();
+      renderScale(el, { ...DATA, status });
+      expect(el.querySelector("[data-stale]")).toBeNull();
+      expect(el.textContent).not.toContain("could not be reached");
+    }
+  });
+
+  it("keeps the warning next to the date it qualifies", () => {
+    // The date is the thing the warning is about: a stale run's "as of" is
+    // precisely the date that stopped advancing. Split apart, a reader can
+    // take the date at face value and never meet the caveat.
+    const el = root();
+    renderScale(el, { ...DATA, status: "stale" });
+    const asof = el.querySelector("[data-asof]");
+    expect(asof?.textContent).toContain("12 Jul 2026");
+    expect(asof?.querySelector("[data-stale]")).not.toBeNull();
+  });
+
+  it("still warns over a zero total, where a failed fetch matters most", () => {
+    const el = root();
+    renderScale(el, {
+      ...DATA, status: "stale", total_km2: 0, area_count: 0, unit: null, countries: [],
+    });
+    expect(el.querySelector("[data-state]")?.getAttribute("data-state")).toBe("zero");
+    expect(el.querySelector("[data-stale]")).not.toBeNull();
+  });
+});
+
+/**
+ * The caption has to state the scope the number was actually computed over.
+ * season.py's allowlist deliberately omits Russia and Turkey — EFFIS covers
+ * both — so their area lands in `unassigned_count`. A caption reading only
+ * "Burned in Europe" over that total claims more than the figure supports, and
+ * an exclusion line reading "excluded for a missing size or country" reports
+ * that deliberate scope as if it were data we had lost.
+ */
+describe("scope", () => {
+  it("states the exclusions in the caption, not just 'Europe'", () => {
+    const el = root();
+    renderScale(el, DATA);
+    const kicker = el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " ");
+    expect(kicker).toContain("excluding Russia and Turkey");
+    expect(kicker).toContain("2026 season");
+  });
+
+  it("captions the zero state with the same scope", () => {
+    const el = root();
+    renderScale(el, { ...DATA, total_km2: 0, area_count: 0, unit: null, countries: [] });
+    expect(el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " "))
+      .toContain("excluding Russia and Turkey");
+  });
+
+  it("does not report deliberately out-of-scope countries as missing data", () => {
+    const el = root();
+    renderScale(el, DATA);
+    const text = el.textContent?.replace(/\s+/g, " ") ?? "";
+    expect(text).not.toContain("excluded for a missing size or country");
+    // Names them, so a reader can tell chosen scope from a genuine gap.
+    expect(text).toContain("Russia, Turkey and North Africa");
+    expect(text).toContain("3 mapped areas");
+  });
+
+  it("omits the exclusion line entirely when nothing was excluded", () => {
+    const el = root();
+    renderScale(el, { ...DATA, unassigned_count: 0 });
+    const text = el.textContent?.replace(/\s+/g, " ") ?? "";
+    expect(text).not.toContain("Russia, Turkey and North Africa");
+    expect(text).not.toContain("mapped areas sit outside");
+  });
+});
+
+/**
  * The page only exists if the build emits it and something links to it.
  *
  * wrangler.jsonc sets not_found_handling to "single-page-application", so a

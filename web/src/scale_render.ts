@@ -146,8 +146,17 @@ function caveats(data: SeasonData): string {
     `${data.area_count.toLocaleString("en-GB")} mapped burn areas.`,
   ];
   if (data.unassigned_count > 0) {
-    parts.push(`${data.unassigned_count.toLocaleString("en-GB")} excluded for a
-      missing size or country.`);
+    // NOT "excluded for a missing size or country". This bucket is mostly
+    // DELIBERATE: season.py's allowlist omits Russia, Turkey and the Maghreb,
+    // and EFFIS covers all of them, so their perimeters land here by design.
+    // Calling that a defect reads as data we lost rather than scope we chose.
+    //
+    // "the countries counted here" rather than "that scope", because the
+    // nearest antecedent in this paragraph is the 30 ha floor — "that scope"
+    // would read as a size rule rather than a geographic one.
+    parts.push(`${data.unassigned_count.toLocaleString("en-GB")} mapped areas sit
+      outside the countries counted here — Russia, Turkey and North Africa — or
+      carry no usable size or country.`);
   }
   if (data.undated_count > 0) {
     parts.push(`${data.undated_count.toLocaleString("en-GB")} undated rows sit
@@ -155,11 +164,36 @@ function caveats(data: SeasonData): string {
   }
 
   return `<p class="scale-caveat">${parts.join(" ")}</p>
-    <p class="scale-asof" data-asof>EFFIS archive as of ${escapeHtml(asOf(data.fetched_at))}</p>`;
+    <p class="scale-asof" data-asof>EFFIS archive as of ${escapeHtml(asOf(data.fetched_at))}${staleNote(data)}</p>`;
 }
 
+/**
+ * The only channel the page has for "EFFIS was unreachable".
+ *
+ * `status` is the orchestrator's word (run.py): "fresh" polled successfully,
+ * "reused" was inside the 6-hour gate, "stale" means the fetch was attempted
+ * and failed and we are serving the snapshot we already had. Only the last of
+ * those is worth a reader's attention, and it needs saying: with the as-of
+ * date now honest, a stale run shows a date that quietly recedes with no
+ * explanation for why it stopped moving.
+ *
+ * Rendered inside the as-of line rather than as its own block, because the
+ * date is exactly the thing it qualifies.
+ */
+function staleNote(data: SeasonData): string {
+  if (data.status !== "stale") return "";
+  return ` · <span data-stale>EFFIS could not be reached on the last check, so
+    this total may be incomplete.</span>`;
+}
+
+/**
+ * The scope, stated. season.py's allowlist deliberately omits Russia and
+ * Turkey; a caption reading only "Burned in Europe" over a total that excludes
+ * them is a claim the number does not support.
+ */
 function kicker(data: SeasonData): string {
-  return `<p class="scale-kicker">Burned in Europe · ${escapeHtml(data.season_year)} season</p>`;
+  return `<p class="scale-kicker">Burned in Europe, excluding Russia and Turkey
+    · ${escapeHtml(data.season_year)} season</p>`;
 }
 
 export function renderScale(root: HTMLElement, data: SeasonData | null): void {
