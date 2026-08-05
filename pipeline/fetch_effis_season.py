@@ -153,41 +153,55 @@ def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS
         newest = con.execute(
             f"SELECT max(fetched_at) FROM read_parquet('{path.as_posix()}')"
         ).fetchone()[0]
+        con.close()
     except Exception:  # noqa: BLE001 - an unreadable snapshot is worth refetching
         return True
     if newest is None:
         return True
-    if newest.tzinfo is None:
-        newest = newest.replace(tzinfo=timezone.utc)
-    return (now - newest).total_seconds() >= min_age_hours * 3600
+    try:
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        return (now - newest).total_seconds() >= min_age_hours * 3600
+    except (TypeError, AttributeError):  # naive now or non-datetime fetched_at
+        return True
 
 
 def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
-    """Every feature of the current season, or None if the response is
-    unusable — down, malformed, or INCOMPLETE. A truncated season is worse
-    than a slightly old one."""
+    """Every feature of the current season, or None if the response is unusable
+    — down, malformed, or INCOMPLETE. A truncated season is worse than a
+    slightly old one, so anything we cannot prove complete is rejected.
+
+    Completeness is judged on features actually RECEIVED, not on the server's
+    own numberReturned (which may overstate what it sent) and not on rows KEPT
+    (rows_from_features legitimately drops untrusted geometry)."""
     rows: list[dict] = []
+    seen = 0
     start = 0
     for _ in range(MAX_PAGES):
         text = http_get(_page_url(start))
         features = _features_from_text(text)
-        if not features:
-            return None if start == 0 else rows
         try:
             payload = json.loads(text)
         except ValueError:
             payload = {}
-        matched, returned = completeness(payload)
+        matched, _returned = completeness(payload)
+
+        if not features:
+            if start == 0:
+                return None  # down, exception report, or genuinely nothing
+            if matched is not None and seen < matched:
+                return None  # server promised more and then stopped: truncated
+            return rows  # nothing left to page, and nothing outstanding
+
+        seen += len(features)
         rows.extend(rows_from_features(features))
-        advanced = returned if returned else len(features)
-        start += advanced
-        if matched is None:
-            return rows  # server reports no total; one pass is all we can verify
-        if start >= matched:
+        start += len(features)  # advance by what ARRIVED, never by numberReturned
+
+        if matched is not None and seen >= matched:
             return rows
-        if advanced == 0:
-            return None  # claims more but will not advance: incomplete
-    return None
+        if matched is None and len(features) < PAGE_SIZE:
+            return rows  # no counters to verify, but a short page ends the set
+    return None  # MAX_PAGES exhausted: the server never finished
 
 
 def fetch_season_snapshot(
@@ -199,8 +213,11 @@ def fetch_season_snapshot(
     it was, so a bad EFFIS week degrades the page to "as of <date>" rather than
     blanking it."""
     path = snapshot_path(settings)
-    if not should_fetch(path, now):
-        return "reused"
+    try:
+        if not should_fetch(path, now):
+            return "reused"
+    except Exception:  # noqa: BLE001 - malformed snapshot is worth refetching
+        pass
 
     if http_get is None:
         import requests
@@ -217,7 +234,10 @@ def fetch_season_snapshot(
     if not rows:
         return "stale"
 
-    deduped = {r["id"]: r for r in rows}
-    stamped = [{**r, "fetched_at": _naive_utc(now)} for r in deduped.values()]
-    write_polygons(stamped, path)
+    try:
+        deduped = {r["id"]: r for r in rows if "id" in r}
+        stamped = [{**r, "fetched_at": _naive_utc(now)} for r in deduped.values()]
+        write_polygons(stamped, path)
+    except Exception:  # noqa: BLE001 - write failure should not blank the snapshot
+        return "stale"
     return "fresh"
