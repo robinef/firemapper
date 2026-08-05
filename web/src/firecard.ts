@@ -7,6 +7,7 @@ import { SCAR_LAYER_IDS } from "./layer_scars";
 import type { FeatureSnapshot, Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
+import { safeHttpUrl } from "./escape";
 import { emitUi } from "./ui_events";
 
 /**
@@ -87,8 +88,12 @@ export function fireCardHtml(p: EventProps, track: Track | null): string {
     mv ? stat("Spreading", `${compass(mv.bearing_deg)} · ${(mv.distance_24h_m / 1000).toFixed(1)} km / 24 h`) : "",
     p.place ? stat("Nearest town", `${esc(p.place.name)} (${p.place.distance_km} km)`) : "",
   ].join("");
+  // Both halves of the GDACS alert are third-party: the pipeline copies title
+  // and link straight out of gdacs.org's RSS without validating either. The
+  // title is text, but the link lands in an href, which is a script sink — so
+  // it goes through safeHttpUrl, exactly as panel.ts does with the same field.
   const alert = p.gdacs
-    ? `<a class="fc-alert" href="${p.gdacs.link}" target="_blank" rel="noopener">⚠ ${esc(p.gdacs.title)}</a>`
+    ? `<a class="fc-alert" href="${safeHttpUrl(p.gdacs.link)}" target="_blank" rel="noopener">⚠ ${esc(p.gdacs.title)}</a>`
     : "";
   // Arrival ramp legend — only when we have per-bin cells to paint.
   const arrival = track && track.cell_bins && track.cell_bins.length

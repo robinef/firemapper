@@ -60,3 +60,43 @@ describe("peek line", () => {
     expect(el.firstElementChild?.className).toBe("fc-peek");
   });
 });
+
+describe("GDACS alert link", () => {
+  // The link comes from gdacs.org's RSS via enrich.py, which copies it without
+  // checking the scheme. It lands in an href, so a javascript: value would run
+  // in our origin on a tap — the title being escaped does nothing about that.
+  const withLink = (link: string) =>
+    ({ ...props, gdacs: { title: "Red alert", link } }) as unknown as EventProps;
+
+  it("neutralises a javascript: href from the feed", async () => {
+    const { fireCardHtml } = await import("../src/firecard");
+    const el = document.createElement("div");
+    el.innerHTML = fireCardHtml(withLink("javascript:alert(document.cookie)"), null);
+    // Assert on the parsed attribute, not the string: an href surviving as
+    // text in the markup is exactly the bug, and substring checks on raw HTML
+    // are easy to pass by accident.
+    expect(el.querySelector("a.fc-alert")!.getAttribute("href")).toBe("#");
+  });
+
+  it("neutralises data: too, and keeps ordinary https links intact", async () => {
+    const { fireCardHtml } = await import("../src/firecard");
+    const el = document.createElement("div");
+    el.innerHTML = fireCardHtml(withLink("data:text/html,<script>1</script>"), null);
+    expect(el.querySelector("a.fc-alert")!.getAttribute("href")).toBe("#");
+
+    el.innerHTML = fireCardHtml(withLink("https://www.gdacs.org/report.aspx?eventid=1"), null);
+    expect(el.querySelector("a.fc-alert")!.getAttribute("href")).toBe(
+      "https://www.gdacs.org/report.aspx?eventid=1",
+    );
+  });
+
+  it("does not let a quote in the href break out of the attribute", async () => {
+    const { fireCardHtml } = await import("../src/firecard");
+    const el = document.createElement("div");
+    el.innerHTML = fireCardHtml(
+      withLink(`https://gdacs.org/" onmouseover="alert(1)`),
+      null,
+    );
+    expect(el.querySelector("a.fc-alert")!.getAttribute("onmouseover")).toBeNull();
+  });
+});
