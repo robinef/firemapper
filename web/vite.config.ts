@@ -51,6 +51,22 @@ function maplibreWorker(): Plugin {
 
 export default defineConfig({
   plugins: [maplibreWorker()],
+  // The build plugin above has apply: "build", so dev needs its own answer to
+  // the same problem. Vite pre-bundles dependencies into node_modules/.vite/
+  // deps, and maplibre resolves its worker as `new URL("./" + name,
+  // import.meta.url)` — which in dev points beside the PRE-BUNDLE, where only
+  // maplibre-gl.js exists. The request 404s, Vite's SPA fallback answers it
+  // with index.html, and the worker dies parsing HTML as JavaScript.
+  //
+  // The failure is silent in a way worth spelling out: the style loads, every
+  // network request is 200, and no error event fires. The map simply never
+  // finishes — `isStyleLoaded()` stays false forever, so `map.on("load")`
+  // never runs and the whole app sits behind its splash. `npm run dev` was
+  // dead from the maplibre 6 upgrade until this line.
+  //
+  // Excluding it serves maplibre unbundled from dist/, where the worker and
+  // maplibre-gl-shared.mjs sit as real siblings and resolve for free.
+  optimizeDeps: { exclude: ["maplibre-gl"] },
   server: { port: 5173 },
   test: { environment: "node" },
 });
