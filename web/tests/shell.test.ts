@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNav } from "../src/nav";
 import { createShell } from "../src/shell";
+import { renderAircraftPanel } from "../src/panel";
 import { fakeHistory, mountShellDom } from "./nav_fixtures";
 import { emitUi } from "../src/ui_events";
 
@@ -11,6 +12,17 @@ function setup() {
   const nav = createNav({ history, target });
   const shell = createShell({ nav });
   return { nav, shell, view: document.getElementById("view")! };
+}
+
+/** What fireCardHtml actually renders, reduced to the two parts the shell
+ *  reads: the `.fc-peek` strip it emits first, and the title it names the
+ *  entry from. A fixture WITHOUT the strip is not a fire card — it is an
+ *  aircraft panel or a cell picker, and the shell must size it differently. */
+function fireCardPanel(name: string): void {
+  const panel = document.getElementById("panel")!;
+  panel.innerHTML =
+    `<div class="fc-peek"><b>${name}</b></div><div class="fc-title">${name}</div>`;
+  panel.classList.remove("hidden");
 }
 
 describe("shell view switching", () => {
@@ -116,10 +128,7 @@ describe("shell ↔ ui_events wiring", () => {
     document.body.innerHTML = "";
   });
 
-  const card = (name: string) => {
-    document.getElementById("panel")!.innerHTML = `<div class="fc-title">${name}</div>`;
-    document.getElementById("panel")!.classList.remove("hidden");
-  };
+  const card = fireCardPanel;
 
   it("pushes detail from the map and takes the title from the rendered card", () => {
     const { nav } = setup();
@@ -273,8 +282,17 @@ describe("icon rail", () => {
 });
 
 describe("camera padding", () => {
+  // setupWithMap overwrites window.matchMedia, and three describe blocks run
+  // after this one. Capture the original (jsdom leaves it undefined) and put
+  // it back, so a later test cannot silently inherit a stubbed breakpoint.
+  const realMatchMedia = window.matchMedia;
+
   beforeEach(() => {
     document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    (window as unknown as { matchMedia: unknown }).matchMedia = realMatchMedia;
   });
 
   function setupWithMap(width: number) {
@@ -342,7 +360,7 @@ describe("detail sizing", () => {
 
   it("opens a fire card peeked", () => {
     const { nav, view } = setup();
-    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    fireCardPanel("Pedrógão");
     emitUi("detail:open");
     expect(view.dataset.size).toBe("peek");
     expect(document.body.dataset.size).toBe("peek"); // what #rail/#view-chip key off
@@ -351,8 +369,7 @@ describe("detail sizing", () => {
 
   it("expands to full when the peek strip is tapped", () => {
     const { view } = setup();
-    document.getElementById("panel")!.innerHTML =
-      `<div class="fc-peek"></div><div class="fc-title">Pedrógão</div>`;
+    fireCardPanel("Pedrógão");
     emitUi("detail:open");
     document.querySelector<HTMLElement>(".fc-peek")!.click();
     expect(view.dataset.size).toBe("full");
@@ -361,8 +378,7 @@ describe("detail sizing", () => {
 
   it("restores the size it had when returning from another view", () => {
     const { nav, view } = setup();
-    document.getElementById("panel")!.innerHTML =
-      `<div class="fc-peek"></div><div class="fc-title">Pedrógão</div>`;
+    fireCardPanel("Pedrógão");
     emitUi("detail:open");
     document.querySelector<HTMLElement>(".fc-peek")!.click();
     expect(view.dataset.size).toBe("full");
@@ -374,11 +390,74 @@ describe("detail sizing", () => {
 
   it("drops data-size entirely for views that have no sizes", () => {
     const { nav, view } = setup();
-    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    fireCardPanel("Pedrógão");
     emitUi("detail:open");
     nav.push({ view: "compare", title: "Compare" });
     expect(view.dataset.size).toBeUndefined();
     expect(document.body.dataset.size).toBeUndefined(); // cleared, not merely stale
+  });
+
+  // The peek layout hides the back bar and every #panel child except
+  // `.fc-peek`. A panel that renders no strip therefore has NOTHING left to
+  // show: on a phone it becomes a blank 56px band with no ✕, no back bar and
+  // nothing tappable to expand it — the panel is unreadable and unclosable.
+  // Only fireCardHtml and scarCardHtml emit a strip, so every other renderer
+  // must open full.
+  it("opens an aircraft panel full — it renders no peek strip to survive on", () => {
+    const { nav, view } = setup();
+    const panel = document.getElementById("panel")!;
+    // The real renderer, not a fixture: the whole point is that its output
+    // has no `.fc-peek`, and a hand-written stand-in could quietly gain one.
+    panel.innerHTML = renderAircraftPanel({
+      role: "tanker",
+      callsign: "TEST01",
+      type: "CL-415",
+      country: "Portugal",
+      alt_m: 900,
+      speed_kmh: 320,
+      heading: 90,
+      pos_time: null,
+    });
+    panel.classList.remove("hidden");
+    expect(panel.querySelector(".fc-peek")).toBeNull(); // the premise
+
+    emitUi("aircraft:open");
+
+    expect(nav.top.view).toBe("detail");
+    expect(view.dataset.size).toBe("full");
+    expect(document.body.dataset.size).toBe("full");
+  });
+
+  it("opens a cell picker full — it renders no peek strip either", () => {
+    const { view } = setup();
+    const panel = document.getElementById("panel")!;
+    // renderCellPicker's shape (both its branches): a close button and a
+    // title, and no strip.
+    panel.innerHTML =
+      `<button class="panel-close" aria-label="Close">&times;</button>` +
+      `<div class="fc-title">3 fires here</div>` +
+      `<div class="cell-picks"></div>`;
+    panel.classList.remove("hidden");
+
+    emitUi("detail:open");
+
+    expect(view.dataset.size).toBe("full");
+  });
+
+  it("re-sizes per panel, so an aircraft after a fire card does not stay peeked", () => {
+    const { view } = setup();
+    fireCardPanel("Pedrógão");
+    emitUi("detail:open");
+    expect(view.dataset.size).toBe("peek");
+
+    // Same #panel, replaced in place — exactly what a tap on an aircraft does
+    // while a fire card is open.
+    document.getElementById("panel")!.innerHTML =
+      `<button class="panel-close">×</button><div class="badge">AIRBORNE</div>`;
+    emitUi("aircraft:open");
+
+    expect(view.dataset.size).toBe("full");
+    expect(document.body.dataset.size).toBe("full");
   });
 });
 
@@ -389,7 +468,7 @@ describe("level-2 toggles from a peeked card", () => {
 
   it("⚙ over a peeked card opens layers and back returns to the peeked card", () => {
     const { nav, view } = setup();
-    document.getElementById("panel")!.innerHTML = `<div class="fc-title">Pedrógão</div>`;
+    fireCardPanel("Pedrógão");
     emitUi("detail:open");
     expect(view.dataset.size).toBe("peek");
     expect(document.body.dataset.size).toBe("peek"); // what #rail keys off

@@ -71,8 +71,8 @@ export function createShell(deps: ShellDeps): Shell {
    *
    *  Closure state, deliberately NOT per-entry: sync() re-applies it on every
    *  stack change, so a card keeps its size across a round trip through the
-   *  layers view without any per-entry restore thunk. openDetail resets it to
-   *  "peek" so a newly opened card never inherits the previous card's size.
+   *  layers view without any per-entry restore thunk. openDetail recomputes it
+   *  per panel, so a newly opened card never inherits the previous card's size.
    *  Declared here (before `sync`, not after `openDetail`) so `sync`'s first
    *  synchronous call below can read it without a temporal-dead-zone crash. */
   let detailSize: "peek" | "full" = "peek";
@@ -180,7 +180,14 @@ export function createShell(deps: ShellDeps): Shell {
   const openDetail = () => {
     const title =
       document.querySelector("#panel .fc-title")?.textContent?.trim() || "Fire";
-    detailSize = "peek"; // a newly opened card always starts peeked
+    // Peek is a contract, not a default: at that size the mobile CSS hides the
+    // back bar and every #panel child except `.fc-peek`, so a panel that never
+    // renders a strip — the aircraft panel, the cell picker — would collapse
+    // into an empty 56px band with no back bar, no ✕ and nothing to tap to
+    // expand. Only fireCardHtml and scarCardHtml emit one. Ask the DOM rather
+    // than assume, so the layout can only be applied to a panel that survives
+    // it, and a future renderer cannot silently opt into a broken size.
+    detailSize = document.querySelector("#panel .fc-peek") ? "peek" : "full";
     const entry = {
       view: "detail" as const,
       title,
