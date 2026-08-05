@@ -5,7 +5,7 @@
   "compatibility_date": "2025-01-01",
   // The app shell is static and deploys only when code changes. Every
   // generation the pipeline publishes lands in the DATA bucket instead, so a
-  // 15-minute data refresh costs zero deploys — see docs/DEPLOYMENT.md.
+  // half-hourly data refresh costs zero deploys — see docs/DEPLOYMENT.md.
   "assets": {
     "directory": "./web/dist",
     "binding": "ASSETS",
@@ -26,5 +26,28 @@
   },
   "r2_buckets": [
     { "binding": "DATA", "bucket_name": "firemapper-data" }
-  ]
+  ],
+  // Drives the data refresh. GitHub throttles scheduled workflows on public
+  // repos hard enough to make the nominal cadence fiction — measured over 52.8h
+  // on 2026-08-04, a */15 cron produced 30 runs against 211 nominal, median gap
+  // 81 min. Cloudflare fires these reliably, so the cron in refresh-fast.yml is
+  // now only a fallback for when this Worker is broken.
+  //
+  // The GH_DISPATCH_TOKEN secret this needs is set out of band
+  // (`wrangler secret put`), never in this file.
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+  // Required for the Worker to write logs at all: without it, console output
+  // exists only in a live `wrangler tail`, i.e. only while someone is watching.
+  // The scheduled handler THROWS on a failed dispatch rather than logging,
+  // precisely so the failure is a recorded invocation error and not just a line
+  // here — but the line is what tells you which HTTP status it was.
+  //
+  // Retention is 3 days on the free plan. That is enough to diagnose a failure
+  // once noticed; it is NOT a monitor. See docs/DEPLOYMENT.md for what actually
+  // detects a dead refresh.
+  "observability": {
+    "enabled": true
+  }
 }

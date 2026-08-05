@@ -21,7 +21,8 @@ R2 bucket ──── Worker /data/* ──── MapLibre frontend (web/)
 
 Locally, `<out_dir>` is `web/public/data` and Vite serves it directly — no
 bucket, no Worker, no credentials. Deployed, the same directory is published to
-R2 by CI every 15 minutes. See [DEPLOYMENT.md](DEPLOYMENT.md).
+R2 every 30 minutes, driven by a Cloudflare Cron Trigger rather than GitHub's
+own scheduler. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Why this shape
 
