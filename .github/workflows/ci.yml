@@ -52,3 +52,27 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests
         run: npm test
+      # Build in CI, and then check what it actually emitted.
+      #
+      # maplibre 6 fetches its worker by URL at runtime, from a specifier built
+      # at runtime — so Vite cannot see it statically and will not emit it
+      # unless vite.config.ts copies it. When that broke, tsc, all 233 tests AND
+      # a successful production build were green while the deployed map
+      # requested /assets/maplibre-gl-worker.mjs and got a 404. Nothing in the
+      # suite can catch that, because the failure is in the shape of the output
+      # directory rather than in any module the tests import.
+      #
+      # maplibre-gl-shared.mjs is the second half: both the worker and the main
+      # entry import it as a relative sibling, so a worker without it 404s in
+      # turn.
+      - name: Build
+        run: npm run build
+      - name: Assert the maplibre worker was emitted beside the bundle
+        run: |
+          entry_dir=$(dirname "$(find dist/assets -name 'index-*.js' | head -1)")
+          for f in maplibre-gl-worker.mjs maplibre-gl-shared.mjs; do
+            test -f "$entry_dir/$f" || {
+              echo "::error::$f missing from $entry_dir - the map would load without a worker"
+              exit 1
+            }
+          done

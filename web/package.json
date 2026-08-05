@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "h3-js": "^4.1.0",
-    "maplibre-gl": "^4.7.1"
+    "maplibre-gl": "^6.1.0"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.14",
