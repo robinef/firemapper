@@ -29,7 +29,7 @@ def pick_unit(total_km2: float) -> dict:
     """The unit whose tile count sits nearest TARGET while inside the readable
     band; if none qualifies, the nearest-ratio unit with an honest count.
     Raises ValueError on a non-positive total: log(0) is undefined, and a zero
-    season is a distinct page state handled u/, not a grid of no tiles.
+    season is a distinct page state handled upstream, not a grid of no tiles.
     """
     if total_km2 <= 0:
         raise ValueError("pick_unit requires a positive total; zero is a separate state")
