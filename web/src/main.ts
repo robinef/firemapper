@@ -20,6 +20,7 @@ import {
   addClosedFires,
   fireHaloIds,
   fireLayerIds,
+  setShowAllSizes,
 } from "./layer_fires";
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
@@ -53,6 +54,7 @@ import { mountSwitcher, type LayerModule } from "./registry";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
 import { infoHtml } from "./info";
+import { countFires, countLabel } from "./fire_count";
 import { mountPanel, renderAircraftPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
@@ -128,6 +130,9 @@ async function boot() {
     }
     if (manifest.imagery?.scars?.length) addScars(map, manifest.imagery.scars);
 
+    // Mirrors the size filter below, so the counter describes the map as it
+    // actually is rather than as the default gates would have it.
+    let showAllSizes = false;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -139,6 +144,25 @@ async function boot() {
           ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
         ],
         defaultOn: true,
+        // A ticked layer drawing nothing reads as broken. It is usually just
+        // zoom: 1335 of 1344 live fires are `minor`, gated to z8.5. Say so.
+        status: () => {
+          const b = map.getBounds();
+          return countLabel(countFires(
+            events.features,
+            { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() },
+            map.getZoom(),
+            showAllSizes,
+          ));
+        },
+        filter: {
+          label: "Show every size (slower, busier)",
+          defaultOn: false,
+          onChange: (on) => {
+            showAllSizes = on;
+            setShowAllSizes(map, on);
+          },
+        },
         legend: {
           title: "Active fires",
           entries: [
@@ -146,7 +170,10 @@ async function boot() {
             { color: FIRE_HUE, size: 16, shape: "dot", label: "larger burned area" },
             { color: "rgba(255,90,31,0.4)", size: 14, shape: "dot", label: "quiet — no new detection 24–48 h" },
           ],
-          note: "One colour = fire. Bigger dot = more area burned; faded = gone quiet. Zoom in for the outline.",
+          note:
+            "One colour = fire. Bigger dot = more area burned; faded = gone quiet. " +
+            "Sizes follow the NWCG fire size classes (F \u2265 1000 acres shows from " +
+            "zoom 6, G \u2265 5000 from zoom 3, smaller from zoom 8.5). Zoom in for the outline.",
         },
       },
       {
@@ -269,6 +296,10 @@ async function boot() {
       lastQuery: () => lastQuery,
       infoContent: () => infoHtml(manifest),
     });
+    // The count is camera-dependent, so it has to follow the camera — a
+    // stale "1 of 54" after panning is a different lie from the one this
+    // replaced. moveend rather than move: once per gesture, not per frame.
+    map.on("moveend", () => switcher.refresh());
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
@@ -669,6 +700,20 @@ function renderCellPicker(
   );
 }
 
+
+/** How to state a capture date, which the two tiers know with different
+ * precision.
+ *
+ * MODIS is a daily global mosaic, so the date shown is the date rendered.
+ * Sentinel-2 revisits every ~2-3 days, so the HD tier hands Sentinel Hub a
+ * multi-day TIME range and lets it pick the clearest pass inside it — meaning
+ * the image can be from any day in that range, not the one named. Printing a
+ * bare date there claims a precision we do not have, so say "around".
+ */
+function captureDate(iso: string, cfg: ImageryConfig): string {
+  return cfg.hd ? `around ${iso}` : iso;
+}
+
 /** Whole days from ISO day `a` to ISO day `b` (negative when b is earlier). */
 function dayDelta(a: string, b: string): number {
   return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
@@ -710,8 +755,9 @@ function setCompareNotice(
     `<div class="compare-banner">` +
     `<span class="compare-title">${escapeHtml(scar.label)}</span>` +
     `<span class="compare-dates">` +
-    `<b>Before</b> pre-fire · ${scar.before}<br>` +
-    `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ${scar.after}` +
+    `<b>Before</b> pre-fire · ${captureDate(scar.before, cfg)}<br>` +
+    `<b>After</b> ${scar.kind === "past" ? "settled scar" : "latest"} · ` +
+    `${captureDate(scar.after, cfg)}` +
     `<span class="compare-step">` +
     `<button class="compare-day" type="button" data-days="-1" ` +
     `title="Previous capture day">&#9664;</button>` +

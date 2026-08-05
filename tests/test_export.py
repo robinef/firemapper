@@ -90,3 +90,41 @@ def test_publishes_after_two_consecutive_upstream_failures(tmp_path):
     assert man2["generation"] == gen2.name != gen1.name
     assert man2["layers"]["wind"]["status"] == "failed"
     assert validate_generation(gen2) == []
+
+
+def test_size_class_follows_the_nwcg_standard(tmp_path):
+    """Size classes use the NWCG fire size standard (nwcg.gov/node/432922),
+    the US interagency scale every federal incident record uses:
+
+        A <=0.25 ac   B <10 ac    C <100 ac   D <300 ac
+        E <1000 ac    F <5000 ac  G 5000+ ac
+
+    In km2 (1 ac = 0.00404686 km2) the top three boundaries are 1.2 / 4 / 20.
+
+    The previous thresholds — major >=50, medium >=15 — were calibrated for
+    megafires and put our whole distribution in one bucket: of 2828 live fires
+    on 2026-08-04, 1335 were "minor", 8 "medium", 1 "major". `major >= 50` sits
+    ABOVE NWCG's largest class. Binned by NWCG the same data spreads across
+    D 1552 / E 1078 / F 192 / G 6.
+
+    Classes A-C cannot occur here: an H3 res-7 cell is ~5 km2, so a single
+    detection already reports ~0.7 km2. We map the three classes we can
+    resolve.
+    """
+    from pipeline.export import size_class
+
+    assert size_class(0.7) == "minor"     # one H3 cell: NWCG D
+    assert size_class(4.04) == "minor"    # just under 1000 ac (4.047 km2)
+    assert size_class(4.05) == "medium"   # NWCG F opens at 1000 ac
+    assert size_class(20.1) == "medium"   # just under 5000 ac (20.23 km2)
+    assert size_class(20.2) == "major"    # NWCG G opens at 5000 ac
+    assert size_class(167.3) == "major"   # largest live fire on 2026-08-04
+
+
+def test_size_class_boundaries_are_the_acre_conversions(tmp_path):
+    """Pinned so a later tweak cannot quietly drift off the published scale."""
+    from pipeline.export import MEDIUM_KM2, MAJOR_KM2
+
+    acre_km2 = 0.00404686
+    assert MEDIUM_KM2 == round(1000 * acre_km2, 2)  # NWCG F
+    assert MAJOR_KM2 == round(5000 * acre_km2, 1)   # NWCG G

@@ -18,7 +18,12 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The fast tier ran ~14 min while the MTG FRP fetch was failing fast. With
+    # that fetch restored it does real work on ~17k pixels and overran 20 min,
+    # and a timeout kill publishes NOTHING — so the map froze on the last
+    # pre-fix generation while every layer still reported its old failure. The
+    # ceiling has to sit above the honest cost of a run, not the degraded one.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -49,6 +54,13 @@ jobs:
           sha256sum data/places/cities15000.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run python -m scripts.refresh_remote fast
         env:
+          # Python buffers stdout when it is a pipe, which a runner always is.
+          # A job killed by the timeout never flushes, so a 20-minute stall
+          # reached the log as ZERO lines — no stage timings, no way to tell a
+          # slow run from a hung one after the fact. Unbuffered, GitHub stamps
+          # each [info] line with its own timestamp and the log becomes the
+          # profile.
+          PYTHONUNBUFFERED: "1"
           # HD before/after: Sentinel-2 at 10 m instead of the keyless MODIS
           # 250 m default. A flag, NOT a credential — the Sentinel Hub instance
           # id is a bearer token for a whole OGC configuration and lives only in

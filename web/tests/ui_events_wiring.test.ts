@@ -46,7 +46,7 @@ describe("ui event wiring", () => {
       getPaintProperty: () => 1, on: () => {}, off: () => {}, flyTo: () => {},
       getCanvas: () => ({ style: {} }),
     } as unknown as maplibregl.Map;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
 
     const card = setupFireCard(
       map,
