@@ -116,9 +116,18 @@ The failure is quiet by nature: the cron keeps firing, every dispatch is
 rejected, and the map simply stops advancing. Three ways to catch it, in the
 order they will actually reach you:
 
-1. **The map itself.** `attempted_at` in `data/manifest.json` is the honest
-   signal — it moves on every refresh regardless of which layers succeeded. If
-   it is hours old, the refresh is dead, whatever the cause. This is worth an
+1. **The map itself.** `attempted_at` is the honest signal — it moves on every
+   refresh regardless of which layers succeeded. It lives **per layer**, at
+   `layers.<name>.attempted_at`, not at the top level of `data/manifest.json`;
+   `generated_at` is the top-level equivalent. Any layer will do, since one run
+   stamps them all:
+
+   ```bash
+   curl -s https://firemapper.robinef.workers.dev/data/manifest.json \
+     | jq -r '.layers.events.attempted_at'
+   ```
+
+   If that is hours old, the refresh is dead, whatever the cause. Worth an
    external uptime check; nothing in this repo performs one yet.
 2. **Cloudflare.** The scheduled handler throws on a failed dispatch, so the
    invocation is recorded as an error rather than "Ok" — visible under the
