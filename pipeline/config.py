@@ -10,6 +10,11 @@ H3_RES = 8
 # 1.1.0 adds the per-layer `layers` freshness map. Minor bump: every 1.0 key
 # keeps its name and meaning, so an old client still loads a new manifest.
 SCHEMA_VERSION = "1.1.0"
+# Per-generation file holding the id -> cells projection of tracks/. Named here
+# because it is part of the published generation layout: export() writes it and
+# remote.hydrate() keys the "can I skip the tracks?" decision off its presence.
+# Additive, so it needs no schema bump — a client that ignores it sees 1.1.0.
+TRACK_INDEX = "tracks_index.json"
 
 
 @dataclass(frozen=True)

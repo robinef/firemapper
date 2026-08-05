@@ -47,8 +47,8 @@ jobs:
     # ceiling has to sit above the honest cost of a run, not the degraded one.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync
@@ -56,7 +56,7 @@ jobs:
       # falls back to places=[] and every derived scar is named
       # "Burn scar · <date>" with place=null, which makes the past-scar list
       # useless for finding one particular fire. Cached because the file
-      # changes rarely and the fast tier runs every 15 minutes.
+      # changes rarely and the fast tier runs every half hour.
       - uses: actions/cache@v4
         with:
           path: data/places
