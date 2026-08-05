@@ -268,7 +268,6 @@ async function boot() {
     const nav = createNav();
     const shell = createShell({
       nav,
-      map,
       showFireList,
       lastQuery: () => lastQuery,
       infoContent: () => infoHtml(manifest),

@@ -13,14 +13,9 @@ import { onUi } from "./ui_events";
 
 export interface ShellDeps {
   nav: Nav;
-  /** Camera padding target. Optional so tests can omit it. */
-  map?: {
-    setPadding(p: { top: number; bottom: number; left: number; right: number }): void;
-  };
   showFireList?: (query: string) => void;
   lastQuery?: () => string;
   infoContent?: () => string;
-  breakpoint?: number;
 }
 
 export interface Shell {
@@ -28,16 +23,6 @@ export interface Shell {
   ready(): void;
   destroy(): void;
 }
-
-/** Views that own an element inside #view. `map` and `compare` own none. */
-const HAS_PANEL: Record<ViewId, boolean> = {
-  map: false,
-  detail: true,
-  compare: false,
-  layers: true,
-  search: true,
-  info: true,
-};
 
 export function createShell(deps: ShellDeps): Shell {
   const { nav } = deps;
@@ -90,28 +75,12 @@ export function createShell(deps: ShellDeps): Shell {
     document.body.dataset.size = size;
   };
 
-  const breakpoint = deps.breakpoint ?? 640;
-  const mobile = window.matchMedia?.(`(max-width: ${breakpoint}px)`);
-  let isMobile = mobile?.matches ?? false;
-
-  /** MapLibre camera padding is JS state, not CSS, so it is the one
-   *  responsive difference that cannot ride along with the media query. It
-   *  applies only when the slide-out is genuinely beside the map: never on
-   *  mobile (the overlay covers it) and never in compare (which owns the
-   *  whole surface). 376 = 56px rail + 320px panel. */
-  const applyCameraPadding = () => {
-    const open = !isMobile && HAS_PANEL[nav.top.view];
-    deps.map?.setPadding({ top: 0, bottom: 0, right: 0, left: open ? 376 : 0 });
-  };
-
-  const onMedia = (e: { matches: boolean }) => {
-    isMobile = e.matches;
-    applyCameraPadding();
-  };
-  mobile?.addEventListener?.("change", onMedia as (e: MediaQueryListEvent) => void);
-  offs.push(() =>
-    mobile?.removeEventListener?.("change", onMedia as (e: MediaQueryListEvent) => void),
-  );
+  /* The desktop slide-out used to push the camera 376px right (rail + panel)
+     so it sat beside the map rather than on it. It read as the map jumping
+     sideways every time a panel opened, which is a bigger cost than the strip
+     of map the panel covers — and the panel's right edge (388px) is still
+     clear of a centred feature (640px at 1280 wide), so nothing a fly-to
+     targets ends up underneath it. The panel now overlays. */
 
   const renderBar = (stack: readonly (typeof nav.top)[]) => {
     const depth = stack.length - 1;
@@ -169,7 +138,6 @@ export function createShell(deps: ShellDeps): Shell {
     document.body.dataset.view = current.view;
     if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
-    applyCameraPadding();
     // Every view change can change what #timeline shows (a fire card swaps in
     // its own title/series), so the measured --timebar can go stale here too.
     syncTimebar();
@@ -252,7 +220,15 @@ export function createShell(deps: ShellDeps): Shell {
    *  no-op rather than a second identical entry, so back does not need two
    *  presses to undo one deliberate action. */
   const openRail = (view: ViewId, title: string, enter?: () => void) => {
-    if (nav.top.view === view) return;
+    // The icon is a toggle: tapping the one you are already on closes it.
+    // It used to be a no-op, which left the icon looking like a dead control
+    // and made the back bar the only way out of a panel the same icon had
+    // just opened. nav.back() rather than a direct pop, so closing this way
+    // is the same single operation as `‹`, Escape and hardware back.
+    if (nav.top.view === view) {
+      nav.back();
+      return;
+    }
     enter?.();
     nav.push({ view, title, restore: enter });
   };
