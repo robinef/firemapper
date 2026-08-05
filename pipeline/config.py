@@ -15,6 +15,19 @@ SCHEMA_VERSION = "1.1.0"
 # remote.hydrate() keys the "can I skip the tracks?" decision off its presence.
 # Additive, so it needs no schema bump — a client that ignores it sees 1.1.0.
 TRACK_INDEX = "tracks_index.json"
+# Per-generation file mapping event id -> [generation holding the track file,
+# sha256 of its contents, publish ordinal when written]. Lets export() skip
+# re-writing a track whose bytes have not changed, and lets each events.geojson
+# feature carry a `track_gen` pointing at whichever generation actually holds
+# it. Additive, so no schema bump.
+TRACK_MAP = "track_map.json"
+# How many generations a track may go un-rewritten, and how many generations are
+# therefore kept. Retention MUST exceed the rewrite period: that is what makes
+# every `track_gen` pointer valid by construction rather than by refcounting —
+# an object is always refreshed before it can be pruned. Both prune paths take
+# their default from here so no caller can pick a number that breaks it.
+TRACK_REWRITE_EVERY = 10
+GENERATIONS_KEPT = TRACK_REWRITE_EVERY + 1
 
 
 @dataclass(frozen=True)

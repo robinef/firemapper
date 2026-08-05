@@ -365,7 +365,7 @@ export function setupFireCard(
     const [lon, lat] = coords(e, feat);
     let track: Track | null = null;
     try {
-      track = await loadTrack(manifest, p.id);
+      track = await loadTrack(manifest, p.id, "/data", fetch, p.track_gen);
     } catch {
       /* no track (e.g. tiny fire) — card still renders from props */
     }

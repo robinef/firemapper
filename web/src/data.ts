@@ -22,13 +22,27 @@ export async function loadEvents(
   return (await r.json()) as GeoJSON.FeatureCollection;
 }
 
+/** Load one fire's track.
+ *
+ * `trackGen` is the generation that physically holds the file, taken from the
+ * feature's `track_gen`. publish no longer re-uploads byte-identical tracks —
+ * ~98.7% are unchanged between runs — so a track usually lives in an older
+ * generation than the live one.
+ *
+ * Falling back to `m.generation` is what carries a manifest published before
+ * `track_gen` existed: every one of its tracks IS in its own generation, so the
+ * old address is right. Without the fallback, one generation's worth of fire
+ * cards would lose their sparkline — and silently, since the caller catches a
+ * failed load and still renders the card from props.
+ */
 export async function loadTrack(
   m: Manifest,
   id: string,
   base = "/data",
   fetchFn: Fetch = fetch,
+  trackGen?: string | null,
 ): Promise<Track> {
-  const r = await fetchFn(`${base}/${m.generation}/tracks/${id}.json`);
+  const r = await fetchFn(`${base}/${trackGen || m.generation}/tracks/${id}.json`);
   return (await r.json()) as Track;
 }
 

@@ -74,7 +74,24 @@ already uploaded, so a failure at any boundary leaves the previous
 the archive the live manifest *names*, not whichever archive is newest — that is
 what keeps lineage and carry-forward reasoning about a single generation.
 
-The bucket keeps the newest three generations and their archives.
+The bucket keeps the newest eleven generations and their archives
+(`GENERATIONS_KEPT` in `pipeline/config.py`).
+
+Eleven rather than three because a generation no longer contains every track.
+About 98.7% of track files are byte-identical between consecutive runs, so
+`export` leaves an unchanged track where it is and each `events.geojson` feature
+carries a `track_gen` naming the generation that actually holds it. To stop a
+pointer outliving its object, every track is rewritten at least once every
+`TRACK_REWRITE_EVERY` (10) generations, and retention is one more than that — so
+the guarantee holds by construction rather than by refcounting.
+
+The rewrite is spread by a hash bucket on the event id, not by age. Age alone
+stampedes: every track starts life in the same generation, so they would all come
+due on the same later run and it would pay the full pre-change cost in one go.
+
+Measured effect: ~12714 objects per publish down to ~1300, and `publish` from
+481.5s to a fraction of it. The first run after deploy has no `track_map.json`
+and so writes everything once.
 
 ## First-time setup
 

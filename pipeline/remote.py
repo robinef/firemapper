@@ -17,7 +17,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .config import TRACK_INDEX, Settings
+from .config import GENERATIONS_KEPT, TRACK_INDEX, Settings
 
 ARCHIVE_PREFIX = "archive/"
 DATA_PREFIX = "data/"
@@ -220,7 +220,7 @@ def _delete_keys(client, bucket: str, keys: list[str]) -> None:
                 client.delete_object(Bucket=bucket, Key=key)
 
 
-def prune_remote(settings: Settings, client, keep: int = 3) -> None:
+def prune_remote(settings: Settings, client, keep: int = GENERATIONS_KEPT) -> None:
     """Keep the newest `keep` generations and their archives. Generation names
     are UTC timestamps, so lexicographic order is chronological order.
 
