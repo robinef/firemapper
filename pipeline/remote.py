@@ -33,6 +33,10 @@ def archive_key(generation: str) -> str:
     return f"{ARCHIVE_PREFIX}hotspots-{generation}.parquet"
 
 
+def effis_archive_key(generation: str) -> str:
+    return f"{DATA_PREFIX}archive/{generation}-effis-ba.parquet"
+
+
 def make_client(settings: Settings):  # pragma: no cover - network
     import boto3
 
@@ -115,6 +119,14 @@ def hydrate(settings: Settings, client) -> str | None:
         store = settings.data_dir / "raw" / "hotspots.parquet"
         store.parent.mkdir(parents=True, exist_ok=True)
         store.write_bytes(body)
+
+    effis_key = manifest.get("effis_archive")
+    if effis_key:
+        body = _get(client, settings.r2_bucket, effis_key)
+        if body is not None:
+            snapshot = settings.data_dir / "raw" / "effis_ba.parquet"
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.write_bytes(body)
     return generation
 
 
@@ -152,8 +164,20 @@ def publish(settings: Settings, generation_dir: Path, client) -> None:
             ContentType="application/vnd.apache.parquet",
         )
 
+    snapshot = settings.data_dir / "raw" / "effis_ba.parquet"
+    effis_key = effis_archive_key(generation) if snapshot.exists() else None
+    if effis_key:
+        client.put_object(
+            Bucket=bucket,
+            Key=effis_key,
+            Body=snapshot.read_bytes(),
+            ContentType="application/vnd.apache.parquet",
+        )
+
     manifest = json.loads((settings.out_dir / "manifest.json").read_text())
     manifest["archive"] = key
+    if effis_key:
+        manifest["effis_archive"] = effis_key
     client.put_object(
         Bucket=bucket,
         Key=MANIFEST_KEY,
@@ -223,4 +247,4 @@ def prune_remote(settings: Settings, client, keep: int = 3) -> None:
     generations = _generation_names(client, bucket)
     for old in generations[:-keep] if len(generations) > keep else []:
         _delete_keys(client, bucket, _keys(client, bucket, f"{DATA_PREFIX}{old}/"))
-        _delete_keys(client, bucket, [archive_key(old)])
+        _delete_keys(client, bucket, [archive_key(old), effis_archive_key(old)])
