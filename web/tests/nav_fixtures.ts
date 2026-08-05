@@ -43,10 +43,12 @@ export function fakeHistory(): { history: HistoryLike; target: EventTarget } {
 }
 
 /** The shell's DOM contract from index.html, reduced to what the shell reads.
- *  #rail and #view-chip deliberately sit OUTSIDE #view and BEFORE it, exactly
- *  as the real document has them — that ordering is what makes a sibling
- *  selector unable to reach them, and a fixture that got it wrong would hide
- *  the bug the body-attribute mirroring exists to avoid. */
+ *  #rail and #view-chip deliberately sit OUTSIDE #view in the same order the
+ *  real document has them — #rail before it, #view-chip after — because that
+ *  ordering is the whole reason the shell mirrors its state onto <body>. No
+ *  sibling combinator can reach #rail from #view, and #view-chip is only
+ *  reachable by one for as long as nobody reorders the markup. A fixture that
+ *  got the order wrong would hide the bug the mirroring exists to avoid. */
 export function mountShellDom(): void {
   document.body.innerHTML = `
     <div id="map"></div>

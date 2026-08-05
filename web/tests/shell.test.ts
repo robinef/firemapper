@@ -96,9 +96,10 @@ describe("shell view switching", () => {
 
   it("mirrors the current view onto <body> for out-of-container CSS", () => {
     const { nav } = setup();
-    // #rail and #view-chip live OUTSIDE #view and precede it in the document,
-    // so no sibling combinator can reach them from #view. Rules for those two
-    // key off body instead, and this is what keeps that contract honest.
+    // #rail and #view-chip live OUTSIDE #view: #rail before it, where no
+    // sibling combinator can reach it, and #view-chip after it, where one
+    // could — but only until the markup is reordered. Rules for both key off
+    // body instead, and this is what keeps that contract honest.
     nav.push({ view: "layers", title: "Layers" });
     expect(document.body.dataset.view).toBe("layers");
     nav.back();

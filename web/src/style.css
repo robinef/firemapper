@@ -145,12 +145,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 }
 .compare-day:hover { background: #3a3a3a; color: #fff; }
 .compare-src { font-size: 11px; color: var(--muted); }
-.compare-exit {
-  margin-top: 6px; align-self: flex-start; cursor: pointer;
-  font-size: 12px; padding: 4px 10px; border-radius: 6px;
-  background: #ff6b00; color: #111; border: none; font-weight: 600;
-}
-.compare-exit:hover { background: #ff8524; }
 
 #panel {
   position: absolute; top: 0; right: 0; width: 340px; max-width: 92vw; height: 100%;
@@ -199,8 +193,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 #panel a { color: #ff9a4d; }
 
 /* Scrubber row under the histogram. In-flow, so it inherits placement from
-   #timeline in both layouts — desktop bottom bar and mobile sheet — instead of
-   needing its own positioning in each. */
+   #timeline at both widths instead of needing its own positioning in each. */
 .scrub-row {
   display: flex; align-items: center; gap: 10px; margin-top: 2px;
 }
@@ -220,8 +213,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 @media (max-width: 640px) {
   /* Touch targets: 44x44 min (Apple HIG / WCAG 2.5.8). */
   .layer-row { min-height: 44px; align-items: center; }
-  /* .compare-exit is deliberately absent: Task 7 removes it, since the
-     shell's back bar is now the only way out of compare. */
+  /* No .compare-exit rule here, and none above either: nothing renders that
+     class any more. The shell's back bar is the way out of compare. */
   .panel-close, .fc-close, .scrub-play {
     min-width: 44px; min-height: 44px;
   }
@@ -311,7 +304,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 
   /* The way back to the map while a card is peeked: a floating chip over the
      map, thumb-reachable, rather than a control inside a 56px strip.
-     Body-keyed for the same reason as the rail above — no DOM-order coupling. */
+     Body-keyed like the rail, but NOT for the rail's reason: #view-chip
+     FOLLOWS #view, so `#view[data-size="peek"] ~ #view-chip` would in fact
+     match today. It would stop matching the moment someone reordered
+     index.html, and having the two rules fail for different reasons is worse
+     than having neither depend on document order. */
   body[data-size="peek"] #view-chip { display: inline-flex; }
 }
 

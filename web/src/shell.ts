@@ -7,6 +7,7 @@
  * the mobile sheet was listening, and never learn that a stack exists.
  */
 
+import { escapeHtml } from "./escape";
 import type { Nav, ViewId } from "./nav";
 import { onUi } from "./ui_events";
 
@@ -78,8 +79,8 @@ export function createShell(deps: ShellDeps): Shell {
   let detailSize: "peek" | "full" = "peek";
 
   /** #view and <body> must agree: rules for #rail and #view-chip key off the
-   *  body attribute, because those two sit outside #view and before it in the
-   *  document, where no selector rooted at #view can reach them. Anything that
+   *  body attribute, because those two sit outside #view — see sync() for why
+   *  a sibling combinator is not a safe substitute for either. Anything that
    *  changes the size goes through here so neither half can drift.
    *  Declared here, ahead of `setSize` below, for the same temporal-dead-zone
    *  reason as `detailSize`: `sync`'s first synchronous call (right after its
@@ -135,7 +136,10 @@ export function createShell(deps: ShellDeps): Shell {
         ? `<button class="view-close" type="button" aria-label="Close, back to the map">✕</button>`
         : "";
     target.innerHTML =
-      `<button class="view-back" type="button">‹ ${escapeText(under.title)}</button>` +
+      // Titles come from feature properties (place names) and land in
+      // innerHTML, so they are escaped for the same reason panel.ts escapes
+      // GeoNames output.
+      `<button class="view-back" type="button">‹ ${escapeHtml(under.title)}</button>` +
       close;
     target.querySelector<HTMLButtonElement>(".view-back")?.addEventListener("click", () =>
       nav.back(),
@@ -154,10 +158,14 @@ export function createShell(deps: ShellDeps): Shell {
       view?.removeAttribute("data-size");
       delete document.body.dataset.size;
     }
-    // Mirrored onto <body> as well as #view. Rules that must reach elements
-    // OUTSIDE #view — the rail, the peek chip — cannot use a sibling
-    // combinator: #rail precedes #view in the document and `~` only matches
-    // following siblings, so such a selector silently never matches.
+    // Mirrored onto <body> as well as #view, because the rail and the peek
+    // chip live OUTSIDE #view. `~` is not an option for #rail at all: it
+    // precedes #view in the document, and a subsequent-sibling combinator only
+    // matches what follows. #view-chip does follow #view, so `~` would reach
+    // it — but keying one on the body and the other on a combinator would make
+    // the two rules fail for different reasons, and the chip's would break
+    // silently the day someone reorders index.html. Both key off the body, so
+    // neither depends on document order.
     document.body.dataset.view = current.view;
     if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
@@ -288,17 +296,4 @@ export function createShell(deps: ShellDeps): Shell {
       for (const off of offs.splice(0)) off();
     },
   };
-}
-
-/** Titles come from feature properties (place names) and are written into
- *  innerHTML, so they are escaped here for the same reason panel.ts escapes
- *  GeoNames output. */
-function escapeText(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ] as string,
-  );
 }
