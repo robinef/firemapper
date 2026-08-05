@@ -13,9 +13,9 @@ jobs:
     name: pipeline (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
       - name: Run tests
@@ -30,8 +30,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # 24, not 20. Node 20 is past end-of-life and GitHub already forces
           # actions off it onto 24 — so the runner disagreed with this pin, and
