@@ -178,6 +178,34 @@ def write_points(rows: list[dict], path: Path, lon_key: str = "lon", lat_key: st
     return len(rows)
 
 
+def write_polygons(rows: list[dict], path: Path, geom_key: str = "geometry_wkt") -> int:
+    """Persist burn perimeters as a GeoParquet snapshot — overwrites, so it is
+    always the latest complete fetch. Scalar dict fields become columns; the WKT
+    in `geom_key` becomes a POLYGON/MULTIPOLYGON geometry column and is itself
+    dropped. Returns the row count."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = connect()
+    if not rows:
+        # Still emit an (empty) file so downstream tooling can rely on it existing.
+        con.execute(
+            f"COPY (SELECT NULL::VARCHAR AS id, NULL::GEOMETRY AS geometry WHERE false) "
+            f"TO '{_sql_path(path)}' (FORMAT PARQUET)"
+        )
+        return 0
+    import pyarrow as pa
+
+    cols = sorted({k for r in rows for k in r} - {geom_key})
+    table = pa.Table.from_pylist(
+        [{**{c: r.get(c) for c in cols}, geom_key: r.get(geom_key)} for r in rows]
+    )
+    con.register("src", table)
+    con.execute(
+        f"COPY (SELECT {', '.join(cols)}, ST_GeomFromText({geom_key}) AS geometry FROM src) "
+        f"TO '{_sql_path(path)}' (FORMAT PARQUET)"
+    )
+    return len(rows)
+
+
 def _naive_utc(t):
     """Store timestamps as naive UTC (DuckDB TIMESTAMP has no tz), avoiding a
     pytz dependency on read-back."""
