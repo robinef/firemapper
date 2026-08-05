@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import SCHEMA_VERSION, Settings
+from .config import (
+    GENERATIONS_KEPT,
+    SCHEMA_VERSION,
+    TRACK_INDEX,
+    TRACK_MAP,
+    TRACK_REWRITE_EVERY,
+    Settings,
+)
 from .fetch_result import FetchResult
 from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, nearest_place
@@ -14,7 +22,7 @@ from .events import lifecycle, reactivation_links
 import h3
 
 from .events import METEOSAT_CELL_KM2, METEOSAT_RES
-from .isochrones import isochrone_features
+from .isochrones import FootprintIndex, isochrone_features, open_band_geometry
 from .metrics import CELL_KM2, area_km2, bins_series, local_spread_vectors, movement, status
 
 RECENT_DAYS = 7
@@ -137,10 +145,23 @@ def _events_features(events, liveness, places, alerts, now):
 
 
 def _previous_ids_cells(out_dir: Path) -> dict[str, set[str]] | None:
+    """Every previous event's id and cell footprint — the only thing the merge
+    lineage needs from the generation before this one.
+
+    Read from TRACK_INDEX when it is there, and from the track files when it is
+    not. That is not belt-and-braces: hydrate skips downloading `tracks/`
+    precisely when the index exists, so these two branches are the two shapes a
+    hydrated generation actually comes in. The generation that was live when
+    the index shipped has no index and its tracks ARE downloaded; drop the
+    fallback and that one refresh loses its merge lineage silently.
+    """
     man = out_dir / "manifest.json"
     if not man.exists():
         return None
     gen = out_dir / json.loads(man.read_text())["generation"]
+    index = gen / TRACK_INDEX
+    if index.exists():
+        return {eid: set(cells) for eid, cells in json.loads(index.read_text()).items()}
     prev: dict[str, set[str]] = {}
     tracks = gen / "tracks"
     if not tracks.exists():
@@ -149,6 +170,45 @@ def _previous_ids_cells(out_dir: Path) -> dict[str, set[str]] | None:
         d = json.loads(tr.read_text())
         prev[d["id"]] = set(d.get("cells", []))
     return prev
+
+
+def _previous_track_map(out_dir: Path) -> dict[str, list]:
+    """{id: [generation, sha256, ordinal]} from the live generation, or {}.
+
+    Empty means "rewrite everything": correct, and merely as slow as before.
+    """
+    man = out_dir / "manifest.json"
+    if not man.exists():
+        return {}
+    path = out_dir / json.loads(man.read_text())["generation"] / TRACK_MAP
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text())
+    return {k: v for k, v in raw.items() if isinstance(v, list) and len(v) == 3}
+
+
+def _rewrite_track(eid: str, digest: str, prior: list | None, ordinal: int) -> bool:
+    """Whether this track must be written into the new generation.
+
+    The last clause is what makes the retention bound hold, and the reason it
+    is a hash bucket rather than a plain age test: with "rewrite when older
+    than N", every track starts life in the SAME generation, so they all come
+    due on the same later run and it pays the full pre-change cost in one go.
+    Bucketing on a stable hash of the id spreads exactly 1/N over every run,
+    starting from the first.
+
+    There is deliberately NO `ordinal - written >= N` safety net. It reads like
+    prudence, but the bucket fires every N ordinals exactly, so such a clause
+    can only ever fire on the same ordinal the bucket already did — never
+    earlier. A mutation removing it left the suite green because it is
+    unreachable, not because it is untested.
+    """
+    if prior is None:                               # new event
+        return True
+    if prior[1] != digest:                          # contents changed
+        return True
+    bucket = int(hashlib.sha1(eid.encode()).hexdigest(), 16) % TRACK_REWRITE_EVERY
+    return bucket == ordinal % TRACK_REWRITE_EVERY  # aged, evenly spread
 
 
 def _previous_manifest(out_dir: Path) -> dict:
@@ -238,6 +298,22 @@ def validate_generation(
         except json.JSONDecodeError:
             problems.append(f"invalid json: {name}")
 
+    # TRACK_INDEX is checked only WHEN PRESENT, and the asymmetry is the point:
+    # hydrate skips a generation's tracks exactly when the index exists. Absent,
+    # nothing is skipped and the tracks are read as before — safe, so refusing
+    # to publish over it would fail a run for a harmless state. Present but
+    # unparseable is the dangerous shape: it would be trusted, the tracks would
+    # not be fetched, and the NEXT refresh would die reading it. Refusing there
+    # keeps the previous consistent (manifest, archive) pair live.
+    for name in (TRACK_INDEX, TRACK_MAP):
+        p = gen / name
+        if not p.exists():
+            continue
+        try:
+            json.loads(p.read_text())
+        except json.JSONDecodeError:
+            problems.append(f"invalid json: {name}")
+
     # A failed layer that could have been carried but was not is a bug in the
     # carry path, and publishing it would put an empty layer on the live map —
     # the exact regression this design exists to prevent. Refuse instead.
@@ -247,7 +323,7 @@ def validate_generation(
     return problems
 
 
-def prune_generations(out_dir: Path, keep: int = 3) -> None:
+def prune_generations(out_dir: Path, keep: int = GENERATIONS_KEPT) -> None:
     gens = sorted(out_dir.glob("gen-*"))
     for g in (gens[:-keep] if len(gens) > keep else []):
         shutil.rmtree(g)
@@ -255,7 +331,7 @@ def prune_generations(out_dir: Path, keep: int = 3) -> None:
 
 def export(
     settings: Settings, events, liveness, places, alerts, now,
-    live_frp=None, frp_points=None, wind=None, aircraft=None,
+    live_frp=None, frp_points=None, wind=None,
     imagery=None, timeline=None, day_slices=None, results=None,
     # Handed over from the run the season was computed in, and rendered below as
     # season.json plus a manifest layer entry. Both keep defaults so every caller
@@ -271,23 +347,63 @@ def export(
     prev = _previous_ids_cells(out)
 
     feats = _events_features(events, liveness, places, alerts, now)
-    (gen / "events.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": feats})
-    )
 
     cur_cells = {eid: {m["cell"] for m in ms} for eid, ms in events.items()}
-    for eid, ms in events.items():
-        (gen / "tracks" / f"{eid}.json").write_text(
-            json.dumps(
-                {
-                    "id": eid, "series": bins_series(ms), "cells": sorted(cur_cells[eid]),
-                    # New H3 cells introduced per 6 h bin (aligned with `series`),
-                    # so the card can rebuild the fire's footprint AS OF any bin.
-                    "cell_bins": _cell_bins(ms),
-                    "frp_live": liveness.get(eid, {}).get("frp_series", []),
-                }
-            )
+    # Tracks are written ONLY for events that reach events.geojson. A track id
+    # gets to the client solely through `e.features[0].properties.id` on the
+    # events source (web/src/firecard.ts), and _events_features drops anything
+    # older than RECENT_DAYS — so on the measured generation 2730 of 12556
+    # tracks were published unreachable.
+    reachable = [f["properties"]["id"] for f in feats]
+
+    prev_map = _previous_track_map(out)
+    ordinal = int(_previous_manifest(out).get("publish_ordinal", 0)) + 1
+    track_map: dict[str, list] = {}
+    for eid in reachable:
+        ms = events[eid]
+        body = json.dumps(
+            {
+                "id": eid, "series": bins_series(ms), "cells": sorted(cur_cells[eid]),
+                # New H3 cells introduced per 6 h bin (aligned with `series`),
+                # so the card can rebuild the fire's footprint AS OF any bin.
+                "cell_bins": _cell_bins(ms),
+                "frp_live": liveness.get(eid, {}).get("frp_series", []),
+            }
         )
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        prior = prev_map.get(eid)
+        if _rewrite_track(eid, digest, prior, ordinal):
+            (gen / "tracks" / f"{eid}.json").write_text(body)
+            track_map[eid] = [gen.name, digest, ordinal]
+        else:
+            # Unchanged: leave the object where it already is and point at it.
+            track_map[eid] = prior
+
+    # Where each track physically lives, so the feature can address it and the
+    # next run can tell what actually changed.
+    (gen / TRACK_MAP).write_text(json.dumps(track_map))
+
+    # Every feature carries the generation that actually holds its track, and
+    # data.ts addresses it directly. That keeps worker/index.ts out of the
+    # request path entirely — loadTrack swallows a failed fetch and still
+    # renders the card, so a wrong pointer would otherwise be a fire card
+    # quietly missing its sparkline.
+    #
+    # Stamped here, next to the track map it reads, but events.geojson itself
+    # is written further down: has_footprint needs the isochrone bands, and
+    # those need `pixels`, which is not assembled until after this point.
+    for f in feats:
+        f["properties"]["track_gen"] = track_map[f["properties"]["id"]][0]
+
+    # The id -> cells projection the NEXT generation needs, written once here so
+    # hydrate can fetch one object instead of one per event. A track is ~6 KB
+    # and the merge lineage reads two of its five keys; at ~9300 events that was
+    # ~9300 round trips per refresh, and round trips — not bytes — are what
+    # bound the R2 boundary. Kept beside the tracks it summarises so a
+    # generation stays self-describing.
+    (gen / TRACK_INDEX).write_text(
+        json.dumps({eid: sorted(cur_cells[eid]) for eid in events})
+    )
 
     by_bin: dict[str, dict[str, int]] = {}
     for ms in events.values():
@@ -349,6 +465,28 @@ def export(
         json.dumps({"type": "FeatureCollection", "features": iso_feats})
     )
 
+    # Does this fire have a footprint outline to hand over to?
+    #
+    # The map fades the dot out above z9.5 because at street level the observed
+    # edge matters more than an abstract point. That is right for a fire the
+    # isochrones drew — and wrong for every other one, which simply vanished:
+    # the open band is interpolated from several detections, so a fire seen as
+    # a single pixel never earns an outline, and single-pixel fires are most of
+    # them. Stamping it here is what lets the map fade only the dots that have
+    # something to fade INTO, instead of hiding fires it cannot redraw.
+    #
+    # This is why events.geojson is written below rather than beside the other
+    # event files: the answer does not exist until the bands have been built,
+    # and `pixels` is not assembled until well after the features are.
+    footprint = FootprintIndex(open_band_geometry(iso_feats))
+    for f in feats:
+        lon, lat = f["geometry"]["coordinates"]
+        f["properties"]["has_footprint"] = footprint.contains(lon, lat)
+
+    (gen / "events.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": feats})
+    )
+
     # Wind. `from_deg` is the meteorological convention (where wind comes
     # FROM); `to_deg` is what an arrow must be rotated by to show where it is
     # blowing TO. Getting these backwards would point every arrow at the fire's
@@ -367,19 +505,6 @@ def export(
     ]
     (gen / "wind.geojson").write_text(
         json.dumps({"type": "FeatureCollection", "features": wind_feats})
-    )
-
-    # Live firefighting aircraft (OpenSky ADS-B snapshot).
-    ac_feats = [
-        {
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [a["lon"], a["lat"]]},
-            "properties": {k: v for k, v in a.items() if k not in ("lon", "lat")},
-        }
-        for a in (aircraft or [])
-    ]
-    (gen / "aircraft.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": ac_feats})
     )
 
     detections: dict[str, int] = {}
@@ -439,7 +564,6 @@ def export(
     for key, source, filenames in (
         ("frp", "mtg-fci", ["frp.geojson", "isochrones.geojson"]),
         ("wind", "open-meteo", ["wind.geojson"]),
-        ("aircraft", "opensky", ["aircraft.geojson"]),
         ("timeline", "archive", []),
         ("imagery", "gibs+effis", []),
     ):
@@ -531,6 +655,9 @@ def export(
             {
                 "schema_version": SCHEMA_VERSION, "generated_at": now.isoformat(),
                 "generation": gen.name,
+                # Drives the aged-rewrite bucket in _rewrite_track. Monotonic
+                # per publish; a reset just rewrites more than needed once.
+                "publish_ordinal": ordinal,
                 # Reported, not asserted: the old hardcoded `"viirs": True`
                 # claimed a tier the live site did not actually have.
                 "tiers": {
@@ -544,7 +671,6 @@ def export(
                 "live_frp": live_frp,
                 "frp_points": len(frp_feats),
                 "wind_points": len(wind_feats),
-                "aircraft": len(ac_feats),
                 "imagery": imagery,
                 "timeline": timeline,
                 "day_slice_dates": day_dates,

@@ -11,7 +11,6 @@ from .enrich import MIN_PLACES, fetch_gdacs, load_places
 from .events import cluster
 from .export import export
 from .fetch_firms import fetch_firms, fetch_firms_history
-from .fetch_aircraft import fetch_aircraft
 from .fetch_effis import fetch_effis_ba
 from .fetch_effis_season import fetch_season_snapshot, snapshot_path
 from .fetch_imagery import build_imagery
@@ -120,20 +119,11 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     wind = wind_result.data
     print(f"[info] wind samples: {len(wind)}")
 
-    aircraft_result = attempt(
-        lambda: fetch_aircraft(now=now), label="opensky-aircraft", now=now, default=[],
-        # ADS-B positions are epoch seconds, not ISO strings.
-        observed=lambda planes: _newest_epoch(p.get("pos_time") for p in planes),
-    )
-    aircraft = aircraft_result.data
-    print(f"[info] firefighting aircraft: {len(aircraft)}")
-
     # Persist each live layer as a GeoParquet snapshot (latest wins), so nothing
     # we fetch is ephemeral — every layer is a queryable local dataset.
     raw = settings.data_dir / "raw"
     _safe(lambda: write_points(frp_points, raw / "frp.parquet"), default=0, label="store-frp")
     _safe(lambda: write_points(wind, raw / "wind.parquet"), default=0, label="store-wind")
-    _safe(lambda: write_points(aircraft, raw / "aircraft.parquet"), default=0, label="store-aircraft")
 
     # Historical scars come from our OWN fire detections (FIRMS/VIIRS/MTG),
     # clustered over a longer window so fires that have gone quiet persist as
@@ -207,13 +197,12 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     results = {
         "frp": frp_result,
         "wind": wind_result,
-        "aircraft": aircraft_result,
         "imagery": imagery_result,
         "timeline": timeline_result,
     }
     return export(
         settings, events, liveness, places, alerts, now,
-        live_frp, frp_points, wind, aircraft, imagery, timeline, day_slices,
+        live_frp, frp_points, wind, imagery, timeline, day_slices,
         results=results, season=season, season_status=season_status,
     )
 
@@ -234,21 +223,6 @@ def _attach_units(season: dict) -> None:
             country["unit"] = pick_unit(country["km2"])
 
 
-def _newest_epoch(values) -> datetime | None:
-    """Newest epoch-seconds timestamp in an iterable, as an aware datetime."""
-    best: float | None = None
-    for value in values:
-        if value is None:
-            continue
-        try:
-            seconds = float(value)
-        except (TypeError, ValueError):
-            continue
-        if best is None or seconds > best:
-            best = seconds
-    return datetime.fromtimestamp(best, tz=timezone.utc) if best is not None else None
-
-
 def _safe(fn, default, label: str):
     try:
         return fn()
@@ -260,7 +234,7 @@ def _safe(fn, default, label: str):
 def refresh(settings: Settings, tier: str = "full") -> None:
     """Run one refresh at the given tier.
 
-    "fast" (every 15 min): live layers only — MTG FRP, wind, aircraft —
+    "fast" (every 30 min): live layers only — MTG FRP and wind —
     re-clustered against the archive already on disk. Nothing here needs a key.
 
     "full" (hourly): also tops up the polar (VIIRS/MODIS) archive and the slow

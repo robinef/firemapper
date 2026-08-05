@@ -17,7 +17,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .config import Settings
+from .config import GENERATIONS_KEPT, TRACK_INDEX, Settings
 
 ARCHIVE_PREFIX = "archive/"
 DATA_PREFIX = "data/"
@@ -122,8 +122,20 @@ def hydrate(settings: Settings, client) -> str | None:
 
     # Same round-trip bound as publish(): a generation is thousands of small
     # objects, and hydrate runs before every refresh.
+    #
+    # Nearly all of them are tracks, and refresh reads a previous generation's
+    # tracks for exactly one purpose: the id -> cells map behind the merge
+    # lineage. Since export() writes that map to TRACK_INDEX, fetching the
+    # tracks as well is ~9300 round trips for data we already hold — measured
+    # at 320s of a 16-minute refresh. Skip them only when the index is actually
+    # present in this generation: the one live at deploy time predates it, and
+    # dropping its tracks would blank the lineage for that refresh.
+    keys = _keys(client, settings.r2_bucket, f"{DATA_PREFIX}{generation}/")
+    tracks_prefix = f"{DATA_PREFIX}{generation}/tracks/"
+    if f"{DATA_PREFIX}{generation}/{TRACK_INDEX}" in keys:
+        keys = [k for k in keys if not k.startswith(tracks_prefix)]
     with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
-        list(pool.map(download, _keys(client, settings.r2_bucket, f"{DATA_PREFIX}{generation}/")))
+        list(pool.map(download, keys))
 
     body = _get(client, settings.r2_bucket, manifest.get("archive") or archive_key(generation))
     if body is not None:
@@ -243,7 +255,7 @@ def _delete_keys(client, bucket: str, keys: list[str]) -> None:
                 client.delete_object(Bucket=bucket, Key=key)
 
 
-def prune_remote(settings: Settings, client, keep: int = 3) -> None:
+def prune_remote(settings: Settings, client, keep: int = GENERATIONS_KEPT) -> None:
     """Keep the newest `keep` generations and their archives. Generation names
     are UTC timestamps, so lexicographic order is chronological order.
 

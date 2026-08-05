@@ -10,6 +10,24 @@ H3_RES = 8
 # 1.1.0 adds the per-layer `layers` freshness map. Minor bump: every 1.0 key
 # keeps its name and meaning, so an old client still loads a new manifest.
 SCHEMA_VERSION = "1.1.0"
+# Per-generation file holding the id -> cells projection of tracks/. Named here
+# because it is part of the published generation layout: export() writes it and
+# remote.hydrate() keys the "can I skip the tracks?" decision off its presence.
+# Additive, so it needs no schema bump — a client that ignores it sees 1.1.0.
+TRACK_INDEX = "tracks_index.json"
+# Per-generation file mapping event id -> [generation holding the track file,
+# sha256 of its contents, publish ordinal when written]. Lets export() skip
+# re-writing a track whose bytes have not changed, and lets each events.geojson
+# feature carry a `track_gen` pointing at whichever generation actually holds
+# it. Additive, so no schema bump.
+TRACK_MAP = "track_map.json"
+# How many generations a track may go un-rewritten, and how many generations are
+# therefore kept. Retention MUST exceed the rewrite period: that is what makes
+# every `track_gen` pointer valid by construction rather than by refcounting —
+# an object is always refreshed before it can be pruned. Both prune paths take
+# their default from here so no caller can pick a number that breaks it.
+TRACK_REWRITE_EVERY = 10
+GENERATIONS_KEPT = TRACK_REWRITE_EVERY + 1
 
 
 @dataclass(frozen=True)
@@ -53,7 +71,14 @@ def _read_dotenv(path: Path) -> dict[str, str]:
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            out[k.strip()] = v.strip()
+            v = v.strip()
+            # Strip one matched pair of surrounding quotes. Every shell tutorial
+            # writes FIRMS_MAP_KEY="abc", and keeping the quotes made the key
+            # unscrubbable: scrub() searches for the raw configured value while
+            # requests reports the PREPARED url, where a quote is %22.
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            out[k.strip()] = v
     return out
 
 
@@ -62,7 +87,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     if env is not None:
         merged = dict(env)
     return Settings(
-        firms_map_key=merged.get("FIRMS_MAP_KEY"),
+        # `or None`: an unset GitHub secret interpolates to "", which is not None,
+        # so it slips past every `is None` guard — including run.py's refusal to
+        # publish without a key — and then fetches a URL with an empty key
+        # segment. That is precisely the empty-archive publish those guards exist
+        # to prevent.
+        firms_map_key=merged.get("FIRMS_MAP_KEY") or None,
         eumetsat_key=merged.get("EUMETSAT_CONSUMER_KEY"),
         eumetsat_secret=merged.get("EUMETSAT_CONSUMER_SECRET"),
         sh_client_id=merged.get("SENTINELHUB_CLIENT_ID"),

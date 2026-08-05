@@ -4,7 +4,8 @@ The live map runs at **https://firemapper.robinef.workers.dev** as a Cloudflare
 Worker. The app shell is static; the data is not.
 
 ```
-GitHub Actions ──┬─ refresh-fast (*/15)  MTG FRP, wind, aircraft, re-cluster
+Cloudflare cron ─► refresh-fast (*/30)  MTG FRP, wind, re-cluster
+GitHub Actions ──┬─ refresh-fast (37 */6, fallback only)
                  └─ refresh-full (hourly) + FIRMS, EFFIS, GIBS imagery
        │ hydrate                                   │ publish
        ▼                                           ▼
@@ -25,7 +26,7 @@ Two consequences worth stating plainly:
 
 | Workflow | Schedule | Fetches |
 |---|---|---|
-| [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/15` | MTG FRP, wind, aircraft, then re-clusters against the archive |
+| [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/30`, driven by a Cloudflare Cron Trigger (see [`worker/index.ts`](../worker/index.ts)); its own `37 */6` schedule is only a fallback | MTG FRP, wind, then re-clusters against the archive |
 | [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | hourly at :07 | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
 
 Deploys are **not** a workflow. Cloudflare's git integration (Workers Builds)
@@ -73,7 +74,24 @@ already uploaded, so a failure at any boundary leaves the previous
 the archive the live manifest *names*, not whichever archive is newest — that is
 what keeps lineage and carry-forward reasoning about a single generation.
 
-The bucket keeps the newest three generations and their archives.
+The bucket keeps the newest eleven generations and their archives
+(`GENERATIONS_KEPT` in `pipeline/config.py`).
+
+Eleven rather than three because a generation no longer contains every track.
+About 98.7% of track files are byte-identical between consecutive runs, so
+`export` leaves an unchanged track where it is and each `events.geojson` feature
+carries a `track_gen` naming the generation that actually holds it. To stop a
+pointer outliving its object, every track is rewritten at least once every
+`TRACK_REWRITE_EVERY` (10) generations, and retention is one more than that — so
+the guarantee holds by construction rather than by refcounting.
+
+The rewrite is spread by a hash bucket on the event id, not by age. Age alone
+stampedes: every track starts life in the same generation, so they would all come
+due on the same later run and it would pay the full pre-change cost in one go.
+
+Measured effect: ~12714 objects per publish down to ~1300, and `publish` from
+481.5s to a fraction of it. The first run after deploy has no `track_map.json`
+and so writes everything once.
 
 ## First-time setup
 
@@ -90,6 +108,69 @@ Repository secrets:
 
 No Cloudflare token is needed as a repository secret: deploys run inside
 Cloudflare's own build integration, not from Actions.
+
+Worker secret (set on Cloudflare, **not** a repository secret):
+
+| Secret | Used by | Notes |
+|---|---|---|
+| `GH_DISPATCH_TOKEN` | the Worker's cron trigger | fine-grained GitHub PAT, `Actions: read and write`, scoped to this repo only |
+
+```bash
+npx wrangler secret put GH_DISPATCH_TOKEN
+```
+
+`workflow_dispatch` needs only `Actions`. Do not grant `Contents: write` — that
+is what `repository_dispatch` would require, and it is a token that can push
+commits to the repo.
+
+### When the refresh stops
+
+**The token expiring is the most likely cause, and fine-grained PATs cap at
+about a year — so this is a when, not an if.** Put its expiry date in a
+calendar; nothing in the system will remind you.
+
+The failure is quiet by nature: the cron keeps firing, every dispatch is
+rejected, and the map simply stops advancing. Three ways to catch it, in the
+order they will actually reach you:
+
+1. **The map itself.** `attempted_at` is the honest signal — it moves on every
+   refresh regardless of which layers succeeded. It lives **per layer**, at
+   `layers.<name>.attempted_at`, not at the top level of `data/manifest.json`;
+   `generated_at` is the top-level equivalent. Any layer will do, since one run
+   stamps them all:
+
+   ```bash
+   curl -s https://firemapper.robinef.workers.dev/data/manifest.json \
+     | jq -r '.layers.events.attempted_at'
+   ```
+
+   If that is hours old, the refresh is dead, whatever the cause.
+
+   **The Worker now checks this itself.** After each successful dispatch the
+   scheduled handler reads the manifest from R2 and throws if the newest
+   `attempted_at` is over 90 minutes old, so the cron invocation records an
+   error. That closes the gap a bare dispatch leaves: HTTP 204 only means
+   GitHub *accepted* the request, and a job that then fails or publishes
+   nothing used to leave every invocation reporting "Ok" while the map froze.
+
+   90 minutes rides out one missed cycle (a half-hourly trigger plus a
+   19-minute job) without crying wolf. It is deliberately looser than
+   `MAX_AGE_S["frp"]` of 60 min: that budget says when the UI must stop calling
+   data current, this says when a human should be told the pipeline stopped.
+
+   Still worth an **external** check, since none of this fires if the Worker
+   itself is gone.
+2. **Cloudflare.** The scheduled handler throws on a failed dispatch, so the
+   invocation is recorded as an error rather than "Ok" — visible under the
+   Worker's Cron Events, and eligible for a Cloudflare notification.
+3. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
+   (401 expired, 403 wrong scope, 404 wrong path, 422 bad ref or disabled
+   workflow). Logs are retained 3 days on the free plan — a diagnostic once you
+   already suspect a problem, not a monitor.
+
+GitHub's own `schedule` in `refresh-fast.yml` still runs every six hours, so a
+dead Worker or expired token degrades the cadence rather than stopping the map
+outright.
 
 Seed the archive once, locally, with `FIRMS_MAP_KEY` in `.env`:
 

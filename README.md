@@ -39,10 +39,6 @@ you can watch it grow.
 compares satellite imagery of the same place — green forest on one side, black
 scar on the other.
 
-**Follow the response.** Firefighting aircraft that are airborne right now
-(Canadairs, Dash-8s, coordination planes) appear on the map, tracked from public
-ADS-B signals.
-
 ## Run it yourself
 
 You need [uv](https://docs.astral.sh/uv/) (Python) and Node.
@@ -55,9 +51,8 @@ make dev       # open the map at http://localhost:5173
 
 That's it — no server, no database to run. The map reads plain static files.
 
-`make sample` needs no key: the keyless sources (Meteosat intensity, wind,
-firefighting aircraft) are real and live, and the fire history is synthetic so
-the demo is never empty.
+`make sample` needs no key: the keyless sources (Meteosat intensity, wind) are
+real and live, and the fire history is synthetic so the demo is never empty.
 
 Want the real fire history too? Get a free
 [NASA FIRMS key](https://firms.modaps.eosdis.nasa.gov/api/map_key/), drop it in
@@ -87,8 +82,8 @@ translations, colour-blind-safe palettes, or accessibility fixes.
 ## Credits
 
 Built on open data from **NASA FIRMS**, **EUMETSAT**, **Copernicus**,
-**Open-Meteo**, **OpenSky Network**, **GeoNames**, and **OpenStreetMap**. Thank
-you to everyone who keeps those services public.
+**Open-Meteo**, **GeoNames**, and **OpenStreetMap**. Thank you to everyone who
+keeps those services public.
 
 ## License
 

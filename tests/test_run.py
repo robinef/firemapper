@@ -16,7 +16,6 @@ def test_process_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)
     monkeypatch.setattr("pipeline.run.fetch_frp_points", lambda bbox: [])
     monkeypatch.setattr("pipeline.run.fetch_wind", lambda pts: [])
-    monkeypatch.setattr("pipeline.run.fetch_aircraft", lambda: [])
     s = load_settings(env={"DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o")})
     rows = [
         hs(45.0, 8.0, T(20, 0)), hs(45.005, 8.0, T(20, 6)),
@@ -92,7 +91,6 @@ def test_failed_frp_does_not_publish_wind_as_empty(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_mod, "fetch_frp_points", boom)
     monkeypatch.setattr(run_mod, "fetch_wind", lambda *a, **k: [{"lon": 1, "lat": 1}])
-    monkeypatch.setattr(run_mod, "fetch_aircraft", lambda *a, **k: [])
     monkeypatch.setattr(run_mod, "mtg_frp_extent", lambda *a, **k: None)
     monkeypatch.setattr(run_mod, "build_imagery", lambda *a, **k: None)
     # See test_process_end_to_end: unpatched, this reaches the live EFFIS WFS.

@@ -154,7 +154,7 @@ def append_hotspots(rows: list[dict], store: Path) -> int:
 
 
 def write_points(rows: list[dict], path: Path, lon_key: str = "lon", lat_key: str = "lat") -> int:
-    """Persist a live layer (MTG FRP / wind / aircraft) as a GeoParquet snapshot
+    """Persist a live layer (MTG FRP / wind) as a GeoParquet snapshot
     — overwrites, so it is always the latest. Scalar dict fields become columns;
     a POINT(lon lat) geometry column is added. Returns the row count."""
     path.parent.mkdir(parents=True, exist_ok=True)

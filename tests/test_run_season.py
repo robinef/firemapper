@@ -58,7 +58,6 @@ def captured(monkeypatch, tmp_path):
     monkeypatch.setattr(run, "mtg_frp_extent", lambda *a, **k: None)
     monkeypatch.setattr(run, "fetch_frp_points", lambda *a, **k: [])
     monkeypatch.setattr(run, "fetch_wind", lambda *a, **k: [])
-    monkeypatch.setattr(run, "fetch_aircraft", lambda *a, **k: [])
     monkeypatch.setattr(run, "build_imagery", lambda *a, **k: None)
     monkeypatch.setattr(run, "fetch_effis_ba", lambda *a, **k: [])
     # Defaulted here, not per test: under a fresh tmp_path there is no snapshot,

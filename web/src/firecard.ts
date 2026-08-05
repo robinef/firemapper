@@ -1,5 +1,6 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
+import { areaText, footprintNote } from "./area";
 import { loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
@@ -7,6 +8,7 @@ import { SCAR_LAYER_IDS } from "./layer_scars";
 import type { FeatureSnapshot, Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
+import { safeHttpUrl } from "./escape";
 import { emitUi } from "./ui_events";
 
 /**
@@ -72,23 +74,28 @@ function stat(label: string, value: string): string {
   return `<div class="fc-stat"><span>${label}</span><b>${value}</b></div>`;
 }
 
-function fireCardHtml(p: EventProps, track: Track | null): string {
+export function fireCardHtml(p: EventProps, track: Track | null): string {
   const st = STATUS[p.status] ?? STATUS.closed;
   const stt = STATE[p.state] ?? STATE.steady;
   const title = p.place?.name ?? "Fire";
   const peak = track && track.series.length ? Math.max(...track.series.map((b) => b.frp_sum)) : 0;
   const mv = p.movement;
   const rows = [
-    stat("Burned area", `${p.area_km2} km²`),
+    stat("Burned area", areaText(p.area_km2, p.cum_cells)),
+    footprintNote(p.cum_cells) ? stat("Footprint", footprintNote(p.cum_cells)) : "",
     stat("Ignited", `${fmtDate(p.started)} · ${rel(p.started)}`),
     stat("Last detection", rel(p.freshness.viirs)),
     p.freshness.meteosat ? stat("Live (Meteosat)", rel(p.freshness.meteosat)) : "",
     peak ? stat("Peak intensity", `${Math.round(peak)} MW`) : "",
     mv ? stat("Spreading", `${compass(mv.bearing_deg)} · ${(mv.distance_24h_m / 1000).toFixed(1)} km / 24 h`) : "",
-    p.place ? stat("Nearest town", `${p.place.name} (${p.place.distance_km} km)`) : "",
+    p.place ? stat("Nearest town", `${esc(p.place.name)} (${p.place.distance_km} km)`) : "",
   ].join("");
+  // Both halves of the GDACS alert are third-party: the pipeline copies title
+  // and link straight out of gdacs.org's RSS without validating either. The
+  // title is text, but the link lands in an href, which is a script sink — so
+  // it goes through safeHttpUrl, exactly as panel.ts does with the same field.
   const alert = p.gdacs
-    ? `<a class="fc-alert" href="${p.gdacs.link}" target="_blank" rel="noopener">⚠ ${esc(p.gdacs.title)}</a>`
+    ? `<a class="fc-alert" href="${safeHttpUrl(p.gdacs.link)}" target="_blank" rel="noopener">⚠ ${esc(p.gdacs.title)}</a>`
     : "";
   // Arrival ramp legend — only when we have per-bin cells to paint.
   const arrival = track && track.cell_bins && track.cell_bins.length
@@ -97,7 +104,14 @@ function fireCardHtml(p: EventProps, track: Track | null): string {
       `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
       `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
     : "";
+  // The peeked strip: the whole card compressed to one tappable line, so a
+  // phone can dock it above the time bar and keep the map — and the fire's
+  // own histogram scrubbing — visible. CSS hides its siblings at that size.
+  const peek =
+    `<div class="fc-peek"><b>${esc(title)}</b>` +
+    `<span>${p.area_km2} km² · ${st.t}</span><i aria-hidden="true">›</i></div>`;
   return (
+    peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
     `<div class="fc-title">${esc(title)}</div>` +
     `<div class="fc-sub">${fmtDate(p.started)} · <span style="color:${st.c}">${st.t}</span> fire</div>` +
@@ -109,8 +123,13 @@ function fireCardHtml(p: EventProps, track: Track | null): string {
   );
 }
 
-function scarCardHtml(s: Scar): string {
+export function scarCardHtml(s: Scar): string {
+  const peek =
+    `<div class="fc-peek"><b>${esc(s.place || s.label)}</b>` +
+    `<span>${s.kind === "past" ? "Past fire" : "Active fire"}</span>` +
+    `<i aria-hidden="true">›</i></div>`;
   return (
+    peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
     `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +
@@ -346,7 +365,7 @@ export function setupFireCard(
     const [lon, lat] = coords(e, feat);
     let track: Track | null = null;
     try {
-      track = await loadTrack(manifest, p.id);
+      track = await loadTrack(manifest, p.id, "/data", fetch, p.track_gen);
     } catch {
       /* no track (e.g. tiny fire) — card still renders from props */
     }
@@ -372,10 +391,6 @@ export function setupFireCard(
     open(scarCardHtml(s), lon, lat, String(s.id ?? ""), null, null, null,
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
-
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !panel.classList.contains("hidden")) close();
-  });
 
   return {
     openFire,

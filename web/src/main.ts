@@ -1,7 +1,6 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  loadAircraft,
   loadDaySlice,
   loadEvents,
   loadFrp,
@@ -10,6 +9,7 @@ import {
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
+import { areaText } from "./area";
 import { escapeHtml } from "./escape";
 import { createMap } from "./map";
 import {
@@ -27,7 +27,6 @@ import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_int
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
 import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
 import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
-import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import {
   DAY_SLICE_LAYER,
@@ -51,9 +50,11 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
+import { createNav } from "./nav";
+import { createShell } from "./shell";
+import { infoHtml } from "./info";
 import { countFires, countLabel } from "./fire_count";
-import { createSheet } from "./sheet";
-import { mountPanel, renderAircraftPanel } from "./panel";
+import { mountPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
 import { buildFireIndex, renderFireList, searchFires } from "./firelist";
@@ -71,11 +72,12 @@ async function boot() {
   if (import.meta.env.DEV) {
     (window as unknown as { __map: maplibregl.Map }).__map = map;
   }
-  // The aircraft panel is the only thing mountPanel closes (the fire card
-  // bypasses mountPanel entirely) — without announcing detail:close here, the
-  // sheet's mode never leaves "aircraft" after the user closes it, hiding the
-  // layer list and legends at every detent until a fire card is separately
-  // opened and closed.
+  // Announce the close so the shell can pop whatever entry the panel pushed.
+  // mountPanel shows search results and the cell picker (the fire card
+  // bypasses it entirely); the cell picker does emit detail:open, so without
+  // this the back bar keeps offering a way out of a panel that is already
+  // gone. The aircraft panel used to be the other caller, until that layer
+  // was retired.
   const panel = mountPanel("panel", () => emitUi("detail:close"));
 
   map.on("load", async () => {
@@ -113,20 +115,6 @@ async function boot() {
       manifest.wind_points != null ? await loadWind(manifest, BASE).catch(() => null) : null;
     if (wind) addWind(map, wind);
     addViirs(map, manifest.generated_at.slice(0, 10));
-    const aircraft =
-      manifest.aircraft != null ? await loadAircraft(manifest, BASE).catch(() => null) : null;
-    if (aircraft) {
-      // Stamp each plane's position age now, so the layer can dim a stale
-      // airborne fix (it may be km from the truth) — computed here because
-      // MapLibre styles have no concept of "now".
-      const nowSec = Date.now() / 1000;
-      for (const f of aircraft.features) {
-        const pt = (f.properties as { pos_time?: number }).pos_time;
-        (f.properties as Record<string, unknown>).age_min =
-          pt ? Math.round((nowSec - pt) / 60) : null;
-      }
-      addAircraft(map, aircraft);
-    }
     if (manifest.imagery?.scars?.length) addScars(map, manifest.imagery.scars);
 
     // Mirrors the size filter below, so the counter describes the map as it
@@ -226,16 +214,6 @@ async function boot() {
         legend: VIIRS_LEGEND,
       },
       {
-        key: "aircraft",
-        freshnessKeys: ["aircraft"],
-        levels: [1, 2] as (1|2)[],
-        label: "Firefighting aircraft",
-        question: "Are water bombers working this fire?",
-        layerIds: AIRCRAFT_LAYER_IDS,
-        defaultOn: aircraft != null && aircraft.features.length > 0,
-        legend: AIRCRAFT_LEGEND,
-      },
-      {
         key: "scars",
         freshnessKeys: ["imagery"],
         levels: [1] as (1|2)[],
@@ -253,11 +231,51 @@ async function boot() {
       map,
       manifest,
     );
+    // Search is the only route into a card that survives the rolling windows:
+    // a dot vanishes 48 h after the last detection, the scar list is capped,
+    // and the whole event window is 14 days. Built from the events already
+    // loaded, so it costs no extra request and covers closed fires too.
+    const fireIndex = buildFireIndex(events);
+    const openFromList = (id: string) => {
+      const entry = fireIndex.find((e) => e.id === id);
+      const feature = events.features.find(
+        (f) => (f.properties as { id?: string })?.id === id,
+      );
+      if (!entry || !feature) return;
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
+      fireCard.openFire({
+        features: [feature],
+        lngLat: { lng: entry.lon, lat: entry.lat },
+      } as unknown as maplibregl.MapLayerMouseEvent);
+    };
+    let lastQuery = "";
+    const showFireList = (query: string) => {
+      lastQuery = query;
+      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
+      const box = document.querySelector<HTMLInputElement>(".fl-search");
+      // Re-render on every keystroke, then restore focus and caret: innerHTML
+      // replaces the input node, so without this the box loses focus after one
+      // character and the reader can only ever type one letter.
+      box?.addEventListener("input", () => showFireList(box.value));
+      if (box && query) {
+        box.focus();
+        box.setSelectionRange(query.length, query.length);
+      }
+      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
+        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
+      }
+    };
+    const nav = createNav();
+    const shell = createShell({
+      nav,
+      showFireList,
+      lastQuery: () => lastQuery,
+      infoContent: () => infoHtml(manifest),
+    });
     // The count is camera-dependent, so it has to follow the camera — a
     // stale "1 of 54" after panning is a different lie from the one this
     // replaced. moveend rather than move: once per gesture, not per frame.
     map.on("moveend", () => switcher.refresh());
-    createSheet(); // no-op above 640px; re-parents the panels below it
     // Overview histogram: clicking a day paints that day's detections across
     // Europe (a continental time-scrubber). Clicking the shown day again clears.
     const dayDates = new Set(manifest.day_slice_dates ?? []);
@@ -284,16 +302,20 @@ async function boot() {
       // overview slice on top of the fire card that just opened.
       () => daySlice.invalidate(),
     );
+    // Nav → views. Everything else in this file talks to nav, never the other
+    // way round; these two lines are the only inbound direction.
+    nav.onExit("detail", () => fireCard.close());
+    if (compare) nav.onExit("compare", () => compare.exit());
     // Precedence, highest first. Halos come before their visible layer so the
     // larger target wins, and fires beat scars where they overlap. A single
     // map-level click handler (instead of one per layer) is what makes "one
     // tap, one open" possible: MapLibre invokes a layer-scoped handler once per
     // matching layer, so a dot sitting under its own halo used to fire twice —
-    // harmless for the idempotent aircraft panel, but for fires it meant two
+    // harmless for an idempotent panel, but for fires it meant two
     // concurrent `loadTrack` requests racing to render the card.
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
-      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS,
       // Last: the slice blankets whole regions, so any dot drawn over it must
       // win the hit test. It is the fallback for "there is no dot here".
       DAY_SLICE_LAYER,
@@ -305,49 +327,6 @@ async function boot() {
       HANDLERS[id] = fireCard.openFire;
     }
     for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
-    for (const id of ["aircraft-halo", "aircraft"]) {
-      HANDLERS[id] = (e) => {
-        const feat = e.features?.[0];
-        if (feat) {
-          panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
-          emitUi("aircraft:open");
-        }
-      };
-    }
-
-    // Search is the only route into a card that survives the rolling windows:
-    // a dot vanishes 48 h after the last detection, the scar list is capped,
-    // and the whole event window is 14 days. Built from the events already
-    // loaded, so it costs no extra request and covers closed fires too.
-    const fireIndex = buildFireIndex(events);
-    const openFromList = (id: string) => {
-      const entry = fireIndex.find((e) => e.id === id);
-      const feature = events.features.find(
-        (f) => (f.properties as { id?: string })?.id === id,
-      );
-      if (!entry || !feature) return;
-      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
-      fireCard.openFire({
-        features: [feature],
-        lngLat: { lng: entry.lon, lat: entry.lat },
-      } as unknown as maplibregl.MapLayerMouseEvent);
-    };
-    const showFireList = (query: string) => {
-      panel.showHtml(renderFireList(searchFires(fireIndex, query), query, fireIndex.length));
-      const box = document.querySelector<HTMLInputElement>(".fl-search");
-      // Re-render on every keystroke, then restore focus and caret: innerHTML
-      // replaces the input node, so without this the box loses focus after one
-      // character and the reader can only ever type one letter.
-      box?.addEventListener("input", () => showFireList(box.value));
-      if (box && query) {
-        box.focus();
-        box.setSelectionRange(query.length, query.length);
-      }
-      for (const row of document.querySelectorAll<HTMLButtonElement>(".fl-row")) {
-        row.addEventListener("click", () => openFromList(row.dataset.id ?? ""));
-      }
-    };
-    document.getElementById("find-fire")?.addEventListener("click", () => showFireList(""));
 
     // Scrub to a day, click where the fire was. This was the obvious route to a
     // fire that has stopped burning, and it did nothing: the layer had no
@@ -366,6 +345,10 @@ async function boot() {
         return;
       }
       panel.showHtml(renderCellPicker(hits, ev.lngLat));
+      // Both the multi-fire picker and the "no fire records here" message are
+      // #panel views like any other; without announcing, they were the one
+      // remaining route to an open panel with no history entry and no way back.
+      emitUi("detail:open");
       if (hits.length > 1) {
         for (const b of document.querySelectorAll<HTMLButtonElement>(".cell-pick")) {
           b.addEventListener("click", () => {
@@ -386,7 +369,7 @@ async function boot() {
       const features = map.queryRenderedFeatures(e.point, { layers });
       const id = dispatchMapClick(features as never, CLICK_ORDER);
       if (!id) {
-        // Tapping the map away from any fire/scar/aircraft is how a phone user
+        // Tapping the map away from any fire or scar is how a phone user
         // dismisses a detail card — there's no hardware "back" and the close
         // button can be a stretch one-handed. Confirmed missing only by
         // driving a real click in a real browser: jsdom's tests never asserted
@@ -399,13 +382,13 @@ async function boot() {
         // on every miss-click made an ordinary empty-map click (any viewport,
         // desktop included) silently clear a selected histogram day even
         // though no card had ever been opened.
-        if (fireCard.isOpen) fireCard.close();
+        if (fireCard.isOpen) nav.back();
         return;
       }
       // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live
       // on its class prototype (and behind a private field), so spreading the
       // instance silently drops them and leaves a plain object that only
-      // looks like the real event. openFire/openScar and the aircraft handler
+      // looks like the real event. openFire and openScar
       // above only ever read `features` and `lngLat` (the fire card forwards
       // the same event into compare-mode's scarFromClick, which also only
       // reads those two), so we carry exactly those real values — features
@@ -421,19 +404,19 @@ async function boot() {
     });
 
     // Cursor feedback stays per-layer; it is desktop-only and harmless on touch.
-    // aircraft-halo is a visible semi-transparent glow (layer_aircraft.ts:78-87),
-    // so it gets the pointer cursor same as before this change. The fire-halo-*
-    // layers are fully transparent — a pointer over apparently-empty map would
-    // be a false affordance — so they are deliberately left out here even
-    // though each is a valid click target.
+    // The fire-halo-* layers are fully transparent — a pointer over
+    // apparently-empty map would be a false affordance — so they are
+    // deliberately left out here even though each is a valid click target.
     for (const id of [
-      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS,
     ]) {
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
     }
 
-    // Boot done + layers mounted → drop the cold-start splash.
+    // Boot done + layers mounted → drop the cold-start splash and let the rail
+    // be used; ⚙ before this point would open an unmounted registry.
+    shell.ready();
     const splash = document.getElementById("loading");
     if (splash) {
       splash.classList.add("done");
@@ -481,7 +464,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   let entry = 0;
   // Tracks compare:enter/compare:exit balance. NOT `swipe != null`: entering
   // now awaits tile probes, so an exit during that window would otherwise skip
-  // compare:exit and leave the mobile sheet collapsed for good.
+  // compare:exit and strand a compare entry on the nav stack for good.
   let comparing = false;
 
   // Every data overlay is hidden while comparing, so nothing (H3 footprint
@@ -490,13 +473,16 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
-    ...VIIRS_LAYER_IDS, ...AIRCRAFT_LAYER_IDS, ...SCAR_LAYER_IDS,
+    ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS,
   ];
-  const overlayVis: Record<string, string> = {};
+  // Not Record<string, string>: maplibre 6 types `visibility` as a union, and
+  // it was only ever these two values — the wider type just deferred the error.
+  const overlayVis: Record<string, "visible" | "none"> = {};
   const hideOverlays = () => {
     for (const id of OVERLAY_LAYERS) {
       if (!map.getLayer(id)) continue;
-      overlayVis[id] = (map.getLayoutProperty(id, "visibility") as string) ?? "visible";
+      overlayVis[id] =
+        (map.getLayoutProperty(id, "visibility") as "visible" | "none" | undefined) ?? "visible";
       map.setLayoutProperty(id, "visibility", "none");
     }
   };
@@ -520,7 +506,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // rotation off survives a compare round-trip.
     if (locked) unlockMap(map, locked);
     locked = null;
-    setCompareNotice(null, cfg, exit, step, picked);
+    setCompareNotice(null, cfg, step, picked);
     if (wasComparing) emitUi("compare:exit");
   };
 
@@ -545,7 +531,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     if (landed.after === current.after) return;
     current = landed;
     swipe.setAfterTiles(scarTiles(cfg, landed, picked).after);
-    setCompareNotice(landed, cfg, exit, step, picked);
+    setCompareNotice(landed, cfg, step, picked);
   };
 
   // GIBS 404s a day it does not hold, and MODIS Terra drops whole days now and
@@ -565,16 +551,12 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // both halves reads as "the fire did nothing".
     return { ...scar, before: b.date, after: a.date < scar.started ? scar.after : a.date };
   };
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") exit();
-  });
-
   const enter = async (scar: Scar) => {
     const mine = ++entry;
     swipe?.destroy();
     swipe = null;
     // Announced on intent, not on arrival: probing the tiles takes seconds, and
-    // the sheet must collapse the moment the reader asks to compare.
+    // the chrome must switch to compare the moment the reader asks for it.
     comparing = true;
     emitUi("compare:enter");
     // Guard against re-entry (switching scars while already comparing):
@@ -589,7 +571,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     // zone WOULD land on the map underneath and pan mid-comparison, so the
     // lock still earns its keep there. Gating on `(pointer: coarse)` rather
     // than a width breakpoint follows the actual ambiguity (touch vs mouse
-    // drag), not the viewport size the mobile sheet happens to use.
+    // drag), not the viewport width the mobile layout happens to switch at.
     if (!locked && window.matchMedia?.("(pointer: coarse)").matches) locked = lockMap(map);
     hideOverlays();
     // Never past the deepest tile the source has: over-zooming a 250 m MODIS
@@ -600,7 +582,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     const t = scarTiles(cfg, settled, picked);
     current = settled;
     swipe = new ImagerySwipe(map, t.before, t.after, fit);
-    setCompareNotice(settled, cfg, exit, step, picked);
+    setCompareNotice(settled, cfg, step, picked);
   };
 
   return {
@@ -673,7 +655,7 @@ function renderCellPicker(
       return (
         `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
         `<b>${escapeHtml(String(name))}</b>` +
-        `<span>${escapeHtml(String(p.area_km2 ?? "?"))} km² · ${escapeHtml(started)} · ` +
+        `<span>${escapeHtml(areaText(Number(p.area_km2 ?? 0), typeof p.cum_cells === "number" ? p.cum_cells : null))} · ${escapeHtml(started)} · ` +
         `${escapeHtml(String(p.status ?? ""))}</span></button>`
       );
     })
@@ -710,7 +692,6 @@ function dayDelta(a: string, b: string): number {
 function setCompareNotice(
   scar: Scar | null,
   cfg: ImageryConfig,
-  onExit: () => void,
   onStep: (days: number) => void | Promise<void>,
   picked?: { before?: Capture; after?: Capture },
 ) {
@@ -757,10 +738,8 @@ function setCompareNotice(
     // frame read as a broken image.
     `<span class="compare-hint">Cloudy? Step the after day.</span>` +
     `<span class="compare-src">${src}</span>` +
-    `<button class="compare-exit" type="button">&times; Exit compare</button>` +
     `</div>`;
   el.style.display = "block";
-  el.querySelector(".compare-exit")?.addEventListener("click", onExit);
   for (const b of el.querySelectorAll<HTMLButtonElement>(".compare-day")) {
     b.addEventListener("click", () => void onStep(Number(b.dataset.days)));
   }

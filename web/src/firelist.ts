@@ -1,3 +1,4 @@
+import { areaText } from "./area";
 /**
  * Find a fire by name.
  *
@@ -20,6 +21,8 @@ export interface FireEntry {
   label: string;
   status: string;
   areaKm2: number;
+  /** Distinct cells: 1 means detected, not measured. */
+  cells: number | null;
   started: string;
   lon: number;
   lat: number;
@@ -70,6 +73,7 @@ export function buildFireIndex(events: GeoJSON.FeatureCollection): FireEntry[] {
       label: place ?? `Fire · ${prettyDate(started)}`,
       status: typeof p.status === "string" ? p.status : "",
       areaKm2: Number(p.area_km2 ?? 0),
+      cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
       started,
       lon,
       lat,
@@ -116,13 +120,12 @@ export function renderFireList(rows: FireEntry[], query: string, total: number):
       (e) =>
         `<button class="fl-row" data-id="${esc(e.id)}">` +
         `<b>${esc(e.label)}</b>` +
-        `<span>${e.areaKm2} km² · ${esc(STATUS_LABEL[e.status] ?? e.status)} · ` +
+        `<span>${areaText(e.areaKm2, e.cells)} · ${esc(STATUS_LABEL[e.status] ?? e.status)} · ` +
         `${esc(prettyDate(e.started))}</span></button>`,
     )
     .join("");
   const empty = `<p class="legend-note">No fire matches that. Only the last 14 days are kept.</p>`;
   return (
-    `<button class="panel-close" aria-label="Close">&times;</button>` +
     `<div class="fc-title">Find a fire</div>` +
     `<div class="fc-sub">${total} in the last 14 days · biggest first</div>` +
     `<input class="fl-search" type="search" placeholder="Place, status or date…" ` +

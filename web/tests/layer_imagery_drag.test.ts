@@ -51,10 +51,13 @@ vi.mock("maplibre-gl", () => {
     }
     off() {}
   }
-  return { default: { Map: FakeMap } };
+  // A named export, not `{ default: ... }`: maplibre 6 is ESM-only and has no
+  // default export, so a default-shaped mock leaves `maplibregl.Map` undefined
+  // and the file fails to load before any test runs.
+  return { Map: FakeMap };
 });
 
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { ImagerySwipe } from "../src/layer_imagery";
 
 // A typed constructor view of the mocked Map so callers don't have to fight
@@ -179,8 +182,9 @@ describe("ImagerySwipe divider drag lifecycle", () => {
   // Regression for the real-browser-only lockup: setPointerCapture/
   // releasePointerCapture can throw NotFoundError when the browser's
   // internal pointer-id tracking doesn't recognise the id as currently
-  // active (a real, documented cross-browser Pointer Events quirk — see
-  // sheet.ts's identical handle-drag pattern for the fuller writeup). The
+  // active (a real, documented cross-browser Pointer Events quirk: capture is
+  // released automatically on cancel or on the element leaving the document,
+  // and the explicit release then has nothing left to release). The
   // no-op stubs in makeSwipe() never exercise this path, so this test
   // forces exactly one throw from each call, matching a genuine first-drag
   // failure, and asserts a second, independent drag still moves the

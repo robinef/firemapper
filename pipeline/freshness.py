@@ -20,15 +20,16 @@ MAX_AGE_S: dict[str, int] = {
     "events": 3 * 3600,       # VIIRS overpasses are ~3 h apart
     "frp": 3600,              # MTG publishes every 10 min
     "wind": 3 * 3600,         # Open-Meteo is hourly
-    "aircraft": 20 * 60,      # a plane moves ~6-9 km per minute
     "timeline": 24 * 3600,    # derived from the archive
     "imagery": 7 * 24 * 3600,  # scars change over days, never "live"
     "gibs_tiles": 7 * 24 * 3600,
 }
 
-# A stale aircraft position is a wrong claim about where an aircraft is, not
-# degraded data. Never carry it.
-NEVER_CARRIED = frozenset({"aircraft"})
+# Layers whose staleness would be a wrong CLAIM rather than degraded data, so a
+# failed fetch must blank them instead of carrying the previous value forward.
+# Empty since the aircraft layer was retired — kept because the distinction is
+# real and the next live-position layer will need it.
+NEVER_CARRIED: frozenset[str] = frozenset()
 
 CARRY_EXPIRY_FACTOR = 2
 

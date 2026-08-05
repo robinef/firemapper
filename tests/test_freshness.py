@@ -39,10 +39,19 @@ def test_ok_result_never_carries():
     assert should_carry("frp", result, _entry("frp", 5), NOW) is False
 
 
-def test_aircraft_is_never_carried():
-    """A stale plane position is a wrong claim, not degraded data."""
+def test_a_never_carried_layer_is_not_carried(monkeypatch):
+    """Some layers state a fact that expires — a position, a countdown — where
+    stale data is a wrong CLAIM rather than degraded data, so a failed fetch must
+    blank them instead of carrying the previous value forward.
+
+    NEVER_CARRIED is empty since the aircraft layer was retired, so the rule is
+    exercised through the frozenset itself; without this the mechanism would sit
+    untested until the next live-position layer needed it."""
+    import pipeline.freshness as fr
+
+    monkeypatch.setattr(fr, "NEVER_CARRIED", frozenset({"frp"}))
     result = FetchResult("failed", [], NOW)
-    assert should_carry("aircraft", result, _entry("aircraft", 1), NOW) is False
+    assert fr.should_carry("frp", result, _entry("frp", 1), NOW) is False
 
 
 def test_nothing_to_carry_on_a_cold_start():
