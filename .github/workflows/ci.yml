@@ -67,12 +67,22 @@ jobs:
       # turn.
       - name: Build
         run: npm run build
-      - name: Assert the maplibre worker was emitted beside the bundle
+      - name: Assert maplibre was emitted beside the bundle, and stayed external
         run: |
-          entry_dir=$(dirname "$(find dist/assets -name 'index-*.js' | head -1)")
-          for f in maplibre-gl-worker.mjs maplibre-gl-shared.mjs; do
+          entry=$(find dist/assets -name 'index-*.js' | head -1)
+          entry_dir=$(dirname "$entry")
+          for f in maplibre-gl.mjs maplibre-gl-worker.mjs maplibre-gl-shared.mjs; do
             test -f "$entry_dir/$f" || {
               echo "::error::$f missing from $entry_dir - the map would load without a worker"
               exit 1
             }
           done
+          # The entry must IMPORT maplibre rather than contain it. If `external`
+          # is ever dropped, the files above are still copied and every check
+          # here would pass while `shared` silently ships twice — inlined in the
+          # app chunk and again as a sibling, ~100 kB gzip of duplication. This
+          # is the only assertion that notices.
+          grep -q '/assets/maplibre-gl.mjs' "$entry" || {
+            echo "::error::$entry does not import /assets/maplibre-gl.mjs - maplibre got bundled again"
+            exit 1
+          }
