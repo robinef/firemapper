@@ -27,11 +27,31 @@ describe("vite config", () => {
     expect(exclude![1]).toContain("maplibre-gl");
   });
 
-  it("still copies the worker for the build, which is a separate path", () => {
-    // The exclude above fixes dev only. Production bundles maplibre, so the
-    // copy plugin is still what puts the worker beside the entry chunk.
-    // Losing either one breaks a different half of the project.
-    expect(configSource).toContain('name: "maplibre-worker-assets"');
+  it("still copies maplibre's files for the build, which is a separate path", () => {
+    // The exclude above fixes dev only. The build has its own arrangement:
+    // maplibre is external and its three files are copied beside the entry
+    // chunk. Losing either half breaks a different half of the project.
     expect(configSource).toContain('apply: "build"');
+    for (const file of [
+      "maplibre-gl.mjs",
+      "maplibre-gl-shared.mjs",
+      "maplibre-gl-worker.mjs",
+    ]) {
+      expect(configSource, `${file} is no longer copied`).toContain(file);
+    }
+  });
+
+  it("keeps maplibre external, or `shared` ships twice", () => {
+    // maplibre's entry AND its worker both import ./maplibre-gl-shared.mjs as a
+    // relative sibling. Bundling the entry inlines `shared` into the app chunk
+    // while the worker still needs it on disk, so it shipped twice — ~100 kB
+    // gzip of pure duplication, measured. External keeps the graph intact and
+    // one copy is fetched.
+    //
+    // This is a source match, so it cannot prove the OUTPUT is right. The CI
+    // build step asserts the emitted entry actually imports the copied file,
+    // which is the check that would catch a silent re-bundling.
+    expect(configSource).toMatch(/external:\s*\[\s*"maplibre-gl"\s*\]/);
+    expect(configSource).toContain('"maplibre-gl": MAPLIBRE_ENTRY');
   });
 });
