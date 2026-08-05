@@ -31,6 +31,10 @@ export interface Movement {
 
 export interface EventProps {
   id: string;
+  /** Generation holding this fire's track file. publish leaves a byte-identical
+   *  track where it is, so this is often an older generation than the live one.
+   *  Absent on manifests published before incremental publishing. */
+  track_gen?: string | null;
   status: "active" | "stale" | "closed";
   lifecycle_age_h: number;
   started: string;
