@@ -54,10 +54,10 @@ describe("panel", () => {
 
 // Regression: main.ts used to wire mountPanel("panel", () => undefined), so
 // closing whatever mountPanel had shown (search results, the cell picker — the
-// fire card bypasses it entirely) emitted nothing. The mobile sheet hides its
-// layer list and legends while in "detail" mode, and nothing left that mode
-// without a detail:close announcement, so both stayed hidden at every detent
-// until the user separately opened and closed a fire card.
+// fire card bypasses it entirely) emitted nothing, so nothing ever told the
+// chrome the panel had gone. The detail entry the cell picker pushed stayed on
+// the nav stack, leaving a back bar offering a way out of a panel that was
+// already closed.
 describe("mountPanel close wiring", () => {
   it("announces detail:close when the panel's close button is clicked", () => {
     document.body.innerHTML = `<div id="panel" class="hidden"></div>`;

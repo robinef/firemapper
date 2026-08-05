@@ -9,7 +9,7 @@ import type { Switcher } from "../src/registry";
 // pulls the real maplibre-gl package in (firecard.ts, main.ts, layer_imagery.ts).
 window.URL.createObjectURL ??= () => "";
 
-// jsdom has no matchMedia at all (see sheet.ts's own note on this), and
+// jsdom has no matchMedia at all, and
 // compare mode's touch-only lock gate (main.ts) now depends on one. Default
 // to "coarse" (touch) so the pre-existing lock/unlock tests below — written
 // before that gate existed, and asserting on the lock mechanics themselves —
@@ -67,9 +67,9 @@ describe("ui event wiring", () => {
 // (see the test above's `compare: null`, which is the "never entered" case in
 // production too — a plain close on a fire with no imagery configured never
 // even builds a CompareMode). setupCompareMode's exit() must only announce
-// compare:exit when compare mode was actually entered, so the sheet (which
-// collapses on enter and restores height on exit) doesn't restore a stale
-// height on an ordinary fire-card dismissal.
+// compare:exit when compare mode was actually entered, so the shell doesn't
+// pop a compare entry that was never pushed on an ordinary fire-card
+// dismissal.
 describe("compare mode enter/exit", () => {
   // fromFire/fromScar take a snapshot of the clicked feature, not the event:
   // MapLibre deletes event.features once a delegated handler returns, and the
@@ -189,5 +189,21 @@ describe("compare mode enter/exit", () => {
     } finally {
       window.matchMedia = original;
     }
+  });
+});
+
+// The bus contract, now stated from the consumer that replaced the sheet:
+// the shell is the only subscriber, and it must not need a payload to do its
+// job. If a future change adds one, this test is where it will be noticed.
+describe("the bus stays payloadless", () => {
+  it("emitUi passes no arguments to its subscribers", async () => {
+    const { emitUi, onUi } = await import("../src/ui_events");
+    let args: unknown[] = ["not called"];
+    const off = onUi("detail:open", (...rest: unknown[]) => {
+      args = rest;
+    });
+    emitUi("detail:open");
+    off();
+    expect(args).toEqual([]);
   });
 });
