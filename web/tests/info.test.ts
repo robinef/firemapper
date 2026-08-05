@@ -15,25 +15,25 @@ const events: LayerFreshness = {
   max_age_s: 10800,
 };
 
-const aircraft: LayerFreshness = {
+const wind: LayerFreshness = {
   attempted_at: "2026-08-04T11:45:00Z",
   fetched_at: null,
   observed_at: null,
   status: "failed",
-  source: "OpenSky",
+  source: "ECMWF",
   max_age_s: 1200,
 };
 
 const manifest = {
   generated_at: "2026-08-04T11:50:00Z",
-  layers: { events, aircraft },
+  layers: { events, wind },
 } as unknown as Manifest;
 
 describe("info view", () => {
   it("lists each layer with its source", () => {
     const html = infoHtml(manifest, now);
     expect(html).toContain("VIIRS + MTG");
-    expect(html).toContain("OpenSky");
+    expect(html).toContain("ECMWF");
   });
 
   it("reports a fresh layer's age", () => {
@@ -42,7 +42,7 @@ describe("info view", () => {
 
   it("marks a failed layer as unavailable rather than showing a false age", () => {
     const html = infoHtml(manifest, now);
-    expect(html).toContain("OpenSky unavailable");
+    expect(html).toContain("ECMWF unavailable");
   });
 
   it("always carries the emergency line — this is not an official alert", () => {

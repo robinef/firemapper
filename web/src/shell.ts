@@ -190,7 +190,7 @@ export function createShell(deps: ShellDeps): Shell {
       document.querySelector("#panel .fc-title")?.textContent?.trim() || "Fire";
     // Peek is a contract, not a default: at that size the mobile CSS hides the
     // back bar and every #panel child except `.fc-peek`, so a panel that never
-    // renders a strip — the aircraft panel, the cell picker — would collapse
+    // renders a strip — the cell picker, an FRP or wind panel — would collapse
     // into an empty 56px band with no back bar, no ✕ and nothing to tap to
     // expand. Only fireCardHtml and scarCardHtml emit one. Ask the DOM rather
     // than assume, so the layout can only be applied to a panel that survives
@@ -224,10 +224,11 @@ export function createShell(deps: ShellDeps): Shell {
   );
 
   offs.push(
+    // Every #panel content routes through this one event. There was a second,
+    // aircraft:open, for taps that reused #panel without going through the
+    // fire card; the aircraft layer was retired and the event went with it.
+    // The rule it existed to express still holds — same view, same entry.
     onUi("detail:open", openDetail),
-    // An aircraft tap reuses #panel without going through the fire card, so it
-    // is the same view by the same rule — not a special case.
-    onUi("aircraft:open", openDetail),
     onUi("detail:close", () => {
       // Dropped while nav is tearing down: firecard.close() emits this from
       // inside nav's own exit callback, and acting on it there would pop a

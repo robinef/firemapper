@@ -2,7 +2,7 @@ import { escapeHtml } from "./escape";
 import { layerState } from "./freshness";
 import type { Manifest } from "./types";
 
-const ORDER = ["events", "frp", "wind", "aircraft", "timeline", "imagery"];
+const ORDER = ["events", "frp", "wind", "timeline", "imagery"];
 
 export function infoHtml(m: Manifest, now: Date = new Date()): string {
   const layers = m.layers ?? {};

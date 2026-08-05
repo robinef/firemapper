@@ -17,9 +17,9 @@
  * popping compare runs `compare.exit()`, which destroys the swipe. A retained
  * entry therefore restores to an empty box. Rebuilding the view properly would
  * need either payloads on the event bus (which this design refuses) or a
- * reopen path per panel kind — and only fire cards have one, so aircraft
- * panels, cell pickers and scar cards would restore blank while fires
- * restored fine. Forward that works for some views and blanks for others is
+ * reopen path per panel kind — and only fire cards have one, so cell
+ * pickers, FRP and wind panels and scar cards would restore blank while
+ * fires restored fine. Forward that works for some views and blanks for others is
  * worse than Forward that does nothing.
  *
  * So `popstate` reporting a depth above the cursor is an orphan: nav undoes it

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNav } from "../src/nav";
 import { createShell } from "../src/shell";
-import { renderAircraftPanel } from "../src/panel";
+import { renderFrpPanel } from "../src/panel";
 import { fakeHistory, mountShellDom } from "./nav_fixtures";
 import { emitUi } from "../src/ui_events";
 
@@ -17,7 +17,7 @@ function setup() {
 /** What fireCardHtml actually renders, reduced to the two parts the shell
  *  reads: the `.fc-peek` strip it emits first, and the title it names the
  *  entry from. A fixture WITHOUT the strip is not a fire card — it is an
- *  aircraft panel or a cell picker, and the shell must size it differently. */
+ *  cell picker or an FRP panel, and the shell must size it differently. */
 function fireCardPanel(name: string): void {
   const panel = document.getElementById("panel")!;
   panel.innerHTML =
@@ -155,11 +155,11 @@ describe("shell ↔ ui_events wiring", () => {
     expect(nav.top.title).toBe("Monchique");
   });
 
-  it("replaces on aircraft over an open card", () => {
+  it("replaces on a second panel over an open card", () => {
     const { nav } = setup();
     card("Pedrógão");
     emitUi("detail:open");
-    emitUi("aircraft:open");
+    emitUi("detail:open");
     expect(nav.stack).toHaveLength(2);
   });
 
@@ -404,25 +404,22 @@ describe("detail sizing", () => {
   // nothing tappable to expand it — the panel is unreadable and unclosable.
   // Only fireCardHtml and scarCardHtml emit a strip, so every other renderer
   // must open full.
-  it("opens an aircraft panel full — it renders no peek strip to survive on", () => {
+  it("opens an FRP panel full — it renders no peek strip to survive on", () => {
     const { nav, view } = setup();
     const panel = document.getElementById("panel")!;
     // The real renderer, not a fixture: the whole point is that its output
     // has no `.fc-peek`, and a hand-written stand-in could quietly gain one.
-    panel.innerHTML = renderAircraftPanel({
-      role: "tanker",
-      callsign: "TEST01",
-      type: "CL-415",
-      country: "Portugal",
-      alt_m: 900,
-      speed_kmh: 320,
-      heading: 90,
-      pos_time: null,
+    // This was renderAircraftPanel until that layer was retired; renderFrpPanel
+    // is the same shape of no-strip panel and keeps the premise honest.
+    panel.innerHTML = renderFrpPanel({
+      frp_mw: 42,
+      satellite: "VIIRS",
+      acq_time: null,
     });
     panel.classList.remove("hidden");
     expect(panel.querySelector(".fc-peek")).toBeNull(); // the premise
 
-    emitUi("aircraft:open");
+    emitUi("detail:open");
 
     expect(nav.top.view).toBe("detail");
     expect(view.dataset.size).toBe("full");
@@ -445,17 +442,17 @@ describe("detail sizing", () => {
     expect(view.dataset.size).toBe("full");
   });
 
-  it("re-sizes per panel, so an aircraft after a fire card does not stay peeked", () => {
+  it("re-sizes per panel, so a plain panel after a fire card does not stay peeked", () => {
     const { view } = setup();
     fireCardPanel("Pedrógão");
     emitUi("detail:open");
     expect(view.dataset.size).toBe("peek");
 
-    // Same #panel, replaced in place — exactly what a tap on an aircraft does
-    // while a fire card is open.
+    // Same #panel, replaced in place — exactly what a tap on a hex with
+    // several fires does while a fire card is open.
     document.getElementById("panel")!.innerHTML =
-      `<button class="panel-close">×</button><div class="badge">AIRBORNE</div>`;
-    emitUi("aircraft:open");
+      `<button class="panel-close">×</button><div class="fc-title">3 fires here</div>`;
+    emitUi("detail:open");
 
     expect(view.dataset.size).toBe("full");
     expect(document.body.dataset.size).toBe("full");

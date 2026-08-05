@@ -19,9 +19,9 @@ describe("ui events", () => {
 
   it("unsubscribes", () => {
     const seen: string[] = [];
-    const off = onUi("aircraft:open", () => seen.push("x"));
+    const off = onUi("detail:open", () => seen.push("x"));
     off();
-    emitUi("aircraft:open");
+    emitUi("detail:open");
     expect(seen).toEqual([]);
   });
 

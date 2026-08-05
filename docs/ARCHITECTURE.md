@@ -21,7 +21,8 @@ R2 bucket ──── Worker /data/* ──── MapLibre frontend (web/)
 
 Locally, `<out_dir>` is `web/public/data` and Vite serves it directly — no
 bucket, no Worker, no credentials. Deployed, the same directory is published to
-R2 by CI every 15 minutes. See [DEPLOYMENT.md](DEPLOYMENT.md).
+R2 every 30 minutes, driven by a Cloudflare Cron Trigger rather than GitHub's
+own scheduler. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Why this shape
 
@@ -46,7 +47,6 @@ data). Only the last one answers "how old is this satellite detection".
 | `events` | VIIRS + MTG fused | 3 h | yes, up to 6 h |
 | `frp` | Meteosat MTG FCI | 1 h | yes, up to 2 h |
 | `wind` | Open-Meteo | 3 h | yes, up to 6 h |
-| `aircraft` | OpenSky ADS-B | 20 min | **never** |
 | `timeline` | archive | 24 h | yes, up to 48 h |
 | `imagery` | GIBS + EFFIS + curated | 7 d | yes, up to 14 d |
 
@@ -57,9 +57,13 @@ Rules that fall out of it:
   last week's fires.
 - **Carried data expires** at twice its budget, so a dead feed cannot leave
   ghost data on the map indefinitely.
-- **Aircraft is never carried.** A stale plane position is a false claim about
-  where an aircraft is, not degraded data. Grounded aircraft and fixes older
-  than the budget are dropped in the pipeline, before they reach the map.
+- **Some layers must never be carried.** Where staleness would be a false
+  *claim* rather than degraded data — a position, a countdown — a failed fetch
+  has to blank the layer instead. `NEVER_CARRIED` enforces this. It is empty
+  today: the aircraft layer that motivated it was retired once it became clear
+  its 20-minute budget was unreachable. A layer is fresh only from publish until
+  expiry, so meeting it needs `trigger interval + time-to-publish <= 20 min`;
+  publishing takes 12-18 min, which leaves no interval that fits.
 - **The header badge is computed from fire sources only** (`events`, `frp`). A
   successful wind fetch says nothing about whether we can still see fires.
 - **Derived layers inherit their source's staleness**: spread arrows and
@@ -72,7 +76,6 @@ Rules that fall out of it:
 | NASA FIRMS (VIIRS / MODIS) | detections, area, growth, real ignition dates | free map key |
 | Meteosat MTG FCI (EUMETView) | ~10-minute liveness, fire radiative power | none |
 | Open-Meteo | wind direction and speed | none |
-| OpenSky Network | firefighting aircraft (ADS-B) | none |
 | NASA GIBS | before/after true-colour imagery (~250 m) | none |
 | Copernicus Sentinel-2 (CDSE) | optional HD before/after imagery (10 m) | optional |
 | GeoNames `cities15000` | nearest-town labels | none |

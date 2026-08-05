@@ -13,9 +13,9 @@ jobs:
     name: pipeline (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
       - name: Run tests
@@ -30,10 +30,21 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          # 24, not 20. Node 20 is past end-of-life and GitHub already forces
+          # actions off it onto 24 — so the runner disagreed with this pin, and
+          # only the test job still ran on 20. It is also a hard blocker for
+          # dependency updates rather than a tidiness issue: jsdom 30 declares
+          # `^22.22.2 || ^24.15.0 || >=26.0.0`, and its undici 8 needs >=22.19,
+          # so on 20 the suite dies with `webidl.util.markAsUncloneable is not a
+          # function` before a single assertion runs.
+          #
+          # Nothing else in the repo pins a Node version — the Worker runs on
+          # Cloudflare's own runtime, not this one — so this line is the whole
+          # constraint.
+          node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci

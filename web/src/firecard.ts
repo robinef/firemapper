@@ -1,5 +1,6 @@
 import maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
+import { areaText, footprintNote } from "./area";
 import { loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
@@ -80,7 +81,8 @@ export function fireCardHtml(p: EventProps, track: Track | null): string {
   const peak = track && track.series.length ? Math.max(...track.series.map((b) => b.frp_sum)) : 0;
   const mv = p.movement;
   const rows = [
-    stat("Burned area", `${p.area_km2} km²`),
+    stat("Burned area", areaText(p.area_km2, p.cum_cells)),
+    footprintNote(p.cum_cells) ? stat("Footprint", footprintNote(p.cum_cells)) : "",
     stat("Ignited", `${fmtDate(p.started)} · ${rel(p.started)}`),
     stat("Last detection", rel(p.freshness.viirs)),
     p.freshness.meteosat ? stat("Live (Meteosat)", rel(p.freshness.meteosat)) : "",

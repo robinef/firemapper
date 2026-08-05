@@ -1,9 +1,10 @@
 /**
- * A five-event bus so one listener can learn what the UI is doing without any
+ * A four-event bus so one listener can learn what the UI is doing without any
  * view module learning that the listener exists. That listener is shell.ts,
  * which turns these announcements into pushes and pops on the nav stack; the
  * original one was the mobile sheet, and the point of the bus is that
- * replacing it changed nothing on the emitting side.
+ * replacing it changed nothing on the emitting side. It was five events until
+ * the aircraft layer was retired and `aircraft:open` went with it.
  *
  * Deliberately tiny: no payloads, no wildcard, no async. The consumer only
  * needs "something opened / something closed" — it reads the DOM for anything
@@ -13,7 +14,6 @@
 export type UiEvent =
   | "detail:open"
   | "detail:close"
-  | "aircraft:open"
   | "compare:enter"
   | "compare:exit";
 

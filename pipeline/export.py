@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import SCHEMA_VERSION, Settings
+from .config import SCHEMA_VERSION, TRACK_INDEX, Settings
 from .fetch_result import FetchResult
 from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, nearest_place
@@ -94,7 +94,7 @@ def _events_features(events, liveness, places, alerts, now):
                     # Europe-wide, smaller ones reveal as you zoom in, so no
                     # scale is cluttered (multi-scale generalisation). See
                     # size_class() for why the boundaries are NWCG's.
-                    "size_class": size_class(a),
+                    "size_class": size_class(a, cells=len({m["cell"] for m in members})),
                     "cum_cells": series[-1]["cum_cells"],
                     "movement": movement(series, now), "state": status(series, now),
                     "freshness": {"viirs": newest.isoformat(), "meteosat": met["latest"] if met else None},
@@ -111,10 +111,23 @@ def _events_features(events, liveness, places, alerts, now):
 
 
 def _previous_ids_cells(out_dir: Path) -> dict[str, set[str]] | None:
+    """Every previous event's id and cell footprint — the only thing the merge
+    lineage needs from the generation before this one.
+
+    Read from TRACK_INDEX when it is there, and from the track files when it is
+    not. That is not belt-and-braces: hydrate skips downloading `tracks/`
+    precisely when the index exists, so these two branches are the two shapes a
+    hydrated generation actually comes in. The generation that was live when
+    the index shipped has no index and its tracks ARE downloaded; drop the
+    fallback and that one refresh loses its merge lineage silently.
+    """
     man = out_dir / "manifest.json"
     if not man.exists():
         return None
     gen = out_dir / json.loads(man.read_text())["generation"]
+    index = gen / TRACK_INDEX
+    if index.exists():
+        return {eid: set(cells) for eid, cells in json.loads(index.read_text()).items()}
     prev: dict[str, set[str]] = {}
     tracks = gen / "tracks"
     if not tracks.exists():
@@ -172,8 +185,25 @@ MEDIUM_KM2 = 4.05   # NWCG F, 1000 acres
 MAJOR_KM2 = 20.2    # NWCG G, 5000 acres
 
 
-def size_class(area_km2_value: float) -> str:
-    """NWCG size class, collapsed to the three this pipeline can resolve."""
+def size_class(area_km2_value: float, cells: int | None = None) -> str:
+    """NWCG size class, collapsed to the three this pipeline can resolve.
+
+    A one-cell footprint is never sized. area_km2 is cells x SENSOR cell size —
+    0.7 km2 for VIIRS, 5.2 km2 for Meteosat — and NWCG's F boundary of 4.05 km2
+    falls BETWEEN the two. So a single Meteosat pixel, the smallest thing that
+    sensor can express, came out as class F while a single VIIRS pixel came out
+    minor. Measured in production 2026-08-04: of the events with exactly one
+    cell, 1118 were minor and 1117 medium — identical footprint, opposite class,
+    decided by which satellite happened to see the fire.
+
+    One cell means detected, not measured: the true burned area is anywhere
+    between a fraction of a km2 and the whole cell. NWCG applies from two cells
+    up, where the extent is actually resolved.
+
+    `cells=None` keeps plain NWCG semantics for callers that have no count.
+    """
+    if cells is not None and cells <= 1:
+        return "minor"
     if area_km2_value >= MAJOR_KM2:
         return "major"
     if area_km2_value >= MEDIUM_KM2:
@@ -195,6 +225,20 @@ def validate_generation(
         except json.JSONDecodeError:
             problems.append(f"invalid json: {name}")
 
+    # TRACK_INDEX is checked only WHEN PRESENT, and the asymmetry is the point:
+    # hydrate skips a generation's tracks exactly when the index exists. Absent,
+    # nothing is skipped and the tracks are read as before — safe, so refusing
+    # to publish over it would fail a run for a harmless state. Present but
+    # unparseable is the dangerous shape: it would be trusted, the tracks would
+    # not be fetched, and the NEXT refresh would die reading it. Refusing there
+    # keeps the previous consistent (manifest, archive) pair live.
+    index = gen / TRACK_INDEX
+    if index.exists():
+        try:
+            json.loads(index.read_text())
+        except json.JSONDecodeError:
+            problems.append(f"invalid json: {TRACK_INDEX}")
+
     # A failed layer that could have been carried but was not is a bug in the
     # carry path, and publishing it would put an empty layer on the live map —
     # the exact regression this design exists to prevent. Refuse instead.
@@ -212,7 +256,7 @@ def prune_generations(out_dir: Path, keep: int = 3) -> None:
 
 def export(
     settings: Settings, events, liveness, places, alerts, now,
-    live_frp=None, frp_points=None, wind=None, aircraft=None,
+    live_frp=None, frp_points=None, wind=None,
     imagery=None, timeline=None, day_slices=None, results=None,
 ) -> Path:
     out = settings.out_dir
@@ -241,6 +285,16 @@ def export(
                 }
             )
         )
+
+    # The id -> cells projection the NEXT generation needs, written once here so
+    # hydrate can fetch one object instead of one per event. A track is ~6 KB
+    # and the merge lineage reads two of its five keys; at ~9300 events that was
+    # ~9300 round trips per refresh, and round trips — not bytes — are what
+    # bound the R2 boundary. Kept beside the tracks it summarises so a
+    # generation stays self-describing.
+    (gen / TRACK_INDEX).write_text(
+        json.dumps({eid: sorted(cur_cells[eid]) for eid in events})
+    )
 
     by_bin: dict[str, dict[str, int]] = {}
     for ms in events.values():
@@ -322,19 +376,6 @@ def export(
         json.dumps({"type": "FeatureCollection", "features": wind_feats})
     )
 
-    # Live firefighting aircraft (OpenSky ADS-B snapshot).
-    ac_feats = [
-        {
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [a["lon"], a["lat"]]},
-            "properties": {k: v for k, v in a.items() if k not in ("lon", "lat")},
-        }
-        for a in (aircraft or [])
-    ]
-    (gen / "aircraft.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": ac_feats})
-    )
-
     detections: dict[str, int] = {}
     for ms in events.values():
         for m in ms:
@@ -392,7 +433,6 @@ def export(
     for key, source, filenames in (
         ("frp", "mtg-fci", ["frp.geojson", "isochrones.geojson"]),
         ("wind", "open-meteo", ["wind.geojson"]),
-        ("aircraft", "opensky", ["aircraft.geojson"]),
         ("timeline", "archive", []),
         ("imagery", "gibs+effis", []),
     ):
@@ -445,7 +485,6 @@ def export(
                 "live_frp": live_frp,
                 "frp_points": len(frp_feats),
                 "wind_points": len(wind_feats),
-                "aircraft": len(ac_feats),
                 "imagery": imagery,
                 "timeline": timeline,
                 "day_slice_dates": day_dates,

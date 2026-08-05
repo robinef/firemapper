@@ -62,15 +62,6 @@ export async function loadIsochrones(
   return (await r.json()) as GeoJSON.FeatureCollection;
 }
 
-export async function loadAircraft(
-  m: Manifest,
-  base = "/data",
-  fetchFn: Fetch = fetch,
-): Promise<GeoJSON.FeatureCollection> {
-  const r = await fetchFn(`${base}/${m.generation}/aircraft.geojson`);
-  return (await r.json()) as GeoJSON.FeatureCollection;
-}
-
 export async function loadWind(
   m: Manifest,
   base = "/data",

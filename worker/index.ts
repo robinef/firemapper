@@ -1,7 +1,8 @@
 /**
  * FireMapper edge entry point.
  *
- * Data lives in R2 and is republished every 15 minutes by CI, so it must NOT be
+ * Data lives in R2 and is republished every 30 minutes (a Cloudflare Cron
+ * Trigger drives it; see the scheduled handler below), so it must NOT be
  * bundled with the app: `/data/*` reads the bucket, everything else is the
  * static shell. That split is what makes a data refresh cost zero deploys.
  *
@@ -28,6 +29,10 @@ export interface FetcherLike {
 export interface Env {
   DATA: R2BucketLike;
   ASSETS: FetcherLike;
+  /** Fine-grained GitHub token, Actions: read+write on this repo only. Set with
+   * `wrangler secret put GH_DISPATCH_TOKEN`; absent in local dev, where the
+   * scheduled handler simply reports that and does nothing. */
+  GH_DISPATCH_TOKEN?: string;
   /** Sentinel Hub OGC instance id. A Worker secret, never published: it IS the
    * bearer token for that configuration (no per-request OAuth on /ogc/*), so
    * putting it in the manifest would hand every visitor read access to the
@@ -37,6 +42,61 @@ export interface Env {
   SENTINELHUB_INSTANCE_ID?: string;
   /** Seam for tests; defaults to global fetch. */
   SENTINELHUB_UPSTREAM?: (request: Request) => Promise<Response>;
+}
+
+const REPO = "robinef/firemapper";
+const WORKFLOW = "refresh-fast.yml";
+const REF = "main";
+// GitHub rejects requests without one, and a named agent makes this Worker
+// identifiable in audit logs rather than an anonymous caller.
+const UA = "firemapper-refresh-trigger";
+
+/**
+ * Ask GitHub to run the refresh workflow.
+ *
+ * Returns the status AND the body on failure. A bare status is not diagnosable:
+ * 422 is the common misconfiguration (wrong ref, the workflow_dispatch trigger
+ * removed, or the workflow auto-disabled after 60 days of repo inactivity — a
+ * real GitHub behaviour that would silently kill this), and GitHub always
+ * explains which in the body.
+ *
+ * Uses workflow_dispatch rather than repository_dispatch deliberately: the
+ * former needs only `Actions: read and write`, the latter needs
+ * `Contents: read and write`, which is a token that can push commits. Same
+ * result, far less to lose if the secret leaks.
+ */
+export async function dispatchRefresh(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ status: number; body: string }> {
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "user-agent": UA,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ref: REF }),
+    },
+  );
+  // 204 has no body by definition, and reading one costs a round trip.
+  const body = response.status === 204 ? "" : await response.text().catch(() => "");
+  return { status: response.status, body: body.slice(0, 300) };
+}
+
+/** Why a dispatch failed, in the terms whoever reads the alert will need. */
+function explain(status: number): string {
+  if (status === 401) return " — token invalid or expired";
+  // NOT simply "wrong scope": GitHub also answers 403 when a rate limit is
+  // exhausted. Asserting one of the two would send a reader chasing the wrong
+  // fault half the time; the body appended by the caller says which it is.
+  if (status === 403) return " — token lacks Actions: write, or rate limited";
+  if (status === 404) return " — repo or workflow path wrong, or token cannot see it";
+  if (status === 422) return " — bad ref, or the workflow is disabled";
+  return "";
 }
 
 const DATA_PREFIX = "/data/";
@@ -141,5 +201,67 @@ export default {
     if (!object) return missing();
 
     return new Response(object.body as BodyInit, { headers });
+  },
+
+  /**
+   * Drive the refresh from Cloudflare's scheduler instead of GitHub's.
+   *
+   * GitHub throttles scheduled workflows on public repos, and it is not a small
+   * effect: measured 2026-08-04 over 52.8 h, a quarter-hourly cron produced 30
+   * runs where 211 were nominal — 14%, with a median gap of 81 min and a worst
+   * of 232. Every freshness budget in the pipeline was written for a cadence
+   * that was never happening. Cron Triggers here fire reliably, so the schedule
+   * in the workflow stays only as a fallback for when this Worker is broken.
+   *
+   * Why 30 minutes specifically. A layer is inside its budget from publish until
+   * expiry, so a budget is met when interval + time-to-publish <= budget. The
+   * tightest budget is `frp` at 60 min (pipeline/freshness.py); everything else
+   * is 3 h or more. Measured on healthy main over 18 h to 2026-08-05, a
+   * refresh-fast run takes 10.5-18.7 min, median 13.2 — so a half-hourly trigger
+   * lands at 49 min worst case, inside the hour with headroom, where a
+   * three-quarter-hourly one (45 + 19 = 64) would not fit at all.
+   * The throttled cadence this replaces (60-200 min between runs) misses that
+   * budget outright, which is the concrete thing being fixed.
+   *
+   * An earlier revision justified this by the aircraft layer's 20-minute budget
+   * and predicted the job would fall to ~2 min once the FRP fetch was repaired
+   * (#25). Both are wrong and the second is instructive: the repair made runs
+   * LONGER, because a working FRP fetch re-enabled the wind fetch and meteosat
+   * clustering that had been silently skipped while it returned zero pixels. A
+   * profile taken through a broken path only describes the broken path. The
+   * aircraft layer was later retired — no interval could meet 20 min.
+   */
+  async scheduled(event: { cron?: string }, env: Env) {
+    if (!env.GH_DISPATCH_TOKEN) {
+      // Not an error: `wrangler dev` binds no secrets.
+      console.log("[refresh] no GH_DISPATCH_TOKEN bound, skipping dispatch");
+      return;
+    }
+
+    // Deliberately NOT wrapped in ctx.waitUntil, and deliberately not catching:
+    // a swallowed failure makes every invocation report "Ok", so Cloudflare's
+    // own cron-invocation status — the one signal that survives past a live
+    // `wrangler tail` and can raise a notification — would stay green through a
+    // 401 storm. An expiring token is the most likely way this dies (fine-
+    // grained PATs cap at ~1 year, so it is a when, not an if), and it fails
+    // exactly like the throttling this replaced: refreshes simply stop. Throwing
+    // is what makes that a recorded, alertable failure rather than a log line
+    // nobody reads.
+    let last: { status: number; body: string } | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // One retry: a single transient blip would otherwise forfeit a whole slot.
+      // Auth and config faults are not retried — they will not fix themselves,
+      // and a second 401 only doubles the noise.
+      last = await dispatchRefresh(env.GH_DISPATCH_TOKEN);
+      if (last.status === 204) {
+        console.log(`[refresh] dispatched refresh-fast (cron ${event?.cron ?? "?"})`);
+        return;
+      }
+      if (last.status < 500) break;
+    }
+    throw new Error(
+      `[refresh] dispatch failed: HTTP ${last!.status}${explain(last!.status)}` +
+        (last!.body ? ` — ${last!.body}` : ""),
+    );
   },
 };
