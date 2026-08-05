@@ -32,8 +32,8 @@ describe("counting what is actually drawn", () => {
       fire(2, 44, "medium"),
     ];
     const c = countFires(fires, EUROPE, 6);
-    expect(c).toEqual({ inView: 54, shown: 1 });
-    expect(countLabel(c)).toBe("1 of 54 in view · zoom in for the rest");
+    expect(c).toEqual({ inView: 54, shown: 1, hidden: "below-gate" });
+    expect(countLabel(c)).toBe('1 of 54 in view · zoom in, or tick “Show every size”');
   });
 
   it("goes quiet once the zoom draws everything", () => {
@@ -108,5 +108,38 @@ describe("counting what is actually drawn", () => {
       expect(countFires([fire(0, 44, "enormous")], EUROPE, zoom).shown, `z${zoom}`).toBe(0);
     }
     expect(countFires([fire(0, 44, "enormous")], EUROPE, 9, true).shown).toBe(0);
+  });
+  it("stops telling the reader to zoom in once the dots have handed over", () => {
+    // The bug this locks: past CLASS_MAXZOOM every class stops drawing, so
+    // shown fell to 0 and the label still said "zoom in for the rest" —
+    // advice that caused the state it was describing and never escapes it.
+    // A fire card flies to z10.5, so this is on the normal path.
+    const fires = [fire(0, 44, "major"), fire(0.1, 44, "minor")];
+    const c = countFires(fires, EUROPE, 10.5);
+    expect(c.shown).toBe(0);
+    expect(c.hidden).toBe("past-handover");
+    expect(countLabel(c)).toBe("2 in view · zoomed in past the dots — zoom out to see them");
+    expect(countLabel(c)).not.toContain("zoom in");
+  });
+
+  it("keeps the two hidden reasons apart across the handover boundary", () => {
+    const fires = [fire(0, 44, "major"), fire(0.1, 44, "minor")];
+    // Just below: minor is drawn (gate 8.5), so nothing is hidden.
+    expect(countFires(fires, EUROPE, 9.4).hidden).toBe("none");
+    // Just past: the dots are gone for both classes.
+    expect(countFires(fires, EUROPE, 9.5).hidden).toBe("past-handover");
+  });
+
+  it("points at the size filter, not just at zooming, below the gates", () => {
+    // 2860 of 3728 live fires were `minor` on 2026-08-05 — hidden until z8.5.
+    // The filter is the faster way out and sits right under this line.
+    const c = countFires([fire(0, 44, "major"), fire(0.1, 44, "minor")], EUROPE, 5);
+    expect(countLabel(c)).toContain("Show every size");
+  });
+
+  it("says nothing extra when everything in view is drawn", () => {
+    const c = countFires([fire(0, 44, "major")], EUROPE, 5);
+    expect(c.hidden).toBe("none");
+    expect(countLabel(c)).toBe("1 in view");
   });
 });
