@@ -19,8 +19,11 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v9
         with:
+          # v9 flipped `prune-cache` to false by default (see refresh-fast.yml
+          # for the fuller note). Left at the new default; the cost is GitHub
+          # cache size, not correctness.
           enable-cache: true
       - run: uv sync
       # Reverse-geocoding source for fire and scar labels. Without it run.py
