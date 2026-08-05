@@ -132,9 +132,16 @@ it:
 - **One layer answers one question**, owns its own legend, and its legend is only
   shown while the layer is on — so two colour codings can never compete. See
   [cartography-rules.md](cartography-rules.md).
-- **Two levels.** The overview shows coarse "where are the fires" layers; opening
-  a fire switches the panel to that fire's detail layers and hides the
-  overview-only ones. Each layer module declares which levels it belongs to.
+- **Two levels, one stack.** The overview shows coarse "where are the fires"
+  layers; opening a fire switches the panel to that fire's detail layers and
+  hides the overview-only ones. Each layer module declares which levels it
+  belongs to. Navigation between levels goes through `web/src/nav.ts`, a
+  history-backed view stack: going forward pushes an entry directly, while
+  going *back* happens only through `popstate` — which is what makes the "‹"
+  buttons, the Escape key and the hardware back gesture one operation instead
+  of three that drift apart. `web/src/shell.ts` owns everything that is chrome
+  rather than content: the icon rail, the `#view` container, the back bars and
+  the map's camera padding.
 
 Layers live in `web/src/layer_*.ts`, one module per layer. The per-fire view is
 `web/src/firecard.ts`; the bottom histogram is `web/src/timeline.ts`.

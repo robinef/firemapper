@@ -126,7 +126,6 @@ export function renderFireList(rows: FireEntry[], query: string, total: number):
     .join("");
   const empty = `<p class="legend-note">No fire matches that. Only the last 14 days are kept.</p>`;
   return (
-    `<button class="panel-close" aria-label="Close">&times;</button>` +
     `<div class="fc-title">Find a fire</div>` +
     `<div class="fc-sub">${total} in the last 14 days · biggest first</div>` +
     `<input class="fl-search" type="search" placeholder="Place, status or date…" ` +

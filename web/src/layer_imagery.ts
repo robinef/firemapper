@@ -451,7 +451,7 @@ export class ImagerySwipe {
   private onMove: () => void;
   // Set while a drag is in flight, cleared by pointerup/pointercancel/destroy.
   // destroy() needs this to tear down an in-progress drag itself — otherwise
-  // a destroy() mid-gesture (Escape, a second finger tapping .compare-exit,
+  // a destroy() mid-gesture (Escape, a second finger tapping the back bar,
   // or enter()'s swipe?.destroy() re-entering while a drag is live) leaves
   // the closure's pointermove/pointerup/pointercancel listeners bound to
   // `window` forever, leaking the whole second maplibregl.Map in this.after.
@@ -595,8 +595,7 @@ export class ImagerySwipe {
       this.setRatio((clientX - rect.left) / rect.width);
     };
     // A single tracked pointerId means a second finger landing mid-drag is
-    // ignored rather than hijacking the divider (see sheet.ts's handle drag
-    // for the same pattern).
+    // ignored rather than hijacking the divider.
     let activePointerId: number | null = null;
     const onDown = (e: PointerEvent) => {
       if (activePointerId !== null) return; // a drag is already in progress
@@ -605,8 +604,9 @@ export class ImagerySwipe {
       activePointerId = pointerId;
       // setPointerCapture/releasePointerCapture can throw NotFoundError if the
       // browser has already implicitly released capture (a real, documented
-      // cross-browser Pointer Events quirk — see sheet.ts's handle drag for
-      // the same guard and the fuller explanation). An uncaught throw here
+      // cross-browser Pointer Events quirk: capture is dropped automatically
+      // when the pointer is cancelled or the element leaves the document, and
+      // the release call then has nothing to release). An uncaught throw here
       // would abort before `release` is wired up below, leaving
       // activePointerId stuck non-null and the divider dead for the rest of
       // the page's life.
