@@ -1,7 +1,7 @@
 /**
  * The mobile bottom sheet.
  *
- * It owns exactly two things: how tall the sheet is, and which of the three
+ * It owns exactly two things: how tall the sheet is, and which of the two
  * content modes is showing. It holds no application data — which layers are on
  * and which fire is open stay in registry.ts and firecard.ts, which render into
  * the same element ids they always did.
@@ -20,7 +20,7 @@
 import { onUi } from "./ui_events";
 
 export type Detent = "peek" | "half" | "full";
-export type SheetMode = "overview" | "detail" | "aircraft";
+export type SheetMode = "overview" | "detail";
 
 /** A flick faster than this carries past the nearest detent. px per ms. */
 const FLICK_THRESHOLD = 0.5;
@@ -126,14 +126,6 @@ export function createSheet(breakpoint = 640): Sheet {
         onUi("detail:close", () => {
           api.setContent("overview");
           api.snapTo("peek");
-        }),
-        // An aircraft tap can arrive while a fire card is already open (it
-        // overwrites #panel directly, without emitting detail:close first).
-        // There's no illegal state to guard against here — the mode simply
-        // becomes "aircraft", same as if it had come from overview.
-        onUi("aircraft:open", () => {
-          api.setContent("aircraft");
-          api.snapTo("half");
         }),
         onUi("compare:enter", () => {
           beforeCompare = detent;

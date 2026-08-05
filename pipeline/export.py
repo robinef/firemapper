@@ -229,7 +229,7 @@ def prune_generations(out_dir: Path, keep: int = 3) -> None:
 
 def export(
     settings: Settings, events, liveness, places, alerts, now,
-    live_frp=None, frp_points=None, wind=None, aircraft=None,
+    live_frp=None, frp_points=None, wind=None,
     imagery=None, timeline=None, day_slices=None, results=None,
 ) -> Path:
     out = settings.out_dir
@@ -339,19 +339,6 @@ def export(
         json.dumps({"type": "FeatureCollection", "features": wind_feats})
     )
 
-    # Live firefighting aircraft (OpenSky ADS-B snapshot).
-    ac_feats = [
-        {
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [a["lon"], a["lat"]]},
-            "properties": {k: v for k, v in a.items() if k not in ("lon", "lat")},
-        }
-        for a in (aircraft or [])
-    ]
-    (gen / "aircraft.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": ac_feats})
-    )
-
     detections: dict[str, int] = {}
     for ms in events.values():
         for m in ms:
@@ -409,7 +396,6 @@ def export(
     for key, source, filenames in (
         ("frp", "mtg-fci", ["frp.geojson", "isochrones.geojson"]),
         ("wind", "open-meteo", ["wind.geojson"]),
-        ("aircraft", "opensky", ["aircraft.geojson"]),
         ("timeline", "archive", []),
         ("imagery", "gibs+effis", []),
     ):
@@ -462,7 +448,6 @@ def export(
                 "live_frp": live_frp,
                 "frp_points": len(frp_feats),
                 "wind_points": len(wind_feats),
-                "aircraft": len(ac_feats),
                 "imagery": imagery,
                 "timeline": timeline,
                 "day_slice_dates": day_dates,

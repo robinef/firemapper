@@ -1,6 +1,6 @@
 name: refresh-fast
 
-# Live layers only: MTG FRP (10-minute cadence), wind and aircraft, re-clustered
+# Live layers only: MTG FRP (10-minute cadence) and wind, re-clustered
 # against the archive already in R2. Needs no API key.
 on:
   schedule:

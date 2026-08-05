@@ -1,5 +1,5 @@
 /**
- * A five-event bus so the mobile sheet can learn what the UI is doing without
+ * A four-event bus so the mobile sheet can learn what the UI is doing without
  * any view module learning that mobile exists.
  *
  * Deliberately tiny: no payloads, no wildcard, no async. The sheet only needs
@@ -9,7 +9,6 @@
 export type UiEvent =
   | "detail:open"
   | "detail:close"
-  | "aircraft:open"
   | "compare:enter"
   | "compare:exit";
 

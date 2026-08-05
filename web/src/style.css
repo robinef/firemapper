@@ -319,8 +319,6 @@ body.fire-focus #timeline { right: 356px; }
      or the user loses the only way out of compare mode. Hiding #sidebar
      outright would take #notice down with it regardless of #notice's own
      display value. */
-  .sheet[data-mode="aircraft"] #sidebar > #layers,
-  .sheet[data-mode="aircraft"] #sidebar > #legend { display: none; }
   .sheet[data-detent="peek"] #sidebar > #layers,
   .sheet[data-detent="peek"] #sidebar > #legend,
   .sheet[data-detent="peek"] #panel { display: none; }

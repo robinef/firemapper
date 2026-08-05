@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { dispatchMapClick } from "../src/main_click";
 
-const ORDER = ["fire-halo", "fires", "fire-footprint-fill", "scars", "aircraft-halo", "aircraft"];
+const ORDER = ["fire-halo", "fires", "fire-footprint-fill", "scars"];
 
 describe("map click dispatch", () => {
   it("picks exactly one layer when a tap hits a dot and its halo", () => {

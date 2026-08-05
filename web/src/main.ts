@@ -1,7 +1,6 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  loadAircraft,
   loadDaySlice,
   loadEvents,
   loadFrp,
@@ -28,7 +27,6 @@ import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_int
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
 import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
 import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
-import { AIRCRAFT_LAYER_IDS, AIRCRAFT_LEGEND, addAircraft } from "./layer_aircraft";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import {
   DAY_SLICE_LAYER,
@@ -54,7 +52,7 @@ import {
 import { mountSwitcher, type LayerModule } from "./registry";
 import { countFires, countLabel } from "./fire_count";
 import { createSheet } from "./sheet";
-import { mountPanel, renderAircraftPanel } from "./panel";
+import { mountPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
 import { buildFireIndex, renderFireList, searchFires } from "./firelist";
@@ -72,11 +70,12 @@ async function boot() {
   if (import.meta.env.DEV) {
     (window as unknown as { __map: maplibregl.Map }).__map = map;
   }
-  // The aircraft panel is the only thing mountPanel closes (the fire card
-  // bypasses mountPanel entirely) — without announcing detail:close here, the
-  // sheet's mode never leaves "aircraft" after the user closes it, hiding the
-  // layer list and legends at every detent until a fire card is separately
-  // opened and closed.
+  // Announce the close so the sheet can leave whatever mode it is in. Nothing
+  // mountPanel currently shows (search results, the cell picker) emits
+  // detail:open, so today this only ever fires from an already-overview sheet
+  // and is a no-op — kept because the wiring was once absent and that cost the
+  // layer list and every legend until a fire card was separately opened and
+  // closed. The next content that does emit detail:open gets it for free.
   const panel = mountPanel("panel", () => emitUi("detail:close"));
 
   map.on("load", async () => {
@@ -114,20 +113,6 @@ async function boot() {
       manifest.wind_points != null ? await loadWind(manifest, BASE).catch(() => null) : null;
     if (wind) addWind(map, wind);
     addViirs(map, manifest.generated_at.slice(0, 10));
-    const aircraft =
-      manifest.aircraft != null ? await loadAircraft(manifest, BASE).catch(() => null) : null;
-    if (aircraft) {
-      // Stamp each plane's position age now, so the layer can dim a stale
-      // airborne fix (it may be km from the truth) — computed here because
-      // MapLibre styles have no concept of "now".
-      const nowSec = Date.now() / 1000;
-      for (const f of aircraft.features) {
-        const pt = (f.properties as { pos_time?: number }).pos_time;
-        (f.properties as Record<string, unknown>).age_min =
-          pt ? Math.round((nowSec - pt) / 60) : null;
-      }
-      addAircraft(map, aircraft);
-    }
     if (manifest.imagery?.scars?.length) addScars(map, manifest.imagery.scars);
 
     // Mirrors the size filter below, so the counter describes the map as it
@@ -227,16 +212,6 @@ async function boot() {
         legend: VIIRS_LEGEND,
       },
       {
-        key: "aircraft",
-        freshnessKeys: ["aircraft"],
-        levels: [1, 2] as (1|2)[],
-        label: "Firefighting aircraft",
-        question: "Are water bombers working this fire?",
-        layerIds: AIRCRAFT_LAYER_IDS,
-        defaultOn: aircraft != null && aircraft.features.length > 0,
-        legend: AIRCRAFT_LEGEND,
-      },
-      {
         key: "scars",
         freshnessKeys: ["imagery"],
         levels: [1] as (1|2)[],
@@ -290,11 +265,11 @@ async function boot() {
     // map-level click handler (instead of one per layer) is what makes "one
     // tap, one open" possible: MapLibre invokes a layer-scoped handler once per
     // matching layer, so a dot sitting under its own halo used to fire twice —
-    // harmless for the idempotent aircraft panel, but for fires it meant two
+    // harmless for an idempotent panel, but for fires it meant two
     // concurrent `loadTrack` requests racing to render the card.
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
-      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS,
       // Last: the slice blankets whole regions, so any dot drawn over it must
       // win the hit test. It is the fallback for "there is no dot here".
       DAY_SLICE_LAYER,
@@ -306,15 +281,6 @@ async function boot() {
       HANDLERS[id] = fireCard.openFire;
     }
     for (const id of SCAR_LAYER_IDS) HANDLERS[id] = fireCard.openScar;
-    for (const id of ["aircraft-halo", "aircraft"]) {
-      HANDLERS[id] = (e) => {
-        const feat = e.features?.[0];
-        if (feat) {
-          panel.showHtml(renderAircraftPanel(feat.properties ?? {}));
-          emitUi("aircraft:open");
-        }
-      };
-    }
 
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
@@ -387,7 +353,7 @@ async function boot() {
       const features = map.queryRenderedFeatures(e.point, { layers });
       const id = dispatchMapClick(features as never, CLICK_ORDER);
       if (!id) {
-        // Tapping the map away from any fire/scar/aircraft is how a phone user
+        // Tapping the map away from any fire or scar is how a phone user
         // dismisses a detail card — there's no hardware "back" and the close
         // button can be a stretch one-handed. Confirmed missing only by
         // driving a real click in a real browser: jsdom's tests never asserted
@@ -406,7 +372,7 @@ async function boot() {
       // Not `{ ...e }`: MapMouseEvent's preventDefault()/defaultPrevented live
       // on its class prototype (and behind a private field), so spreading the
       // instance silently drops them and leaves a plain object that only
-      // looks like the real event. openFire/openScar and the aircraft handler
+      // looks like the real event. openFire and openScar
       // above only ever read `features` and `lngLat` (the fire card forwards
       // the same event into compare-mode's scarFromClick, which also only
       // reads those two), so we carry exactly those real values — features
@@ -422,13 +388,11 @@ async function boot() {
     });
 
     // Cursor feedback stays per-layer; it is desktop-only and harmless on touch.
-    // aircraft-halo is a visible semi-transparent glow (layer_aircraft.ts:78-87),
-    // so it gets the pointer cursor same as before this change. The fire-halo-*
-    // layers are fully transparent — a pointer over apparently-empty map would
-    // be a false affordance — so they are deliberately left out here even
-    // though each is a valid click target.
+    // The fire-halo-* layers are fully transparent — a pointer over
+    // apparently-empty map would be a false affordance — so they are
+    // deliberately left out here even though each is a valid click target.
     for (const id of [
-      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, "aircraft-halo", "aircraft",
+      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS,
     ]) {
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
@@ -491,7 +455,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
-    ...VIIRS_LAYER_IDS, ...AIRCRAFT_LAYER_IDS, ...SCAR_LAYER_IDS,
+    ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS,
   ];
   const overlayVis: Record<string, string> = {};
   const hideOverlays = () => {

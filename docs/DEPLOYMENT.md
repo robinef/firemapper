@@ -4,7 +4,7 @@ The live map runs at **https://firemapper.robinef.workers.dev** as a Cloudflare
 Worker. The app shell is static; the data is not.
 
 ```
-GitHub Actions ──┬─ refresh-fast (*/15)  MTG FRP, wind, aircraft, re-cluster
+GitHub Actions ──┬─ refresh-fast (*/15)  MTG FRP, wind, re-cluster
                  └─ refresh-full (hourly) + FIRMS, EFFIS, GIBS imagery
        │ hydrate                                   │ publish
        ▼                                           ▼
@@ -25,7 +25,7 @@ Two consequences worth stating plainly:
 
 | Workflow | Schedule | Fetches |
 |---|---|---|
-| [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/15` | MTG FRP, wind, aircraft, then re-clusters against the archive |
+| [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/15` | MTG FRP, wind, then re-clusters against the archive |
 | [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | hourly at :07 | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
 
 Deploys are **not** a workflow. Cloudflare's git integration (Workers Builds)
