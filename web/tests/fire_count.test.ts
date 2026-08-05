@@ -65,15 +65,16 @@ describe("counting what is actually drawn", () => {
     expect(countFires(fires, EUROPE, 9).inView).toBe(1);
   });
 
-  it("counts nothing above the zoom where dots hand over to the footprint", () => {
-    // Fire layers carry maxzoom 9.5 and MapLibre treats it as EXCLUSIVE. A fire
-    // card flies to z10.5, so a counter ignoring the ceiling reads "2 in view"
-    // over a map showing no dots at all.
+  it("keeps counting fires above the handover, where each is dot or outline", () => {
+    // This asserted 0 while the dot layers carried maxzoom 9.5 — which was
+    // accurate then and was the bug: every fire stopped being drawn there, and
+    // only the 38% with an outline were still on the map. The handover is now
+    // per fire, so nothing in view goes unrepresented and the count says so.
     const fires = [fire(0, 44, "major"), fire(1, 44, "minor")];
     expect(countFires(fires, EUROPE, 9.4).shown).toBe(2);
-    expect(countFires(fires, EUROPE, 9.5).shown).toBe(0);
-    expect(countFires(fires, EUROPE, 10.5).shown).toBe(0);
-    expect(countFires(fires, EUROPE, 10.5).inView).toBe(2); // still there, just not drawn
+    expect(countFires(fires, EUROPE, 9.5).shown).toBe(2);
+    expect(countFires(fires, EUROPE, 10.5).shown).toBe(2);
+    expect(countFires(fires, EUROPE, 10.5).inView).toBe(2);
   });
 
   it("counts everything as shown once the size gates are turned off", () => {
@@ -109,25 +110,27 @@ describe("counting what is actually drawn", () => {
     }
     expect(countFires([fire(0, 44, "enormous")], EUROPE, 9, true).shown).toBe(0);
   });
-  it("stops telling the reader to zoom in once the dots have handed over", () => {
-    // The bug this locks: past CLASS_MAXZOOM every class stops drawing, so
-    // shown fell to 0 and the label still said "zoom in for the rest" —
-    // advice that caused the state it was describing and never escapes it.
-    // A fire card flies to z10.5, so this is on the normal path.
+  it("counts every fire as shown past the handover, dot or outline", () => {
+    // The dots used to be cut off at 9.5 for EVERY fire, so shown fell to 0
+    // and the label said "zoom in for the rest" — advice that caused the state
+    // it described. Now a covered fire is represented by its outline and an
+    // uncovered one keeps its dot, so nothing in view is missing.
+    // A fire card flies to z10.5, so this is the normal path, not an edge.
     const fires = [fire(0, 44, "major"), fire(0.1, 44, "minor")];
     const c = countFires(fires, EUROPE, 10.5);
-    expect(c.shown).toBe(0);
-    expect(c.hidden).toBe("past-handover");
-    expect(countLabel(c)).toBe("2 in view · zoomed in past the dots — zoom out to see them");
+    expect(c.shown).toBe(2);
+    expect(c.hidden).toBe("none");
+    expect(countLabel(c)).toBe("2 in view");
     expect(countLabel(c)).not.toContain("zoom in");
   });
 
-  it("keeps the two hidden reasons apart across the handover boundary", () => {
+  it("stops subtracting exactly at the handover, not before it", () => {
+    // minor's gate is 8.5, so at 8.4 it is genuinely undrawn and the reader
+    // still needs telling. The boundary itself must not regress to a cutoff.
     const fires = [fire(0, 44, "major"), fire(0.1, 44, "minor")];
-    // Just below: minor is drawn (gate 8.5), so nothing is hidden.
-    expect(countFires(fires, EUROPE, 9.4).hidden).toBe("none");
-    // Just past: the dots are gone for both classes.
-    expect(countFires(fires, EUROPE, 9.5).hidden).toBe("past-handover");
+    expect(countFires(fires, EUROPE, 8.4).hidden).toBe("below-gate");
+    expect(countFires(fires, EUROPE, 9.5).shown).toBe(2);
+    expect(countFires(fires, EUROPE, 12).shown).toBe(2);
   });
 
   it("points at the size filter, not just at zooming, below the gates", () => {

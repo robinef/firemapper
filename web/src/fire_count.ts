@@ -17,23 +17,27 @@
  * map instance, and asserted equal in tests. */
 export const CLASS_MINZOOM: Record<string, number> = { major: 3, medium: 6, minor: 8.5 };
 
-/** Fire dots stop here and the footprint polygon takes over (layer_fires.ts).
- * MapLibre treats maxzoom as EXCLUSIVE, so at z9.5 nothing is drawn — and a
- * fire card flies to z10.5, where a counter ignoring this reads "20 in view"
- * over an empty map. */
-export const CLASS_MAXZOOM = 9.5;
+/** Where the dot begins handing over to the footprint outline (layer_fires.ts).
+ *
+ * It is no longer a cutoff. The dot layers used to carry maxzoom 9.5, so at
+ * this zoom every fire stopped being drawn and only the 38% with an outline
+ * were still on the map. Now the handover is per fire: a covered one fades to
+ * nothing and its outline speaks for it, an uncovered one keeps its dot. Above
+ * this zoom every fire in view is therefore represented by something, which is
+ * why the count stops subtracting here. */
+export const HANDOVER_ZOOM = 9.5;
 
 export interface FireCount {
   /** Live (non-closed) fires whose centroid is inside the viewport. */
   inView: number;
   /** How many of those the current zoom actually draws. */
   shown: number;
-  /** Why the undrawn ones are missing, so the label can give advice that
-   *  actually works. The two cases need OPPOSITE instructions and used to
-   *  share one message: below the class gates you zoom IN, but past
-   *  CLASS_MAXZOOM the dots have handed over to the footprint and only
-   *  zooming OUT brings them back. */
-  hidden: "none" | "below-gate" | "past-handover";
+  /** Why the undrawn ones are missing. Only one reason remains: the class
+   *  gates below. There was a second — past the handover the dots were cut
+   *  off entirely and the label had to say "zoom out" instead of "zoom in" —
+   *  but that state no longer exists now that uncovered fires keep their dot,
+   *  so the union keeps a single case rather than one that can never fire. */
+  hidden: "none" | "below-gate";
 }
 
 export interface Bounds {
@@ -85,11 +89,12 @@ export function countFires(
     // does not exist.
     const known = Object.prototype.hasOwnProperty.call(CLASS_MINZOOM, p.size_class ?? "");
     const min = known ? CLASS_MINZOOM[p.size_class as string] : Infinity;
-    if (zoom >= (showAllSizes && known ? 0 : min) && zoom < CLASS_MAXZOOM) shown++;
+    // Past the handover the class gates no longer decide anything: they all
+    // sit below it, so every recognised fire is on the map either as its own
+    // dot or as part of the outline that replaced it.
+    if (known && (zoom >= HANDOVER_ZOOM || zoom >= (showAllSizes ? 0 : min))) shown++;
   }
-  const hidden =
-    shown === inView ? "none" : zoom >= CLASS_MAXZOOM ? "past-handover" : "below-gate";
-  return { inView, shown, hidden };
+  return { inView, shown, hidden: shown === inView ? "none" : "below-gate" };
 }
 
 /**
@@ -99,15 +104,6 @@ export function countFires(
 export function countLabel(c: FireCount): string | null {
   if (!c.inView) return null;
   if (c.hidden === "none") return `${c.inView} in view`;
-  // Past the handover the dots are gone for EVERY class, so `shown` is 0 and
-  // "zoom in for the rest" sends the reader further from what they want. It is
-  // also not safe to promise outlines instead: the footprint is one merged
-  // MultiPolygon built from the isochrones, and on 2026-08-05 only 38% of live
-  // fires fell inside it — the other 62% draw nothing at all up here. So the
-  // advice is the one thing that always works: go back down.
-  if (c.hidden === "past-handover") {
-    return `${c.inView} in view · zoomed in past the dots — zoom out to see them`;
-  }
   // Below the gates. Zooming in works, but so does the size filter sitting
   // directly under this line, and most readers never find it: on 2026-08-05,
   // 2860 of 3728 live fires were `minor` and stayed hidden until z8.5.
