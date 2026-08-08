@@ -7,6 +7,9 @@
  * or distance rule leaks into a renderer it would drift between them silently.
  */
 
+import { escapeHtml } from "./escape";
+import { compass } from "./panel";
+
 /** Beyond which a wind sample is far enough a renderer should name the distance. */
 export const WIND_FAR_KM = 25;
 /** Past which: no honest claim this fire has that wind. The grid is
@@ -106,4 +109,58 @@ export function readoutModel(
   // Nothing to say means nothing on screen — not an empty box with headings.
   if (intensity === null && wind === null) return null;
   return { intensity, wind };
+}
+
+function fmtAge(minutes: number): string {
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`;
+}
+
+function fmtAgeShort(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
+}
+
+/** arrow points where wind GOING: from_deg + 180, same
+ * convention layer_wind.ts uses for streamline glyphs.
+ * Diverge here and the overlay contradicts the map layer for anyone
+ * viewing both on screen. */
+function arrow(bearingDeg: number): string {
+  return `<span class="ro-arrow" style="transform:rotate(${(bearingDeg + 180) % 360}deg)" aria-hidden="true">↑</span>`;
+}
+
+export function renderReadoutFull(model: Readout): string {
+  const intensity = model.intensity
+    ? `<div class="ro-lab">Burning</div>` +
+      `<div class="ro-big">${escapeHtml(String(Math.round(model.intensity.mw)))} MW</div>` +
+      `<div class="ro-age">${escapeHtml(fmtAge(model.intensity.ageMinutes))}</div>`
+    : "";
+  const w = model.wind;
+  // Age always; distance only when far enough to matter. Wind
+  // can still be on screen after passing the staleness cutoff, but hours old,
+  // and the reader has no other signal.
+  const qualifier = w
+    ? `<div class="ro-age">${escapeHtml(fmtAge(w.ageMinutes))}` +
+      (w.distanceKm > WIND_FAR_KM ? ` · ${escapeHtml(String(Math.round(w.distanceKm)))} km away` : "") +
+      `</div>`
+    : "";
+  const wind = w
+    ? `<div class="ro-lab">Wind</div>` +
+      `<div class="ro-wind">${arrow(w.bearingDeg)} ${escapeHtml(compass(w.bearingDeg))} ${escapeHtml(String(Math.round(w.kmh)))} km/h` +
+      qualifier +
+      `</div>`
+    : "";
+  return intensity + wind;
+}
+
+export function renderReadoutPeek(model: Readout): string {
+  const intensity = model.intensity
+    ? `${escapeHtml(String(Math.round(model.intensity.mw)))} MW (${escapeHtml(fmtAgeShort(model.intensity.ageMinutes))})`
+    : "";
+  const wind = model.wind
+    ? `${escapeHtml(compass(model.wind.bearingDeg))} ${escapeHtml(String(Math.round(model.wind.kmh)))} km/h`
+    : "";
+  return [intensity, wind].filter(Boolean).join(" | ");
 }
