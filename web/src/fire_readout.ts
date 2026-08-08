@@ -181,13 +181,15 @@ export function renderReadoutPeek(model: Readout): string {
  * which is luck rather than correctness.
  *
  * Returns null for anything that is not a Point (the footprint-polygon click
- * path carries no event id). A null position drops the wind line and keeps
- * intensity — better than matching wind to a guessed centroid.
+ * path carries no event id). When null is returned, the caller renders NO readout
+ * at all, because showing intensity without identifying which fire was opened
+ * would attach a number to uncertain identity.
  */
 export function eventPosition(
   feat: GeoJSON.Feature | null | undefined,
 ): [number, number] | null {
   if (!feat || feat.geometry?.type !== "Point") return null;
+  if (!Array.isArray(feat.geometry.coordinates)) return null;
   const [lon, lat] = (feat.geometry.coordinates ?? []) as unknown[];
   if (typeof lon !== "number" || typeof lat !== "number") return null;
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;

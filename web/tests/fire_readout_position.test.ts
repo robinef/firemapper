@@ -48,4 +48,14 @@ describe("eventPosition", () => {
     const withInfinity = { type: "Feature", geometry: { type: "Point", coordinates: [18.35, Infinity] }, properties: {} };
     expect(eventPosition(withInfinity as never)).toBeNull();
   });
+
+  it("returns null when coordinates is not an array (non-iterable)", () => {
+    // Bad upstream sources can emit non-array coordinates. Guard against
+    // destructuring a non-iterable, which would throw and take down the handler.
+    const numCoords = { type: "Feature", geometry: { type: "Point", coordinates: 42 }, properties: {} };
+    expect(eventPosition(numCoords as never)).toBeNull();
+
+    const objCoords = { type: "Feature", geometry: { type: "Point", coordinates: { lon: 18.35, lat: 42.71 } }, properties: {} };
+    expect(eventPosition(objCoords as never)).toBeNull();
+  });
 });
