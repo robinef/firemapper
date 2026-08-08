@@ -17,6 +17,7 @@ import {
   renderReadoutPeek,
   type Readout,
 } from "./fire_readout";
+import { clearReadout, mountReadout } from "./fire_readout_mount";
 
 /**
  * Level 2 — the fire card. Clicking a fire (active dot, footprint, or past-scar
@@ -199,9 +200,41 @@ export function setupFireCard(
   /** Called when a fire card opens, so the overview state (e.g. a painted day)
    *  can be cleared. */
   onEnter: () => void,
+  /** Wind sample points, already loaded by the caller — the nearest fresh one
+   *  becomes the card's wind reading.
+   *
+   *  Optional with a null default, and it has to stay that way: there are five
+   *  call sites and four of them are tests that predate this argument, and
+   *  tsconfig type-checks the test directory. A fire with no wind collection
+   *  reads exactly like a fire with no sample near it, which is a state the
+   *  renderers already handle. */
+  windPoints: GeoJSON.FeatureCollection | null = null,
 ): FireCard {
   const panel = document.getElementById("panel")!;
   const saved: Record<string, Record<string, unknown>> = {};
+
+  // The overlay and the card's own copy are alternatives, never both: two live
+  // readings of one fire on one screen ask the reader to reconcile them, and
+  // neither mount alone is a silent regression to the state before this
+  // feature existed — so no test on one of them could catch the double.
+  //
+  // The same 641px the stylesheet switches on, so JS and CSS cannot disagree
+  // about which mount is live (#fire-readout is display:none below it, and
+  // .fc-peek display:none above it).
+  //
+  // Optional-chained throughout, including `addEventListener`: jsdom has no
+  // matchMedia at all, and the stub some suites install carries `matches` and
+  // nothing else. With no media query to ask, we behave as mobile — the card
+  // keeps the reading, which is the safe direction, since that copy lives
+  // inside #panel and cannot be left orphaned over the map.
+  const mq = window.matchMedia?.("(min-width: 641px)") ?? null;
+  const isDesktop = () => mq?.matches === true;
+  /** The reading currently on display, so a breakpoint crossing can move it. */
+  let lastReadout: Readout | null = null;
+  /** Repaints the open card for the current breakpoint. Captures its own
+   *  onBeforeAfter rather than reading a shared one, so a repaint can never be
+   *  paired with a different card's compare-mode entry. */
+  let rerenderCard: (() => void) | null = null;
 
   const dim = (id: string) => {
     const pick = ["case", ["==", ["get", "id"], id], 0.95, 0.12] as unknown;
@@ -231,6 +264,9 @@ export function setupFireCard(
     openToken++;
     panel.classList.add("hidden");
     panel.innerHTML = "";
+    lastReadout = null;
+    rerenderCard = null;
+    clearReadout(document.body);
     clearBin();
     undim();
     mountOverview(); // restore the Level-1 histogram (with day-click)
@@ -239,6 +275,35 @@ export function setupFireCard(
     document.body.classList.remove("fire-focus");
     emitUi("detail:close");
   };
+
+  /**
+   * Writing the card's HTML and binding its controls are ONE operation.
+   *
+   * They used to be two statements sitting at either end of open(), which was
+   * fine while open() was the only thing that ever wrote the panel. The moment
+   * a second path re-renders it — the breakpoint handler below — that shape
+   * produces a card whose ✕ and "Before / after imagery" buttons quietly do
+   * nothing, with nothing about the card LOOKING wrong. Anything that repaints
+   * the card goes through here, so the two can never come apart again.
+   */
+  const paintCard = (html: string, onBeforeAfter: () => void) => {
+    panel.innerHTML = html;
+    panel.querySelector(".fc-close")?.addEventListener("click", close);
+    panel.querySelector(".fc-ba")?.addEventListener("click", onBeforeAfter);
+  };
+
+  // A card open across a rotation (or a desktop window dragged narrow) has to
+  // move its reading to the other mount, and the card must be repainted for
+  // the new width — through paintCard, so its controls come back with it.
+  // Gated on fire-focus: with no card open there is nothing to move.
+  mq?.addEventListener?.("change", () => {
+    if (!document.body.classList.contains("fire-focus")) return;
+    // mountReadout(_, null) clears, so a scar card (which never sets a
+    // readout) is left exactly as it was at either width.
+    if (isDesktop()) mountReadout(document.body, lastReadout);
+    else clearReadout(document.body);
+    rerenderCard?.();
+  });
 
   // Clicking a histogram bin paints the fire's footprint AS OF that bin (the
   // cumulative burned cells up to then) plus a pulse at that bin's centroid —
@@ -311,9 +376,18 @@ export function setupFireCard(
     // earlier fire's loadTrack might still be in flight — patching openScar
     // alone would only cover today's callers, not the next one added.
     openToken++;
+    // The mount lifecycle is reset HERE, not only in close(), for the same
+    // reason openToken is bumped here: this is the single choke point every
+    // card display goes through. Opening a scar, or a second fire, never calls
+    // close() — so clearing there alone would leave the previous fire's
+    // readings standing over the map beside a card they do not belong to.
+    // openFire re-establishes both immediately after this returns.
+    lastReadout = null;
+    rerenderCard = null;
+    clearReadout(document.body);
     clearBin();
     onEnter(); // clear any overview state (e.g. a painted day slice)
-    panel.innerHTML = html;
+    paintCard(html, onBeforeAfter);
     panel.classList.remove("hidden");
     document.body.classList.add("fire-focus");
     switcher.setLevel(2); // swap the panel to this fire's detail layers
@@ -360,8 +434,6 @@ export function setupFireCard(
     } else {
       mountOverview();
     }
-    panel.querySelector(".fc-close")?.addEventListener("click", close);
-    panel.querySelector(".fc-ba")?.addEventListener("click", onBeforeAfter);
   };
 
   const coords = (e: maplibregl.MapLayerMouseEvent, feat: maplibregl.MapGeoJSONFeature): [number, number] => {
@@ -406,13 +478,23 @@ export function setupFireCard(
     // open-ended arrival band that may span several fires. The branch is on
     // POSITION, not identity — a polygon carrying a full property bag still
     // gets nothing, because the missing piece is the point to read at.
-    //
-    // Wind arrives in a later task; null until then.
     const pos = eventPosition(feat);
-    const readout = pos ? readoutModel(track?.frp_live ?? null, pos, null, new Date()) : null;
-    open(fireCardHtml(p, track, readout), lon, lat, p.id, series.length ? series : null,
-      centroids.length ? centroids : null, cellBins,
-      () => compare?.fromFire({ props: { ...(feat.properties ?? {}) }, lon, lat }));
+    const readout = pos ? readoutModel(track?.frp_live ?? null, pos, windPoints, new Date()) : null;
+    const desktop = isDesktop();
+    const onBeforeAfter = () =>
+      compare?.fromFire({ props: { ...(feat.properties ?? {}) }, lon, lat });
+    // Exactly one mount is populated: the card is handed the readout only when
+    // the overlay will not be.
+    open(fireCardHtml(p, track, desktop ? null : readout), lon, lat, p.id,
+      series.length ? series : null, centroids.length ? centroids : null, cellBins,
+      onBeforeAfter);
+    // AFTER open(), never before: open() resets both of these on the way in,
+    // to clear whatever card came before. Setting them first would hand the
+    // reset the very state it is meant to preserve.
+    lastReadout = readout;
+    rerenderCard = () =>
+      paintCard(fireCardHtml(p, track, isDesktop() ? null : readout), onBeforeAfter);
+    if (desktop) mountReadout(document.body, readout);
   };
 
   const openScar = (e: maplibregl.MapLayerMouseEvent) => {

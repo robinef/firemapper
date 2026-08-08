@@ -301,6 +301,12 @@ async function boot() {
       // without disarming its token here it would land later and repaint the
       // overview slice on top of the fire card that just opened.
       () => daySlice.invalidate(),
+      // The same collection the wind LAYER draws from, loaded once above — the
+      // card's reading and the streamlines on the map must come from one
+      // sample set, or the overlay names a direction the map contradicts.
+      // Null when the layer failed or the manifest carries no wind: the card
+      // then reads exactly as a fire with no sample near it does.
+      wind,
     );
     // Nav → views. Everything else in this file talks to nav, never the other
     // way round; these two lines are the only inbound direction.
