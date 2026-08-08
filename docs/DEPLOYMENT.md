@@ -130,7 +130,7 @@ about a year — so this is a when, not an if.** Put its expiry date in a
 calendar; nothing in the system will remind you.
 
 The failure is quiet by nature: the cron keeps firing, every dispatch is
-rejected, and the map simply stops advancing. Three ways to catch it, in the
+rejected, and the map simply stops advancing. Four ways to catch it, in the
 order they will actually reach you:
 
 1. **The map itself.** `attempted_at` is the honest signal — it moves on every
@@ -158,12 +158,28 @@ order they will actually reach you:
    `MAX_AGE_S["frp"]` of 60 min: that budget says when the UI must stop calling
    data current, this says when a human should be told the pipeline stopped.
 
-   Still worth an **external** check, since none of this fires if the Worker
-   itself is gone.
+   None of this fires if the Worker itself is gone, which is what
+   [`watchdog.yml`](../.github/workflows/watchdog.yml) is for — see below.
 2. **Cloudflare.** The scheduled handler throws on a failed dispatch, so the
    invocation is recorded as an error rather than "Ok" — visible under the
    Worker's Cron Events, and eligible for a Cloudflare notification.
-3. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
+3. **The watchdog.** [`watchdog.yml`](../.github/workflows/watchdog.yml) runs
+   hourly on GitHub — the *other* provider — fetches the **public** manifest and
+   fails when the newest `attempted_at` is over 90 minutes old
+   (`STALE_AFTER_MIN`, pinned to the Worker's own constant by a test so the two
+   cannot drift). It opens one deduped issue titled `[watchdog] data is stale`
+   and closes it on recovery.
+
+   It goes through the public URL rather than R2 deliberately: that exercises
+   the Worker serving `/data/**` too, so a healthy bucket behind a broken Worker
+   still reads as broken — which is what a visitor gets.
+
+   **It is not a proof.** GitHub disables scheduled workflows after ~60 days of
+   repository inactivity, so on a dormant repo the watchdog dies the same quiet
+   way it exists to catch. Closing that properly needs a third party outside
+   both Cloudflare and GitHub.
+
+4. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
    (401 expired, 403 wrong scope, 404 wrong path, 422 bad ref or disabled
    workflow). Logs are retained 3 days on the free plan — a diagnostic once you
    already suspect a problem, not a monitor.
