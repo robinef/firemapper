@@ -121,6 +121,34 @@ class TestIssueLifecycle:
         assert issue_action(Verdict.BROKEN, open_issue={"number": 3}).kind == "comment"
 
 
+def test_a_blank_url_override_falls_through_to_production(monkeypatch):
+    """An unset workflow_dispatch input arrives as "", not as an absent
+    variable, and os.environ.get(key, default) only falls back on ABSENCE. Left
+    as a plain default, every scheduled run would have fetched "" and reported
+    BROKEN — an alarm that fires constantly, which is an alarm switched off."""
+    import importlib
+
+    import scripts.watchdog as wd
+
+    monkeypatch.setenv("WATCHDOG_MANIFEST_URL", "")
+    assert importlib.reload(wd).MANIFEST_URL.startswith("https://")
+
+    monkeypatch.setenv("WATCHDOG_MANIFEST_URL", "http://drill.invalid/m.json")
+    assert importlib.reload(wd).MANIFEST_URL == "http://drill.invalid/m.json"
+
+    monkeypatch.delenv("WATCHDOG_MANIFEST_URL")
+    assert importlib.reload(wd).MANIFEST_URL.startswith("https://")
+
+
+def test_the_drill_fixture_is_stale_enough_to_alarm():
+    """The committed fixture is what exercises the alarm path on demand. If it
+    ever stopped reading as stale the drill would silently prove nothing."""
+    import time
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "stale_manifest.json"
+    assert verdict_for(fixture.read_text(), time.time()) == Verdict.STALE
+
+
 class TestWorkflowWiring:
     """The script can be perfect and the alarm still never reach anyone. These
     pin the parts of watchdog.yml that decide whether it is heard."""
@@ -161,6 +189,13 @@ class TestWorkflowWiring:
         assert cron, "watchdog.yml has no schedule"
         minute = cron.group(1).split()[0]
         assert minute not in ("0", "*"), f"cron minute {minute!r} sits on the busy mark"
+
+    def test_the_drill_override_is_wired_to_the_script(self):
+        """An input nobody passes to the step is a drill that silently checks
+        production and always passes."""
+        wf = self._wf()
+        assert "manifest_url:" in wf, "no drill input declared"
+        assert "WATCHDOG_MANIFEST_URL: ${{ inputs.manifest_url }}" in wf
 
     def test_the_run_actually_fails_when_the_map_is_frozen(self):
         """continue-on-error on the check step is what lets the issue steps run
