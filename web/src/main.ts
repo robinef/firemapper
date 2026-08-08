@@ -176,7 +176,11 @@ async function boot() {
       {
         key: "intensity",
         freshnessKeys: ["frp"],
-        levels: [1, 2] as (1|2)[],
+        // Level 2 only. At overview zoom the only thing rendering is frp-heat,
+        // a diffuse smear across a continent; the readout now carries this
+        // fire's intensity at level 2, and the spatial view stays reachable
+        // from the layer list there.
+        levels: [2] as (1|2)[],
         label: "Fire intensity",
         question: "How violently is it burning right now?",
         layerIds: INTENSITY_LAYER_IDS,
