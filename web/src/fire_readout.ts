@@ -180,10 +180,16 @@ export function renderReadoutPeek(model: Readout): string {
  * opened, and today's 0.5 deg wind grid would usually hide the difference,
  * which is luck rather than correctness.
  *
- * Returns null for anything that is not a Point (the footprint-polygon click
- * path carries no event id). When null is returned, the caller renders NO readout
- * at all, because showing intensity without identifying which fire was opened
- * would attach a number to uncertain identity.
+ * Returns null for anything that is not a Point — notably the footprint-polygon
+ * click path, whose geometry offers no single position to read from. When null
+ * is returned the caller renders NO readout at all: with no position there is
+ * nowhere to sample wind, and nothing to attach an intensity figure to but the
+ * polygon as a whole, which is one open-ended arrival band and may cover several
+ * fires at once.
+ *
+ * The test is POSITION, not identity. A polygon arriving with a full set of
+ * event properties still returns null here, because what is missing is the
+ * point to read at, not the name of the fire.
  */
 export function eventPosition(
   feat: GeoJSON.Feature | null | undefined,

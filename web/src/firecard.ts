@@ -398,10 +398,16 @@ export function setupFireCard(
     const cellBins = track?.cell_bins ?? null;
     // The fire's OWN position, not `coords()` above — that prefers the point
     // the user tapped, so the same fire would read differently depending on
-    // where on it you clicked. No resolvable position means we cannot say
-    // WHICH fire this is (the footprint-polygon click path carries no event
-    // identity), so we show no reading rather than attaching a real figure to
-    // an uncertain fire. Wind arrives in a later task; null until then.
+    // where on it you clicked.
+    //
+    // A non-Point geometry (the footprint-polygon click path) yields no usable
+    // position, and we show no reading at all rather than attach a real figure
+    // to a guess: there is nowhere to sample wind, and the footprint is one
+    // open-ended arrival band that may span several fires. The branch is on
+    // POSITION, not identity — a polygon carrying a full property bag still
+    // gets nothing, because the missing piece is the point to read at.
+    //
+    // Wind arrives in a later task; null until then.
     const pos = eventPosition(feat);
     const readout = pos ? readoutModel(track?.frp_live ?? null, pos, null, new Date()) : null;
     open(fireCardHtml(p, track, readout), lon, lat, p.id, series.length ? series : null,

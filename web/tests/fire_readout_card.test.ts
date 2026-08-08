@@ -72,6 +72,25 @@ describe("fireCardHtml with a readout", () => {
     const stats = root.querySelector(".fc-stats");
     expect(stats?.textContent ?? "").not.toContain("Burning");
   });
+
+  it("puts the full block after the stat group, outside it and outside the peek strip", async () => {
+    const { fireCardHtml } = await import("../src/firecard");
+    const root = parse(fireCardHtml(FIRE, null, READOUT));
+    const stats = root.querySelector(".fc-stats")!;
+    const body = root.querySelector(".ro-body")!;
+    const peek = root.querySelector(".fc-peek")!;
+    expect(stats).not.toBeNull();
+    expect(body).not.toBeNull();
+    // "Burning" is a live reading; "Peak intensity" is this fire's all-time
+    // high. Same unit, different quantities — sat in one row group they invite
+    // a comparison that is wrong twice over. Position is the requirement, so
+    // assert it directly: textContent alone cannot tell "after" from "before",
+    // and both mutations keep every other test in this file green.
+    expect(stats.contains(body)).toBe(false);
+    expect(peek.contains(body)).toBe(false);
+    expect(stats.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
 });
 
 describe("scarCardHtml", () => {
