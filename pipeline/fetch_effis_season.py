@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -257,6 +258,41 @@ def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
     return None  # MAX_PAGES exhausted: the server never finished
 
 
+def _fault(exc: Exception) -> str:
+    """A one-line reason, with the detail OWS hides in the response body.
+
+    `raise_for_status()` gives "400 Client Error: Internal Server Error for url:
+    ..." and stops there, but a WFS puts the actual cause in an
+    `ows:ExceptionText` inside the body it just returned. The difference is the
+    whole diagnosis: the useless version says the request failed, the useful one
+    says `msOracleSpatialLayerOpen(): OracleSpatial error. Cannot create OCI
+    Handlers` — EFFIS's backing database is down, nothing here is wrong, and no
+    amount of retrying will help.
+
+    The URL is dropped rather than echoed. It carries no credential (EFFIS is
+    keyless) but it is long, and the status plus the exception text are what a
+    reader acts on.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    body = getattr(response, "text", "") or ""
+    detail = ""
+    if body:
+        try:
+            root = ET.fromstring(body)
+            texts = [
+                (el.text or "").strip()
+                for el in root.iter()
+                if el.tag.endswith("ExceptionText")
+            ]
+            detail = next((t for t in texts if t), "")
+        except ET.ParseError:
+            detail = ""
+    if not detail:
+        detail = str(exc)
+    return f"HTTP {status}: {detail}" if status else detail
+
+
 def fetch_season_snapshot(
     settings, now: datetime, http_get: Callable[[str], str] | None = None,
 ) -> str:
@@ -285,11 +321,27 @@ def fetch_season_snapshot(
             r.raise_for_status()
             return r.text
 
+    reason: str | None = None
     try:
         rows = _collect(http_get)
-    except Exception:  # noqa: BLE001 - EFFIS is best-effort, never fatal
+    except Exception as exc:  # noqa: BLE001 - EFFIS is best-effort, never fatal
         rows = None
+        reason = _fault(exc)
     if not rows:
+        # Say WHY, because "stale" alone cannot. It is returned when the service
+        # refuses us, when it answers with an empty feature set, and when paging
+        # never terminates — three different situations with three different
+        # responses, previously indistinguishable in the log and in the
+        # manifest. Finding out which took reproducing the request by hand.
+        #
+        # Not an error line: a dark EFFIS is expected and must not fail a run
+        # that is publishing live fire data perfectly well. This is the sentence
+        # that answers "is it them or us?" without anyone leaving the log.
+        print(
+            f"[warn] effis-season: no rows, keeping the previous snapshot — "
+            f"{reason or 'EFFIS returned an empty feature set'}",
+            file=sys.stderr,
+        )
         return "stale"
 
     try:
