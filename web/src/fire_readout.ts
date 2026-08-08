@@ -128,7 +128,9 @@ function fmtAgeShort(minutes: number): string {
  * Diverge here and the overlay contradicts the map layer for anyone
  * viewing both on screen. */
 function arrow(bearingDeg: number): string {
-  return `<span class="ro-arrow" style="transform:rotate(${(bearingDeg + 180) % 360}deg)" aria-hidden="true">↑</span>`;
+  let rotation = (bearingDeg + 180) % 360;
+  if (!Number.isFinite(rotation)) rotation = 0;
+  return `<span class="ro-arrow" style="transform:rotate(${rotation}deg)" aria-hidden="true">↑</span>`;
 }
 
 export function renderReadoutFull(model: Readout): string {
@@ -138,9 +140,9 @@ export function renderReadoutFull(model: Readout): string {
       `<div class="ro-age">${escapeHtml(fmtAge(model.intensity.ageMinutes))}</div>`
     : "";
   const w = model.wind;
-  // Age always; distance only when far enough to matter. Wind
-  // can still be on screen after passing the staleness cutoff, but hours old,
-  // and the reader has no other signal.
+  // Age always, distance only when it is far enough to matter. Wind that is
+  // still on screen has passed the staleness cutoff but can be hours old, and
+  // the reader has no other signal.
   const qualifier = w
     ? `<div class="ro-age">${escapeHtml(fmtAge(w.ageMinutes))}` +
       (w.distanceKm > WIND_FAR_KM ? ` · ${escapeHtml(String(Math.round(w.distanceKm)))} km away` : "") +
@@ -148,19 +150,21 @@ export function renderReadoutFull(model: Readout): string {
     : "";
   const wind = w
     ? `<div class="ro-lab">Wind</div>` +
-      `<div class="ro-wind">${arrow(w.bearingDeg)} ${escapeHtml(compass(w.bearingDeg))} ${escapeHtml(String(Math.round(w.kmh)))} km/h` +
-      qualifier +
-      `</div>`
+      `<div class="ro-wind">${arrow(w.bearingDeg)} ${escapeHtml(compass(w.bearingDeg))} ${escapeHtml(String(Math.round(w.kmh)))} km/h</div>` +
+      qualifier
     : "";
-  return intensity + wind;
+  const rule = intensity && wind ? `<div class="ro-rule"></div>` : "";
+  return `<div class="ro-body">${intensity}${rule}${wind}</div>`;
 }
 
 export function renderReadoutPeek(model: Readout): string {
   const intensity = model.intensity
-    ? `${escapeHtml(String(Math.round(model.intensity.mw)))} MW (${escapeHtml(fmtAgeShort(model.intensity.ageMinutes))})`
+    ? `<span class="ro-peek-mw">${escapeHtml(String(Math.round(model.intensity.mw)))} MW</span>` +
+      `<span class="ro-peek-age">${escapeHtml(fmtAgeShort(model.intensity.ageMinutes))}</span>`
     : "";
   const wind = model.wind
-    ? `${escapeHtml(compass(model.wind.bearingDeg))} ${escapeHtml(String(Math.round(model.wind.kmh)))} km/h`
+    ? `<span class="ro-peek-wind">${arrow(model.wind.bearingDeg)} ${escapeHtml(compass(model.wind.bearingDeg))} ${escapeHtml(String(Math.round(model.wind.kmh)))}</span>` +
+      `<span class="ro-peek-age">${escapeHtml(fmtAgeShort(model.wind.ageMinutes))}</span>`
     : "";
-  return [intensity, wind].filter(Boolean).join(" | ");
+  return `<span class="ro-peek">${intensity}${wind}</span>`;
 }
