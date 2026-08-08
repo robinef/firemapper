@@ -417,3 +417,77 @@ def _snapshot_ids(settings) -> list[str]:
     finally:
         con.close()
     return [r[0] for r in rows]
+
+
+# --- Why "stale", not just that it is stale -------------------------------
+#
+# `fetch_season_snapshot` returns "stale" when the service refuses us, when it
+# answers with an empty feature set, and when paging never terminates. Those
+# want three different responses — wait, investigate, fix a query — and the
+# return value alone distinguishes none of them. Diagnosing a real EFFIS outage
+# on 2026-08-06 meant reproducing the request by hand because the exception was
+# discarded at the catch. These pin the log line that makes that unnecessary.
+
+OWS_ORACLE_DOWN = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" version="2.0.0">'
+    '<ows:Exception exceptionCode="NoApplicableCode" locator="mapserv">'
+    "<ows:ExceptionText>msOracleSpatialLayerOpen(): OracleSpatial error. "
+    "Cannot create OCI Handlers. Connection failure. </ows:ExceptionText>"
+    "</ows:Exception></ows:ExceptionReport>"
+)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+
+def test_the_reason_survives_from_the_response_body(tmp_path, capsys):
+    # requests' own message stops at "400 Client Error"; the cause is in the
+    # body it already holds. Losing that is the difference between "EFFIS is
+    # broken, wait" and "our query is wrong, fix it".
+    def refused(url):
+        exc = RuntimeError("400 Client Error: Internal Server Error for url: ...")
+        exc.response = FakeResponse(400, OWS_ORACLE_DOWN)
+        raise exc
+
+    assert fetch_season_snapshot(FakeSettings(tmp_path), NOW, refused) == "stale"
+    warned = capsys.readouterr().err
+    assert "effis-season" in warned
+    assert "HTTP 400" in warned
+    assert "OracleSpatial error" in warned
+
+
+def test_a_reasonless_failure_still_says_something(tmp_path, capsys):
+    # No response attached, so there is no body to mine. The exception's own
+    # text is all there is, and it must still reach the log rather than being
+    # swallowed into a bare "stale".
+    def boom(url):
+        raise RuntimeError("network down")
+
+    assert fetch_season_snapshot(FakeSettings(tmp_path), NOW, boom) == "stale"
+    assert "network down" in capsys.readouterr().err
+
+
+def test_an_empty_feature_set_is_named_as_such(tmp_path, capsys):
+    # A successful request that returns nothing is NOT the same fault as a
+    # refused one, and the log has to separate them: one means EFFIS is up and
+    # genuinely has no data, the other means EFFIS is down.
+    assert fetch_season_snapshot(FakeSettings(tmp_path), NOW, lambda u: page([], 0, 0)) == "stale"
+    warned = capsys.readouterr().err
+    assert "empty feature set" in warned
+    assert "HTTP" not in warned
+
+
+def test_an_unparseable_body_falls_back_rather_than_raising(tmp_path, capsys):
+    # A gateway's HTML error page is not an OWS report. Parsing it must not
+    # raise inside the very path whose contract is that it never raises.
+    def refused(url):
+        exc = RuntimeError("502 Bad Gateway")
+        exc.response = FakeResponse(502, "<html><body>gateway timeout</body></html>")
+        raise exc
+
+    assert fetch_season_snapshot(FakeSettings(tmp_path), NOW, refused) == "stale"
+    assert "502" in capsys.readouterr().err
