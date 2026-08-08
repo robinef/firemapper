@@ -69,7 +69,7 @@ jobs:
       # "Burn scar · <date>" with place=null, which makes the past-scar list
       # useless for finding one particular fire. Cached because the file
       # changes rarely and the fast tier runs every half hour.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: data/places
           key: geonames-cities15000-v1
