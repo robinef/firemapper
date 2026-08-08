@@ -10,6 +10,13 @@ import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
 import { safeHttpUrl } from "./escape";
 import { emitUi } from "./ui_events";
+import {
+  eventPosition,
+  readoutModel,
+  renderReadoutFull,
+  renderReadoutPeek,
+  type Readout,
+} from "./fire_readout";
 
 /**
  * Level 2 — the fire card. Clicking a fire (active dot, footprint, or past-scar
@@ -74,7 +81,7 @@ function stat(label: string, value: string): string {
   return `<div class="fc-stat"><span>${label}</span><b>${value}</b></div>`;
 }
 
-export function fireCardHtml(p: EventProps, track: Track | null): string {
+export function fireCardHtml(p: EventProps, track: Track | null, readout?: Readout | null): string {
   const st = STATUS[p.status] ?? STATUS.closed;
   const stt = STATE[p.state] ?? STATE.steady;
   const title = p.place?.name ?? "Fire";
@@ -107,9 +114,16 @@ export function fireCardHtml(p: EventProps, track: Track | null): string {
   // The peeked strip: the whole card compressed to one tappable line, so a
   // phone can dock it above the time bar and keep the map — and the fire's
   // own histogram scrubbing — visible. CSS hides its siblings at that size.
+  //
+  // The readout rides INSIDE .fc-peek because style.css:295 hides every other
+  // child of #panel in peek state — and peek is where a phone user lands the
+  // moment they tap a fire. Placed beside this div it would simply not be
+  // there, on the one screen size where it matters most.
   const peek =
     `<div class="fc-peek"><b>${esc(title)}</b>` +
-    `<span>${p.area_km2} km² · ${st.t}</span><i aria-hidden="true">›</i></div>`;
+    `<span>${p.area_km2} km² · ${st.t}</span>` +
+    (readout ? renderReadoutPeek(readout) : "") +
+    `<i aria-hidden="true">›</i></div>`;
   return (
     peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
@@ -117,6 +131,10 @@ export function fireCardHtml(p: EventProps, track: Track | null): string {
     `<div class="fc-sub">${fmtDate(p.started)} · <span style="color:${st.c}">${st.t}</span> fire</div>` +
     `<span class="fc-badge" style="background:${stt.c}">${stt.t}</span>` +
     `<div class="fc-stats">${rows}</div>` +
+    // After the stat rows, not among them: "Burning" is a live reading and
+    // "Peak intensity" is this fire's all-time high. Sat in the same row group
+    // they read as two versions of one number.
+    (readout ? renderReadoutFull(readout) : "") +
     arrival +
     alert +
     `<button class="fc-ba">Before / after imagery →</button>`
@@ -378,7 +396,15 @@ export function setupFireCard(
     }));
     const centroids = bins.map((b) => b.centroid);
     const cellBins = track?.cell_bins ?? null;
-    open(fireCardHtml(p, track), lon, lat, p.id, series.length ? series : null,
+    // The fire's OWN position, not `coords()` above — that prefers the point
+    // the user tapped, so the same fire would read differently depending on
+    // where on it you clicked. No resolvable position means we cannot say
+    // WHICH fire this is (the footprint-polygon click path carries no event
+    // identity), so we show no reading rather than attaching a real figure to
+    // an uncertain fire. Wind arrives in a later task; null until then.
+    const pos = eventPosition(feat);
+    const readout = pos ? readoutModel(track?.frp_live ?? null, pos, null, new Date()) : null;
+    open(fireCardHtml(p, track, readout), lon, lat, p.id, series.length ? series : null,
       centroids.length ? centroids : null, cellBins,
       () => compare?.fromFire({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
