@@ -18,7 +18,8 @@ const FIRE: [number, number] = [18.35, 42.71];
 
 describe("readoutModel — intensity", () => {
   it("takes the newest observation, not the last array element", () => {
-    const got = readoutModel([[AT(22), 378], [AT(30), 900]], FIRE, null, NOW);
+    // Newest in middle: [30h], [22h (newest)], [48h]
+    const got = readoutModel([[AT(30), 100], [AT(22), 378], [AT(48), 200]], FIRE, null, NOW);
     expect(got?.intensity?.mw).toBe(378);
     expect(got?.intensity?.ageMinutes).toBe(22 * 60);
   });
@@ -37,13 +38,31 @@ describe("readoutModel — intensity", () => {
     const got = readoutModel([[AT(200), 12]], FIRE, null, NOW);
     expect(got?.intensity).toEqual({ mw: 12, ageMinutes: 200 * 60 });
   });
+
+  it("rejects NaN intensity values", () => {
+    const got = readoutModel([[AT(1), NaN]], FIRE, fc([windPoint(18.35, 42.71)]), NOW);
+    expect(got?.intensity).toBeNull();
+    expect(got?.wind).not.toBeNull(); // wind is still valid
+  });
+
+  it("skips null elements in frpLive", () => {
+    const got = readoutModel([[AT(1), 100], null as any, [AT(2), 200]], FIRE, null, NOW);
+    expect(got?.intensity?.mw).toBe(100); // should use first valid, not last
+  });
+
+  it("rejects negative ages (future timestamps)", () => {
+    const future = new Date(NOW.getTime() + 3600_000).toISOString();
+    const got = readoutModel([[future, 100], [AT(1), 200]], FIRE, null, NOW);
+    expect(got?.intensity?.mw).toBe(200); // uses past timestamp, ignores future
+  });
 });
 
 describe("readoutModel — wind", () => {
   it("picks the genuinely nearest point, not the first", () => {
-    const far = windPoint(19.2, 43.2, { kmh: 40 });
+    // near first, far genuinely within 60 km (~43 km away)
     const near = windPoint(18.36, 42.72, { kmh: 18 });
-    const got = readoutModel(null, FIRE, fc([far, near]), NOW);
+    const far = windPoint(18.35, 43.10, { kmh: 40 });
+    const got = readoutModel(null, FIRE, fc([near, far]), NOW);
     expect(got?.wind?.kmh).toBe(18);
   });
 
@@ -75,6 +94,46 @@ describe("readoutModel — wind", () => {
   it("carries the bearing the wind is blowing FROM; rotation is the renderer's job", () => {
     const got = readoutModel(null, FIRE, fc([windPoint(18.35, 42.71, { from_deg: 225 })]), NOW);
     expect(got?.wind?.bearingDeg).toBe(225);
+  });
+
+  it("rejects NaN distance (missing or invalid coordinates)", () => {
+    const badPoint = {
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: [NaN, 42.71] },
+      properties: { from_deg: 225, kmh: 18, t: AT(1) },
+    };
+    const got = readoutModel([[AT(1), 100]], FIRE, fc([badPoint]), NOW);
+    expect(got?.wind).toBeNull();
+  });
+
+  it("skips null features", () => {
+    const good = windPoint(18.35, 42.71, { kmh: 18 });
+    const got = readoutModel(null, FIRE, fc([null as any, good]), NOW);
+    expect(got?.wind?.kmh).toBe(18);
+  });
+
+  it("skips features with missing coordinates", () => {
+    const noCoords = {
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: undefined },
+      properties: { from_deg: 225, kmh: 18, t: AT(1) },
+    };
+    const good = windPoint(18.35, 42.71, { kmh: 18 });
+    const got = readoutModel(null, FIRE, fc([noCoords, good]), NOW);
+    expect(got?.wind?.kmh).toBe(18);
+  });
+
+  it("rejects negative ages (future wind timestamps)", () => {
+    const future = new Date(NOW.getTime() + 3600_000).toISOString();
+    const got = readoutModel([[AT(1), 100]], FIRE, fc([windPoint(18.35, 42.71, { t: future })]), NOW);
+    expect(got?.wind).toBeNull(); // future wind is rejected, but intensity is present
+  });
+
+  it("keeps wind at exactly 180 minutes and drops beyond", () => {
+    const exactly180 = AT(WIND_MAX_AGE_MIN / 60);
+    const over180 = AT(WIND_MAX_AGE_MIN / 60 + 0.01);
+    expect(readoutModel(null, FIRE, fc([windPoint(18.35, 42.71, { t: exactly180 })]), NOW)?.wind).not.toBeNull();
+    expect(readoutModel(null, FIRE, fc([windPoint(18.35, 42.71, { t: over180 })]), NOW)).toBeNull();
   });
 });
 

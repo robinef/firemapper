@@ -47,12 +47,15 @@ function newestIntensity(
 ): Readout["intensity"] {
   if (!frpLive || frpLive.length === 0) return null;
   let best: { mw: number; ageMinutes: number } | null = null;
-  for (const [iso, mw] of frpLive) {
+  for (const entry of frpLive) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const [iso, mw] = entry;
+    if (!iso || !Number.isFinite(mw)) continue;
     const age = ageMinutes(iso, now);
     // Selected by TIMESTAMP, not array position: the series arrives ordered
-    // by today, silently depends on one upstream sort in case one is away
-    // reporting a stale observation from a current one.
-    if (age === null || typeof mw !== "number") continue;
+    // today, and a reading that silently depends on that is one upstream sort
+    // away from reporting a stale observation as the current one.
+    if (age === null || age < 0) continue;
     if (best === null || age < best.ageMinutes) best = { mw, ageMinutes: age };
   }
   return best;
@@ -66,16 +69,17 @@ function nearestWind(
   if (!position || !windPoints) return null;
   let best: NonNullable<Readout["wind"]> | null = null;
   for (const f of windPoints.features ?? []) {
-    if (f.geometry?.type !== "Point") continue;
+    if (!f || f.geometry?.type !== "Point") continue;
+    const coords = (f.geometry?.coordinates ?? []) as [number, number];
+    if (!Number.isFinite(coords[0]) || !Number.isFinite(coords[1])) continue;
     const props = (f.properties ?? {}) as Record<string, unknown>;
     const from = props.from_deg;
     const kmh = props.kmh;
     if (typeof from !== "number" || typeof kmh !== "number") continue;
     const age = typeof props.t === "string" ? ageMinutes(props.t, now) : null;
-    if (age === null || age > WIND_MAX_AGE_MIN) continue;
-    const coords = f.geometry.coordinates as [number, number];
+    if (age === null || age < 0 || age > WIND_MAX_AGE_MIN) continue;
     const km = distanceKm(position, coords);
-    if (km > WIND_MAX_KM) continue;
+    if (!Number.isFinite(km) || km > WIND_MAX_KM) continue;
     if (best === null || km < best.distanceKm) {
       best = { bearingDeg: from, kmh, distanceKm: km, ageMinutes: age };
     }
