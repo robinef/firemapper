@@ -36,9 +36,10 @@ from enum import Enum
 # 90 min rides out three missed 30-minute cycles without crying wolf.
 STALE_AFTER_MIN = 90
 
-MANIFEST_URL = os.environ.get(
-    "WATCHDOG_MANIFEST_URL",
-    "https://firemapper.robinef.workers.dev/data/manifest.json",
+MANIFEST_URL = os.environ.get("WATCHDOG_MANIFEST_URL") or (
+    # Blank (an unset workflow_dispatch input) must fall through to production,
+    # not fetch "". `or` rather than a get() default, which only fires on absence.
+    "https://firemapper.robinef.workers.dev/data/manifest.json"
 )
 ISSUE_TITLE = "[watchdog] data is stale"
 
@@ -148,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(f"verdict={verdict.value}\n")
             fh.write(f"detail={detail}\n")
             fh.write(f"limit={STALE_AFTER_MIN}\n")
+            fh.write(f"url={MANIFEST_URL}\n")
     return 0 if verdict is Verdict.FRESH else 1
 
 

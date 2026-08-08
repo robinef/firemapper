@@ -11,6 +11,15 @@ on:
   schedule:
     - cron: "23 * * * *"
   workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: >-
+          Drill only. Point the check at a different manifest to exercise the
+          alarm path on demand. Use the committed stale fixture:
+          https://raw.githubusercontent.com/robinef/firemapper/main/tests/fixtures/stale_manifest.json
+          Leave blank to check production.
+        required: false
+        default: ""
 
 # Its own group. Sharing `refresh` would queue the watchdog behind the very
 # thing it is meant to be watching, which is exactly how it would go quiet at
@@ -33,6 +42,10 @@ jobs:
         # continue-on-error so the issue steps below still run; the job is
         # failed explicitly at the end, so the run still goes red.
         continue-on-error: true
+        env:
+          # Blank falls through to the production default in the script, so a
+          # normal scheduled run is unaffected. Non-blank is a drill.
+          WATCHDOG_MANIFEST_URL: ${{ inputs.manifest_url }}
         run: python3 scripts/watchdog.py
         # Deliberately the runner's bare python3 and stdlib only: no uv sync, no
         # dependency resolution, no lockfile. A watchdog that needs a working
@@ -45,6 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DETAIL: ${{ steps.check.outputs.detail }}
           LIMIT: ${{ steps.check.outputs.limit }}
+          CHECKED: ${{ steps.check.outputs.url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -66,7 +80,7 @@ jobs:
           2. \`GH_DISPATCH_TOKEN\` expiry — fine-grained PATs cap at ~1 year
           3. The most recent \`refresh-fast\` / \`refresh-full\` run logs
 
-          Checked by ${RUN_URL}"
+          Checked \`${CHECKED}\` via ${RUN_URL}"
           if [ -n "$NUM" ]; then
             gh issue comment "$NUM" --body "$BODY"
           else

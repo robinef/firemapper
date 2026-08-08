@@ -1,0 +1,7 @@
+{
+  "_comment": "Drill fixture for watchdog.yml. Deliberately ancient so the alarm path (open issue -> dedupe -> close on recovery) can be exercised on demand without waiting for a real outage. Served raw from GitHub, so it is publicly fetchable exactly like the real manifest. Never referenced by the site.",
+  "generation": "gen-20200101T000000Z",
+  "layers": {
+    "events": { "attempted_at": "2020-01-01T00:00:00+00:00", "status": "ok" }
+  }
+}
