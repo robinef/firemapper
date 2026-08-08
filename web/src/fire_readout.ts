@@ -38,7 +38,9 @@ function distanceKm(a: [number, number], b: [number, number]): number {
 function ageMinutes(iso: string, now: Date): number | null {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return null;
-  return Math.round((now.getTime() - t) / 60_000);
+  const age = Math.round((now.getTime() - t) / 60_000);
+  if (!Number.isFinite(age)) return null;
+  return age;
 }
 
 function newestIntensity(
@@ -50,7 +52,10 @@ function newestIntensity(
   for (const entry of frpLive) {
     if (!Array.isArray(entry) || entry.length < 2) continue;
     const [iso, mw] = entry;
-    if (!iso || !Number.isFinite(mw)) continue;
+    if (
+      typeof iso !== "string" || typeof mw !== "number" ||
+      !iso || !Number.isFinite(mw)
+    ) continue;
     const age = ageMinutes(iso, now);
     // Selected by TIMESTAMP, not array position: the series arrives ordered
     // today, and a reading that silently depends on that is one upstream sort
@@ -75,7 +80,10 @@ function nearestWind(
     const props = (f.properties ?? {}) as Record<string, unknown>;
     const from = props.from_deg;
     const kmh = props.kmh;
-    if (!Number.isFinite(from) || !Number.isFinite(kmh)) continue;
+    if (
+      typeof from !== "number" || typeof kmh !== "number" ||
+      !Number.isFinite(from) || !Number.isFinite(kmh)
+    ) continue;
     const age = typeof props.t === "string" ? ageMinutes(props.t, now) : null;
     if (age === null || age < 0 || age > WIND_MAX_AGE_MIN) continue;
     const km = distanceKm(position, coords);

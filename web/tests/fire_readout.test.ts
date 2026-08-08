@@ -56,6 +56,22 @@ describe("readoutModel — intensity", () => {
     const got = readoutModel([[future, 100], [AT(1), 200]], FIRE, null, NOW);
     expect(got?.intensity?.mw).toBe(200); // uses past timestamp, ignores future
   });
+
+  it("skips array entries with length < 2", () => {
+    const got = readoutModel([[AT(1), 100] as any, [AT(0.5)], [AT(2), 200]], FIRE, null, NOW);
+    expect(got?.intensity?.mw).toBe(100); // skips [AT(0.5)] (length 1), uses newer: 100 from AT(1)
+  });
+
+  it("skips entries with falsy iso string", () => {
+    const got = readoutModel([[AT(1), 100], ["", 150], [AT(2), 200]], FIRE, null, NOW);
+    expect(got?.intensity?.mw).toBe(100); // uses first valid, skips empty iso
+  });
+
+  it("rejects Invalid Date (NaN age)", () => {
+    const invalidNow = new Date("invalid");
+    const got = readoutModel([[AT(1), 100]], FIRE, null, invalidNow);
+    expect(got).toBeNull(); // both intensity and wind fail with invalid now
+  });
 });
 
 describe("readoutModel — wind", () => {
@@ -145,6 +161,28 @@ describe("readoutModel — wind", () => {
     const got = readoutModel([[AT(1), 100]], FIRE, fc([windPoint(18.35, 42.71, { kmh: NaN })]), NOW);
     expect(got?.wind).toBeNull();
     expect(got?.intensity).not.toBeNull();
+  });
+
+  it("skips wind points with non-string t", () => {
+    const badT = {
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: [18.35, 42.71] },
+      properties: { from_deg: 225, kmh: 18, t: 12345 },
+    };
+    const good = windPoint(18.35, 42.71, { kmh: 18 });
+    const got = readoutModel(null, FIRE, fc([badT, good]), NOW);
+    expect(got?.wind?.kmh).toBe(18); // uses valid wind point
+  });
+
+  it("skips wind points with unparseable t", () => {
+    const badT = {
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: [18.35, 42.71] },
+      properties: { from_deg: 225, kmh: 18, t: "not-a-date" },
+    };
+    const good = windPoint(18.35, 42.71, { kmh: 18 });
+    const got = readoutModel(null, FIRE, fc([badT, good]), NOW);
+    expect(got?.wind?.kmh).toBe(18); // uses valid wind point
   });
 });
 
