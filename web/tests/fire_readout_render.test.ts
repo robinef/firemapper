@@ -67,6 +67,10 @@ describe("renderReadoutFull", () => {
     const threeDaysAgo = { ...FULL, intensity: { mw: 100, ageMinutes: 3 * 24 * 60 } };
     expect(renderReadoutFull(threeDaysAgo)).toContain("3 d ago");
   });
+
+  it("returns empty string when both readings are null", () => {
+    expect(renderReadoutFull({ intensity: null, wind: null })).toBe("");
+  });
 });
 
 describe("renderReadoutPeek", () => {
@@ -107,6 +111,10 @@ describe("renderReadoutPeek", () => {
     expect(renderReadoutPeek(threeDaysAgo)).toContain("3 d");
     expect(renderReadoutPeek(threeDaysAgo)).not.toContain("ago");
   });
+
+  it("returns empty string when both readings are null", () => {
+    expect(renderReadoutPeek({ intensity: null, wind: null })).toBe("");
+  });
 });
 
 describe("escaping and robustness", () => {
@@ -116,6 +124,27 @@ describe("escaping and robustness", () => {
     const html = renderReadoutFull(badBearing);
     expect(html).toContain("rotate(0deg)");
     expect(html).not.toContain("NaN");
+  });
+
+  it("escapes values to defend against type confusion", () => {
+    // Deliberate cast: the honest Readout type cannot produce markup, but a
+    // confused caller or type narrowing error might pass it. This test proves
+    // the renderer defends itself rather than relying on callers to be safe.
+    const injected = {
+      intensity: { mw: { toString: () => '<img src=x onerror=alert(1)>' } as unknown, ageMinutes: 60 },
+      wind: {
+        bearingDeg: 225,
+        kmh: 10,
+        distanceKm: { toString: () => '<svg onload=alert(2)>' } as unknown,
+        ageMinutes: 30,
+      },
+    } as unknown as typeof FULL;
+    const html = renderReadoutFull(injected);
+    // If escapeHtml is not applied, these would produce raw markup in output.
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<svg");
   });
 });
 

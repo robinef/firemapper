@@ -134,6 +134,7 @@ function arrow(bearingDeg: number): string {
 }
 
 export function renderReadoutFull(model: Readout): string {
+  if (!model.intensity && !model.wind) return "";
   const intensity = model.intensity
     ? `<div class="ro-lab">Burning</div>` +
       `<div class="ro-big">${escapeHtml(String(Math.round(model.intensity.mw)))} MW</div>` +
@@ -158,6 +159,7 @@ export function renderReadoutFull(model: Readout): string {
 }
 
 export function renderReadoutPeek(model: Readout): string {
+  if (!model.intensity && !model.wind) return "";
   const intensity = model.intensity
     ? `<span class="ro-peek-mw">${escapeHtml(String(Math.round(model.intensity.mw)))} MW</span>` +
       `<span class="ro-peek-age">${escapeHtml(fmtAgeShort(model.intensity.ageMinutes))}</span>`
@@ -166,5 +168,6 @@ export function renderReadoutPeek(model: Readout): string {
     ? `<span class="ro-peek-wind">${arrow(model.wind.bearingDeg)} ${escapeHtml(compass(model.wind.bearingDeg))} ${escapeHtml(String(Math.round(model.wind.kmh)))}</span>` +
       `<span class="ro-peek-age">${escapeHtml(fmtAgeShort(model.wind.ageMinutes))}</span>`
     : "";
+  // Spacing between spans is provided by .ro-peek's flex gap CSS.
   return `<span class="ro-peek">${intensity}${wind}</span>`;
 }
