@@ -171,3 +171,25 @@ export function renderReadoutPeek(model: Readout): string {
   // Spacing between spans is provided by .ro-peek's flex gap CSS.
   return `<span class="ro-peek">${intensity}${wind}</span>`;
 }
+
+/**
+ * The fire's OWN position, from the clicked feature's geometry.
+ *
+ * Deliberately not firecard's `coords()`, which prefers `e.lngLat` — the point
+ * the user tapped. The same fire must give the same reading however it was
+ * opened, and today's 0.5 deg wind grid would usually hide the difference,
+ * which is luck rather than correctness.
+ *
+ * Returns null for anything that is not a Point (the footprint-polygon click
+ * path carries no event id). A null position drops the wind line and keeps
+ * intensity — better than matching wind to a guessed centroid.
+ */
+export function eventPosition(
+  feat: GeoJSON.Feature | null | undefined,
+): [number, number] | null {
+  if (!feat || feat.geometry?.type !== "Point") return null;
+  const [lon, lat] = (feat.geometry.coordinates ?? []) as unknown[];
+  if (typeof lon !== "number" || typeof lat !== "number") return null;
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  return [lon, lat];
+}
