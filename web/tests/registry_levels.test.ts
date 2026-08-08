@@ -6,13 +6,13 @@ import mainSource from "../src/main.ts?raw";
 
 describe("layer levels", () => {
   it("registers fire intensity for level 2 only", () => {
-    // At overview zoom the heatmap is a smear across a continent; the readout
-    // now carries intensity at level 2, and the spatial view stays available
-    // behind the layers icon there.
-    expect(mainSource).toMatch(/key:\s*"intensity"[\s\S]{0,400}?levels:\s*\[\s*2\s*\]/);
+    // Tempered so the match cannot cross into the NEXT layer object: a plain
+    // [\s\S]{0,400} reaches the `spread` layer's own `levels: [2]` and passes
+    // even when intensity is registered [1, 2].
+    expect(mainSource).toMatch(/key:\s*"intensity"(?:(?!key:)[\s\S])*?levels:\s*\[\s*2\s*\]/);
   });
 
   it("keeps burn scars on the overview", () => {
-    expect(mainSource).toMatch(/key:\s*"scars"[\s\S]{0,400}?levels:\s*\[\s*1\s*\]/);
+    expect(mainSource).toMatch(/key:\s*"scars"(?:(?!key:)[\s\S])*?levels:\s*\[\s*1\s*\]/);
   });
 });
