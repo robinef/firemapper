@@ -75,7 +75,7 @@ function nearestWind(
     const props = (f.properties ?? {}) as Record<string, unknown>;
     const from = props.from_deg;
     const kmh = props.kmh;
-    if (typeof from !== "number" || typeof kmh !== "number") continue;
+    if (!Number.isFinite(from) || !Number.isFinite(kmh)) continue;
     const age = typeof props.t === "string" ? ageMinutes(props.t, now) : null;
     if (age === null || age < 0 || age > WIND_MAX_AGE_MIN) continue;
     const km = distanceKm(position, coords);

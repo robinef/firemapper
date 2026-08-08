@@ -46,8 +46,9 @@ describe("readoutModel — intensity", () => {
   });
 
   it("skips null elements in frpLive", () => {
-    const got = readoutModel([[AT(1), 100], null as any, [AT(2), 200]], FIRE, null, NOW);
-    expect(got?.intensity?.mw).toBe(100); // should use first valid, not last
+    // null in middle; newest is AT(0.5) with mw=150, proving timestamp-based selection
+    const got = readoutModel([[AT(1), 100], null as any, [AT(0.5), 150], [AT(2), 200]], FIRE, null, NOW);
+    expect(got?.intensity?.mw).toBe(150); // selected by recency (0.5h), not position or value
   });
 
   it("rejects negative ages (future timestamps)", () => {
@@ -96,14 +97,12 @@ describe("readoutModel — wind", () => {
     expect(got?.wind?.bearingDeg).toBe(225);
   });
 
-  it("rejects NaN distance (missing or invalid coordinates)", () => {
-    const badPoint = {
-      type: "Feature" as const,
-      geometry: { type: "Point" as const, coordinates: [NaN, 42.71] },
-      properties: { from_deg: 225, kmh: 18, t: AT(1) },
-    };
-    const got = readoutModel([[AT(1), 100]], FIRE, fc([badPoint]), NOW);
-    expect(got?.wind).toBeNull();
+  it("rejects NaN distance when position is garbage", () => {
+    const badPosition: [number, number] = [NaN, 42.71];
+    const good = windPoint(18.35, 42.71, { kmh: 18 });
+    const got = readoutModel([[AT(1), 100]], badPosition, fc([good]), NOW);
+    expect(got?.wind).toBeNull(); // position is caller-supplied
+    expect(got?.intensity).not.toBeNull();
   });
 
   it("skips null features", () => {
@@ -134,6 +133,18 @@ describe("readoutModel — wind", () => {
     const over180 = AT(WIND_MAX_AGE_MIN / 60 + 0.01);
     expect(readoutModel(null, FIRE, fc([windPoint(18.35, 42.71, { t: exactly180 })]), NOW)?.wind).not.toBeNull();
     expect(readoutModel(null, FIRE, fc([windPoint(18.35, 42.71, { t: over180 })]), NOW)).toBeNull();
+  });
+
+  it("rejects NaN bearing", () => {
+    const got = readoutModel([[AT(1), 100]], FIRE, fc([windPoint(18.35, 42.71, { from_deg: NaN })]), NOW);
+    expect(got?.wind).toBeNull();
+    expect(got?.intensity).not.toBeNull();
+  });
+
+  it("rejects NaN speed", () => {
+    const got = readoutModel([[AT(1), 100]], FIRE, fc([windPoint(18.35, 42.71, { kmh: NaN })]), NOW);
+    expect(got?.wind).toBeNull();
+    expect(got?.intensity).not.toBeNull();
   });
 });
 
