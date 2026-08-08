@@ -61,7 +61,8 @@ describe("style.css breakpoints", () => {
   });
 
   it("states the mobile half as the exact negation, never a paired max-width", () => {
-    // `max-width: 640px`   → 4 representable Chrome widths match neither.
+    // `max-width: 640px`   → 63 representable Chrome widths match neither:
+    //                        every 1/64 step from 640.015625 to 640.984375.
     // `max-width: 640.98px` → 1 (640.984375) still matches neither.
     // `max-width: 640.99px` → none today, but reopens on a finer layout grid.
     // The negation is airtight by construction, at any precision.
@@ -75,17 +76,11 @@ describe("style.css breakpoints", () => {
     expect(conditions).toContain(MOBILE);
   });
 
-  it("leaves no width matching neither half", () => {
-    // Walk Chrome's 1/64 px layout grid across the boundary and assert the
-    // two conditions are complements at every representable width. This is
-    // the property the whole file turns on, asserted directly rather than
-    // inferred from the source text above.
-    const matches = (condition: string, w: number) =>
-      condition === DESKTOP ? w >= 641 : !(w >= 641);
-    for (let n = -128; n <= 128; n++) {
-      const w = 641 + n / 64;
-      const hits = [DESKTOP, MOBILE].filter((c) => matches(c, w));
-      expect(hits, `width ${w}px matched ${hits.length} blocks, not 1`).toHaveLength(1);
-    }
-  });
+  // A fifth test used to walk Chrome's 1/64 px grid across the boundary and
+  // assert the two conditions were complements at every width. Its matches()
+  // helper hardcoded `w >= 641` for DESKTOP and its negation for MOBILE, so
+  // filtering the pair always returned exactly one hit: it asserted a property
+  // of itself and passed for any stylesheet, including an empty one. The
+  // complement is guaranteed by the SOURCE reading `not all and (…)`, which is
+  // what the tests above pin. Deleted rather than repaired.
 });

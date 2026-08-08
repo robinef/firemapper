@@ -24,6 +24,43 @@ describe("readoutModel — intensity", () => {
     expect(got?.intensity?.ageMinutes).toBe(22 * 60);
   });
 
+  it("sums every pixel sharing the newest timestamp, and only those", () => {
+    // frp_live is one entry per Meteosat PIXEL (fetch_meteosat.py's frp_series),
+    // so any fire wider than one ~5 km² cell reports several at one acq_time.
+    // 500 and 400 are older scans and must stay out — note 500 alone exceeds
+    // the answer, so summing the whole series is as wrong as picking one pixel.
+    const got = readoutModel(
+      [[AT(6), 500], [AT(1), 120], [AT(1), 80], [AT(1), 30], [AT(3), 400]],
+      FIRE, null, NOW,
+    );
+    expect(got?.intensity?.mw).toBe(230);
+    expect(got?.intensity?.ageMinutes).toBe(60);
+  });
+
+  it("skips a non-finite pixel at the newest timestamp instead of poisoning the sum", () => {
+    const got = readoutModel(
+      [[AT(1), 120], [AT(1), NaN], [AT(1), Infinity], [AT(1), 80]],
+      FIRE, null, NOW,
+    );
+    expect(got?.intensity?.mw).toBe(200);
+    expect(Number.isFinite(got?.intensity?.mw)).toBe(true);
+  });
+
+  it("leaves a single-entry series reading exactly as before", () => {
+    const got = readoutModel([[AT(2), 378]], FIRE, null, NOW);
+    expect(got?.intensity).toEqual({ mw: 378, ageMinutes: 120 });
+  });
+
+  it("gives the same figure whatever order the newest pixels arrive in", () => {
+    // Reversed, an older scan sits BETWEEN two newest pixels, so an
+    // implementation that restarts its sum on any change of timestamp diverges.
+    const pixels: [string, number][] = [[AT(1), 120], [AT(1), 80], [AT(4), 900], [AT(1), 30]];
+    const forward = readoutModel(pixels, FIRE, null, NOW);
+    const reversed = readoutModel([...pixels].reverse(), FIRE, null, NOW);
+    expect(reversed?.intensity).toEqual(forward?.intensity);
+    expect(forward?.intensity?.mw).toBe(230);
+  });
+
   it("is null for an empty series", () => {
     expect(readoutModel([], FIRE, null, NOW)).toBeNull();
   });

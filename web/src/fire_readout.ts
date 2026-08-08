@@ -46,12 +46,36 @@ function ageMinutes(iso: string, now: Date): number | null {
   return age;
 }
 
+/**
+ * How hard this fire is burning right now: the SUM of every Meteosat pixel
+ * observed at the newest timestamp in the series.
+ *
+ * An entry in `frp_live` is ONE PIXEL, not one observation of the whole fire.
+ * pipeline/fetch_meteosat.py builds it as one element per row whose H3 disk
+ * touches the event, so a single Meteosat scan of any fire wider than one
+ * ~5 km² cell — the norm — contributes several entries sharing an `acq_time`.
+ * Keeping only one of them would publish an arbitrary cell's FRP under the
+ * label "Burning", understating the fire, with the winner decided by fetch
+ * order. The sum is the fire-level answer to the question the label asks.
+ *
+ * Grouped by TIMESTAMP, never by array position: the series arrives ordered
+ * today, and a reading that silently depends on that is one upstream sort
+ * away from reporting a stale observation as the current one.
+ *
+ * Still one instant, so still a different quantity from the card's "Peak
+ * intensity" — that is the highest 6 h VIIRS bin this fire has ever had
+ * (firecard.ts:89, bins from pipeline/events.py BIN_HOURS). This is now.
+ */
 function newestIntensity(
   frpLive: [string, number][] | null,
   now: Date,
 ): Readout["intensity"] {
   if (!frpLive || frpLive.length === 0) return null;
-  let best: { mw: number; ageMinutes: number } | null = null;
+  // `newest` is the exact parsed instant, not the rounded age: grouping on the
+  // reported minute would merge two scans that round together.
+  let newest: number | null = null;
+  let sum = 0;
+  let reportedAge = 0;
   for (const entry of frpLive) {
     if (!Array.isArray(entry) || entry.length < 2) continue;
     const [iso, mw] = entry;
@@ -60,13 +84,20 @@ function newestIntensity(
       !iso || !Number.isFinite(mw)
     ) continue;
     const age = ageMinutes(iso, now);
-    // Selected by TIMESTAMP, not array position: the series arrives ordered
-    // today, and a reading that silently depends on that is one upstream sort
-    // away from reporting a stale observation as the current one.
     if (age === null || age < 0) continue;
-    if (best === null || age < best.ageMinutes) best = { mw, ageMinutes: age };
+    // ageMinutes returned a number, so Date.parse(iso) is not NaN here — it is
+    // the same parse, and the sole `now` validity check stays inside it.
+    const t = Date.parse(iso);
+    if (newest === null || t > newest) {
+      // A strictly newer instant replaces the group, discarding the older sum.
+      newest = t;
+      sum = mw;
+      reportedAge = age;
+    } else if (t === newest) {
+      sum += mw;
+    }
   }
-  return best;
+  return newest === null ? null : { mw: sum, ageMinutes: reportedAge };
 }
 
 function nearestWind(
