@@ -130,21 +130,17 @@ describe("escaping and robustness", () => {
     // Deliberate cast: the honest Readout type cannot produce markup, but a
     // confused caller or type narrowing error might pass it. This test proves
     // the renderer defends itself rather than relying on callers to be safe.
-    const injected = {
-      intensity: { mw: { toString: () => '<img src=x onerror=alert(1)>' } as unknown, ageMinutes: 60 },
-      wind: {
-        bearingDeg: 225,
-        kmh: 10,
-        distanceKm: { toString: () => '<svg onload=alert(2)>' } as unknown,
-        ageMinutes: 30,
-      },
-    } as unknown as typeof FULL;
-    const html = renderReadoutFull(injected);
-    // If escapeHtml is not applied, these would produce raw markup in output.
-    expect(html).not.toContain("onerror=");
-    expect(html).not.toContain("onload=");
+    // Values that die in Math.round or numeric comparison never reach the
+    // escaper, so the payload needs valueOf() for validation and toString()
+    // for the hostile string that genuinely reaches escapeHtml via template.
+    const hostile = {
+      intensity: { mw: 378, ageMinutes: { valueOf: () => 30, toString: () => '<img src=x onerror=alert(1)>' } },
+      wind: null,
+    } as unknown as Readout;
+    const html = renderReadoutFull(hostile);
+    // If escapeHtml is not applied, <img would appear raw in the output.
     expect(html).not.toContain("<img");
-    expect(html).not.toContain("<svg");
+    expect(html).toContain("&lt;img");
   });
 });
 
