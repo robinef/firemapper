@@ -218,8 +218,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 /* Belt and braces with firecard.ts, which only ever mounts this above 641px.
    The two must agree, and a stylesheet that also states the rule cannot be
    left behind by a JS path that forgets to unmount — on a phone this would
-   otherwise cover the map with a box the card is already duplicating. */
-@media (max-width: 640px) { #fire-readout { display: none; } }
+   otherwise cover the map with a box the card is already duplicating.
+
+   The condition is the exact NEGATION of the desktop block's, not a
+   `max-width` twin — see the note on the mobile block below for why a paired
+   bound leaves widths that match neither. */
+@media not all and (min-width: 641px) { #fire-readout { display: none; } }
 /* Compare owns the whole map surface, for the same reason #rail and #timeline
    go: nothing may sit on top of two dated images being compared. Entering
    compare does not close the card, so without this the overlay would float
@@ -258,7 +262,24 @@ body.compare-mode #fire-readout { display: none; }
 }
 
 /* ---- Mobile ------------------------------------------------------- */
-@media (max-width: 640px) {
+/* The exact NEGATION of the desktop block's condition, deliberately not the
+   `max-width: 640px` it reads more naturally as.
+ *
+ * A paired bound leaves a dead band. Viewport width is fractional at browser
+ * zoom and on a fractional device pixel ratio, and Chrome lays out on a
+ * 1/64 px grid — so `max-width: 640px` with `min-width: 641px` leaves four
+ * representable widths (640.9375 … 640.984375) matching NEITHER block. In
+ * that band .fc-peek loses its `display: none` AND .fc-peek .ro-peek loses
+ * its flex gap, so the strip comes back rendering "510 MW30 min" run
+ * together — the exact defect the .ro-peek rule exists to remove. Backing the
+ * bound off to 640.98px shrinks the band to one width (640.984375) rather
+ * than closing it; 640.99px closes it on today's grid and reopens it on any
+ * finer one.
+ *
+ * Negation has no band at any precision, and leaves ONE number — 641 — shared
+ * with firecard.ts's matchMedia("(min-width: 641px)"), instead of two that
+ * have to be kept in lockstep. tests/style_breakpoints.test.ts guards it. */
+@media not all and (min-width: 641px) {
   /* Touch targets: 44x44 min (Apple HIG / WCAG 2.5.8). */
   .layer-row { min-height: 44px; align-items: center; }
   /* No .compare-exit rule here, and none above either: nothing renders that
