@@ -1,0 +1,97 @@
+name: watchdog
+
+# Every other alarm lives inside worker/index.ts and therefore dies with it.
+# This one runs on the other provider and asks what a visitor would ask: is the
+# published map still advancing? It goes through the PUBLIC url, not R2, so a
+# healthy bucket behind a broken Worker still reads as broken.
+#
+# :23 past rather than :00 — the top of the hour is where every scheduled job on
+# the platform piles up, and GitHub throttles scheduled runs hardest there.
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+# Its own group. Sharing `refresh` would queue the watchdog behind the very
+# thing it is meant to be watching, which is exactly how it would go quiet at
+# the moment it mattered.
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - id: check
+        # continue-on-error so the issue steps below still run; the job is
+        # failed explicitly at the end, so the run still goes red.
+        continue-on-error: true
+        run: python3 scripts/watchdog.py
+        # Deliberately the runner's bare python3 and stdlib only: no uv sync, no
+        # dependency resolution, no lockfile. A watchdog that needs a working
+        # toolchain to report a broken system has more ways to go quiet than the
+        # thing it watches.
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.verdict != 'fresh'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+          LIMIT: ${{ steps.check.outputs.limit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE='[watchdog] data is stale'
+          # Dedupe on the exact title: at hourly cadence a multi-day outage
+          # would otherwise open dozens of issues, and an alarm that buries you
+          # is one you mute.
+          # List and filter locally rather than --search: GitHub's search index
+          # lags by up to a minute, so during an outage the dedupe lookup would
+          # miss the issue it just opened and open another one every hour.
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          BODY="The published map has stopped advancing: **${DETAIL}** (limit ${LIMIT} min).
+
+          Nothing inside the Worker can report this — if the Worker or its cron is gone there are no invocations to fail. That is why this check runs here.
+
+          Where to look, in order:
+          1. Cloudflare → the Worker → Cron Events (is it firing at all?)
+          2. \`GH_DISPATCH_TOKEN\` expiry — fine-grained PATs cap at ~1 year
+          3. The most recent \`refresh-fast\` / \`refresh-full\` run logs
+
+          Checked by ${RUN_URL}"
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close the tracking issue on recovery
+        if: steps.check.outputs.verdict == 'fresh'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE='[watchdog] data is stale'
+          # List and filter locally rather than --search: GitHub's search index
+          # lags by up to a minute, so during an outage the dedupe lookup would
+          # miss the issue it just opened and open another one every hour.
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Recovered — the manifest is advancing again. Closed by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue close "$NUM"
+          fi
+
+      - name: Fail the run when the map is not advancing
+        if: steps.check.outputs.verdict != 'fresh'
+        run: |
+          echo "watchdog verdict: ${{ steps.check.outputs.verdict }}" >&2
+          exit 1
