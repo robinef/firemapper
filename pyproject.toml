@@ -15,7 +15,7 @@ dependencies = [
 meteosat = ["eumdac>=3"]
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.16.1"]
+dev = ["pytest>=8", "ruff>=0.16.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
