@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           # v9 flipped `prune-cache` to false by default (see refresh-fast.yml
           # for the fuller note). Left at the new default; the cost is GitHub

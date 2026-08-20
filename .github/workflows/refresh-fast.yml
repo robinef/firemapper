@@ -52,7 +52,7 @@ jobs:
       # `@v9` resolves to nothing and the job dies in 3 s with "unable to find
       # version". Confirmed against the remote: refs/tags/v7 exists, v8 and v9
       # do not. This has to move by exact version; Dependabot does that.
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           # v9 flipped `prune-cache` to false by default, to spare PyPI the
           # re-downloads that pruning causes. Kept at the new default rather
