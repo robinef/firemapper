@@ -177,6 +177,58 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   background: linear-gradient(90deg, #3aa7e0, #8fd36b 40%, #ff8c00 70%, #ff2d2d); }
 .fc-ramp-lbl { display: flex; justify-content: space-between; font-size: 10px; }
 .fc-arrival-hint { margin-top: 6px; color: #8fd8ff; }
+
+/* ---- Live readout: how hard it is burning, which way the wind pushes -----
+   The same block is rendered into TWO mounts, one at a time — firecard.ts
+   picks between them at the same 641px breakpoint used further down. Above
+   it, the #fire-readout overlay; below it, the fire card's own copy. So these
+   class rules are deliberately UNSCOPED: scoping them under #fire-readout
+   would leave the card's copy stacking unstyled at exactly the width where it
+   is the only copy there is. */
+.ro-body { margin-top: 16px; }
+.ro-lab { font-size: 10px; text-transform: uppercase; letter-spacing: .13em;
+  color: var(--muted); }
+.ro-big { font-size: 21px; font-weight: 700; color: #ff7a2f; line-height: 1.1; }
+.ro-age { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.ro-wind { font-size: 15px; font-weight: 600; color: #cfe8ff; }
+.ro-rule { height: 1px; background: rgba(255,255,255,.14); margin: 9px 0; }
+/* Load-bearing: `transform` does not apply to a non-replaced inline box, and
+   the arrow is a <span>. Without this the rotation is silently discarded and
+   every wind on the map points north. */
+.ro-arrow { display: inline-block; }
+
+/* The desktop overlay. fire_readout_mount.ts appends it to <body>, a SIBLING
+   of #view and never a child — #view shows one child at a time keyed on
+   data-view, so a readout nested inside would vanish the moment the reader
+   tapped ⚙. Top-RIGHT: #view occupies the left edge on desktop (left 68px,
+   320px wide) and #header is centred, so this is the one corner nothing else
+   claims. pointer-events: none — it reports, it is not a control, and the map
+   underneath has to stay draggable through it. z-index sits above #header (5)
+   and below #view (8), so a narrow desktop window overlaps in the harmless
+   direction. */
+#fire-readout {
+  position: absolute; top: 12px; right: 12px; width: 148px; z-index: 7;
+  background: rgba(18, 16, 14, .94); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: 10px 11px; pointer-events: none;
+  box-shadow: 0 2px 12px rgba(0,0,0,.45);
+}
+/* The card's copy needs clearance from the stat rows above it; the overlay is
+   its own box and has padding instead. */
+#fire-readout .ro-body { margin-top: 0; }
+/* Belt and braces with firecard.ts, which only ever mounts this above 641px.
+   The two must agree, and a stylesheet that also states the rule cannot be
+   left behind by a JS path that forgets to unmount — on a phone this would
+   otherwise cover the map with a box the card is already duplicating.
+
+   The condition is the exact NEGATION of the desktop block's, not a
+   `max-width` twin — see the note on the mobile block below for why a paired
+   bound leaves widths that match neither. */
+@media not all and (min-width: 641px) { #fire-readout { display: none; } }
+/* Compare owns the whole map surface, for the same reason #rail and #timeline
+   go: nothing may sit on top of two dated images being compared. Entering
+   compare does not close the card, so without this the overlay would float
+   over the imagery for the whole session. */
+body.compare-mode #fire-readout { display: none; }
 /* Says why the chart is blank instead of drawing 30 empty bars. */
 .timeline-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 10px 0; }
 .badge { display: inline-block; padding: 5px 12px; border-radius: 6px; font-weight: 800;
@@ -210,7 +262,25 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 }
 
 /* ---- Mobile ------------------------------------------------------- */
-@media (max-width: 640px) {
+/* The exact NEGATION of the desktop block's condition, deliberately not the
+   `max-width: 640px` it reads more naturally as.
+ *
+ * A paired bound leaves a dead band. Viewport width is fractional at browser
+ * zoom and on a fractional device pixel ratio, and Chrome lays out on a
+ * 1/64 px grid — so `max-width: 640px` with `min-width: 641px` leaves 63
+ * representable widths matching NEITHER block: every 1/64 step from
+ * 640.015625 to 640.984375, the whole interval between the bounds. In
+ * that band .fc-peek loses its `display: none` AND .fc-peek .ro-peek loses
+ * its flex gap, so the strip comes back rendering "510 MW30 min" run
+ * together — the exact defect the .ro-peek rule exists to remove. Backing the
+ * bound off to 640.98px shrinks the band to one width (640.984375) rather
+ * than closing it; 640.99px closes it on today's grid and reopens it on any
+ * finer one.
+ *
+ * Negation has no band at any precision, and leaves ONE number — 641 — shared
+ * with firecard.ts's matchMedia("(min-width: 641px)"), instead of two that
+ * have to be kept in lockstep. tests/style_breakpoints.test.ts guards it. */
+@media not all and (min-width: 641px) {
   /* Touch targets: 44x44 min (Apple HIG / WCAG 2.5.8). */
   .layer-row { min-height: 44px; align-items: center; }
   /* No .compare-exit rule here, and none above either: nothing renders that
@@ -301,6 +371,18 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     text-overflow: ellipsis; }
   .fc-peek span { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .fc-peek i { margin-left: auto; font-style: normal; color: var(--muted); }
+  /* The peek pair rides inside the 56px strip. .fc-peek's own `gap: 8px`
+     reaches only its DIRECT flex children, and .ro-peek is a single inline
+     span holding four of its own — so without a flex context here the
+     readings run together as "510 MW30 min". Also nowrap: this strip has one
+     line and cannot grow, so a wrap would push the second half out of sight
+     rather than onto a new row. */
+  .fc-peek .ro-peek { display: flex; gap: 6px; align-items: baseline;
+    margin-left: auto; white-space: nowrap; }
+  /* Specificity, not accident: `.fc-peek span` above already claims every
+     span in the strip, so each of these needs two classes to win. */
+  .fc-peek .ro-peek-mw { color: #ff7a2f; font-weight: 700; font-size: 12px; }
+  .fc-peek .ro-peek-age, .fc-peek .ro-peek-wind { font-size: 11px; color: var(--muted); }
 
   /* The way back to the map while a card is peeked: a floating chip over the
      map, thumb-reachable, rather than a control inside a 56px strip.

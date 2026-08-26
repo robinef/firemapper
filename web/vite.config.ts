@@ -113,6 +113,14 @@ export default defineConfig({
   server: { port: 5173 },
   test: {
     environment: "node",
+    // Off by default in vitest, which makes EVERY css import — `?raw` and
+    // `?inline` alike — resolve to an empty string rather than fail. That is
+    // the dangerous shape: tests/style_breakpoints.test.ts asserts against the
+    // stylesheet's text, and against "" every one of its assertions passes
+    // vacuously. Measured at no cost to the suite's runtime. The alternative,
+    // reading the file with node:fs, needs @types/node, which this project
+    // deliberately does not carry (see the note in vite_config.test.ts).
+    css: true,
     // Vitest's default glob would collect smoke/*.spec.ts, which are Playwright
     // tests: they call test.describe() outside a Playwright runner and fail
     // with "did not expect test.describe() to be called here". Two runners,

@@ -176,7 +176,11 @@ async function boot() {
       {
         key: "intensity",
         freshnessKeys: ["frp"],
-        levels: [1, 2] as (1|2)[],
+        // Level 2 only. At overview zoom the only thing rendering is frp-heat,
+        // a diffuse smear across a continent; the readout now carries this
+        // fire's intensity at level 2, and the spatial view stays reachable
+        // from the layer list there.
+        levels: [2] as (1|2)[],
         label: "Fire intensity",
         question: "How violently is it burning right now?",
         layerIds: INTENSITY_LAYER_IDS,
@@ -301,6 +305,12 @@ async function boot() {
       // without disarming its token here it would land later and repaint the
       // overview slice on top of the fire card that just opened.
       () => daySlice.invalidate(),
+      // The same collection the wind LAYER draws from, loaded once above — the
+      // card's reading and the streamlines on the map must come from one
+      // sample set, or the overlay names a direction the map contradicts.
+      // Null when the layer failed or the manifest carries no wind: the card
+      // then reads exactly as a fire with no sample near it does.
+      wind,
     );
     // Nav → views. Everything else in this file talks to nav, never the other
     // way round; these two lines are the only inbound direction.
