@@ -14,7 +14,7 @@ const CELL_B = "881f987843fffff";
 // Anything else (curated megafire / EFFIS scar, no track_gen at all) 404s,
 // same as a trackless live fire.
 vi.mock("../src/data", () => ({
-  loadTrack: (_m: unknown, id: string, _base: unknown, _fetch: unknown, trackGen?: string | null) => {
+  loadTrack: vi.fn((_m: unknown, id: string, _base: unknown, _fetch: unknown, trackGen?: string | null) => {
     if (trackGen === "archive") {
       return Promise.resolve({
         id,
@@ -31,7 +31,7 @@ vi.mock("../src/data", () => ({
       });
     }
     return Promise.reject(new Error("no archived track"));
-  },
+  }),
 }));
 
 /** A map fake rich enough for the footprint-paint path: addSource/addLayer/
@@ -119,5 +119,26 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     expect(sourceObjs.has("fire-bin")).toBe(false);
     expect(mountOverview).toHaveBeenCalledTimes(1);
     expect(document.getElementById("panel")!.innerHTML).toContain("scar-curated");
+  });
+
+  it("never fetches a track for a scar with no track_gen at all", async () => {
+    // Curated megafires and EFFIS scars, and a real past fire not yet
+    // archived, all carry no track_gen. A guaranteed-404 round trip on every
+    // one of those clicks (the majority of scar clicks) is pure waste — skip
+    // the fetch entirely rather than let it fail.
+    const { loadTrack } = await import("../src/data");
+    vi.mocked(loadTrack).mockClear();
+    ({ setupFireCard } = await import("../src/firecard"));
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const { map } = footprintMap();
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const card = setupFireCard(
+      map, { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    await card.openScar(scarClickEvent("scar-no-track-gen"));
+
+    expect(loadTrack).not.toHaveBeenCalled();
   });
 });

@@ -102,7 +102,10 @@ describe("fire card open race", () => {
     return {
       features: [{
         properties: {
-          id, label, kind: "past", lat: 10, lon: 20,
+          // track_gen: "archive" — this test is specifically about the
+          // loadTrack race, which openScar now only enters for an archived
+          // scar (see firecard.ts: no track_gen means no fetch at all).
+          id, label, kind: "past", lat: 10, lon: 20, track_gen: "archive",
           started: "2020-01-01", before: "2020-01-01", after: "2020-01-05",
         },
         geometry: { type: "Point", coordinates: [20, 10] },

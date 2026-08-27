@@ -110,6 +110,19 @@ def test_previous_archive_index_tolerates_a_non_dict_body(tmp_path):
     assert previous_archive_index(out) == {}
 
 
+def test_previous_archive_index_tolerates_invalid_utf8(tmp_path):
+    """A truncated R2 download (hydrate() writes raw bytes with no
+    validation) can land mid multi-byte UTF-8 sequence — read_text() raises
+    UnicodeDecodeError, not json.JSONDecodeError. Must still never raise."""
+    out = tmp_path / "out"
+    from pipeline.config import ARCHIVE_TRACKS_INDEX
+    path = out / ARCHIVE_TRACKS_INDEX
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"e1": "abc\xff\xfe')
+
+    assert previous_archive_index(out) == {}
+
+
 def test_a_speck_below_min_members_is_never_archived(tmp_path):
     """A single isolated detection never becomes a visible scar (build_scars'
     own MIN_MEMBERS filter drops it) — archiving it anyway would write a

@@ -15,4 +15,14 @@ describe("layer levels", () => {
   it("keeps burn scars on the overview", () => {
     expect(mainSource).toMatch(/key:\s*"scars"(?:(?!key:)[\s\S])*?levels:\s*\[\s*1\s*\]/);
   });
+
+  // These four only ever show current-moment data (live FRP, live wind, a
+  // fresh satellite pass) — never data computed for whichever fire is open —
+  // so they're marked liveOnly and force-hidden for a historical fire (see
+  // registry.ts's Switcher.setLevel `historical` option).
+  for (const key of ["intensity", "spread", "wind", "viirs"]) {
+    it(`marks "${key}" liveOnly`, () => {
+      expect(mainSource).toMatch(new RegExp(`key:\\s*"${key}"(?:(?!key:)[\\s\\S])*?liveOnly:\\s*true`));
+    });
+  }
 });
