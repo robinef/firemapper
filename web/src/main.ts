@@ -246,7 +246,13 @@ async function boot() {
         (f) => (f.properties as { id?: string })?.id === id,
       );
       if (!entry || !feature) return;
-      map.flyTo({ center: [entry.lon, entry.lat], zoom: 9 });
+      // openFire's own open() only flies once its `await loadTrack(...)`
+      // resolves — on a slow connection the camera would otherwise sit still
+      // for the whole round trip, and not move at all if a second list click
+      // supersedes this one first. Fly immediately, to the SAME zoom open()
+      // uses, so its later flyTo to an identical target is a no-op rather
+      // than a second visible hop.
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 10.5 });
       fireCard.openFire({
         features: [feature],
         lngLat: { lng: entry.lon, lat: entry.lat },
