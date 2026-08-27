@@ -33,8 +33,8 @@ def previous_archive_index(out_dir: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        raw = json.loads(path.read_text())
-    except json.JSONDecodeError:
+        raw = json.loads(path.read_bytes())
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
     if not isinstance(raw, dict):
         return {}

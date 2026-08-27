@@ -189,6 +189,28 @@ export interface FireCard {
   readonly isOpen: boolean;
 }
 
+/** A loaded track (or lack of one) reshaped for open()'s footprint/timeline
+ *  params — shared by openFire and openScar so the mapping can't drift
+ *  between the two. */
+function trackTimeline(track: Track | null): {
+  series: TimelineDay[] | null;
+  centroids: [number, number][] | null;
+  cellBins: [string, string[]][] | null;
+} {
+  const bins = track?.series ?? [];
+  const series: TimelineDay[] = bins.map((b) => ({
+    date: b.bin,
+    count: b.new_cells,
+    frp: b.frp_sum,
+  }));
+  const centroids = bins.map((b) => b.centroid);
+  return {
+    series: series.length ? series : null,
+    centroids: centroids.length ? centroids : null,
+    cellBins: track?.cell_bins ?? null,
+  };
+}
+
 export function setupFireCard(
   map: maplibregl.Map,
   manifest: Manifest,
@@ -376,10 +398,11 @@ export function setupFireCard(
     onBeforeAfter: () => void,
   ) => {
     // Bumped here, not just in openFire: this is the single choke point every
-    // card display goes through (a fresh fire, openScar's synchronous call, or
-    // any future caller), so it's the honest place to invalidate whichever
-    // earlier fire's loadTrack might still be in flight — patching openScar
-    // alone would only cover today's callers, not the next one added.
+    // card display goes through (a fresh fire, openScar — also awaiting its
+    // own loadTrack now — or any future caller), so it's the honest place to
+    // invalidate whichever earlier fire's loadTrack might still be in flight
+    // — patching openFire alone would only cover today's callers, not the
+    // next one added.
     openToken++;
     // The mount lifecycle is reset HERE, not only in close(), for the same
     // reason openToken is bumped here: this is the single choke point every
@@ -477,14 +500,7 @@ export function setupFireCard(
       /* no track (e.g. tiny fire) — card still renders from props */
     }
     if (mine !== openToken) return; // superseded by a newer fire click
-    const bins = track?.series ?? [];
-    const series: TimelineDay[] = bins.map((b) => ({
-      date: b.bin,
-      count: b.new_cells,
-      frp: b.frp_sum,
-    }));
-    const centroids = bins.map((b) => b.centroid);
-    const cellBins = track?.cell_bins ?? null;
+    const { series, centroids, cellBins } = trackTimeline(track);
     const readout = pos ? readoutModel(track?.frp_live ?? null, pos, windPoints, new Date()) : null;
     const desktop = isDesktop();
     const onBeforeAfter = () =>
@@ -492,7 +508,7 @@ export function setupFireCard(
     // Exactly one mount is populated: the card is handed the readout only when
     // the overlay will not be.
     open(fireCardHtml(p, track, desktop ? null : readout), lon, lat, p.id,
-      series.length ? series : null, centroids.length ? centroids : null, cellBins,
+      series, centroids, cellBins,
       p.status === "closed", onBeforeAfter);
     // AFTER open(), never before: open() resets both of these on the way in,
     // to clear whatever card came before. Setting them first would hand the
@@ -505,10 +521,9 @@ export function setupFireCard(
 
   // A past scar with a permanent archive (s.track_gen === "archive", see
   // pipeline/archive_tracks.py) loads the same H3 arrival-footprint detail an
-  // active fire's card shows — mirrors openFire below exactly, down to the
-  // openToken race guard, since the same "click fire B while fire A's track
-  // is still in flight" race applies here too. Curated megafires and EFFIS
-  // scars carry no track_gen and simply 404, same as a trackless live fire.
+  // active fire's card shows — mirrors openFire below, down to the openToken
+  // race guard, since the same "click fire B while fire A's track is still
+  // in flight" race applies here too now that this awaits loadTrack as well.
   const openScar = async (e: maplibregl.MapLayerMouseEvent) => {
     const feat = e.features?.[0];
     if (!feat) return;
@@ -516,23 +531,21 @@ export function setupFireCard(
     const s = feat.properties as unknown as Scar;
     const scarId = String(s.id ?? "");
     const [lon, lat] = coords(e, feat);
+    // Curated megafires, EFFIS scars, and a real past fire not yet archived
+    // all carry no track_gen — skip the fetch rather than pay a guaranteed
+    // 404 on every one of those clicks (the majority of scar clicks).
     let track: Track | null = null;
-    try {
-      track = await loadTrack(manifest, scarId, "/data", fetch, s.track_gen);
-    } catch {
-      /* no archived track — card still renders from props */
+    if (s.track_gen) {
+      try {
+        track = await loadTrack(manifest, scarId, "/data", fetch, s.track_gen);
+      } catch {
+        /* archived track missing/failed — card still renders from props */
+      }
     }
     if (mine !== openToken) return; // superseded by a newer fire/scar click
-    const bins = track?.series ?? [];
-    const series: TimelineDay[] = bins.map((b) => ({
-      date: b.bin,
-      count: b.new_cells,
-      frp: b.frp_sum,
-    }));
-    const centroids = bins.map((b) => b.centroid);
-    const cellBins = track?.cell_bins ?? null;
+    const { series, centroids, cellBins } = trackTimeline(track);
     open(scarCardHtml(s), lon, lat, scarId,
-      series.length ? series : null, centroids.length ? centroids : null, cellBins,
+      series, centroids, cellBins,
       s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
