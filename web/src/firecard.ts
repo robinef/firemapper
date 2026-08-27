@@ -436,10 +436,16 @@ export function setupFireCard(
     }
   };
 
+  // The fire/scar's OWN position first (`eventPosition`, Point geometry) — a
+  // real click's `e.lngLat` is the pixel the user's finger or cursor landed
+  // on, several metres to a halo-width off the dot's actual centre. Only a
+  // feature with no Point geometry (the footprint polygon) falls back to the
+  // tap point, since a polygon click has no single centre to read.
   const coords = (e: maplibregl.MapLayerMouseEvent, feat: maplibregl.MapGeoJSONFeature): [number, number] => {
+    const pos = eventPosition(feat);
+    if (pos) return pos;
     if (e.lngLat) return [e.lngLat.lng, e.lngLat.lat];
-    const g = feat.geometry;
-    return g.type === "Point" ? (g.coordinates as [number, number]) : [0, 0];
+    return [0, 0];
   };
 
   // Guards `loadTrack`: a click on one fire while a previous fire's track is
@@ -452,7 +458,13 @@ export function setupFireCard(
     if (!feat) return;
     const mine = ++openToken;
     const p = reparse(feat.properties ?? {});
-    const [lon, lat] = coords(e, feat);
+    // One position, read once: `pos` is the fire's own Point geometry, null
+    // for the footprint-polygon click path (no single point to read). Camera
+    // and before/after always need SOME coordinate, so `[lon, lat]` falls
+    // back to the tap point; the wind/intensity readout below uses `pos`
+    // directly and shows nothing rather than attach a real figure to a guess.
+    const pos = eventPosition(feat);
+    const [lon, lat] = pos ?? (e.lngLat ? [e.lngLat.lng, e.lngLat.lat] : [0, 0]);
     let track: Track | null = null;
     try {
       track = await loadTrack(manifest, p.id, "/data", fetch, p.track_gen);
@@ -468,17 +480,6 @@ export function setupFireCard(
     }));
     const centroids = bins.map((b) => b.centroid);
     const cellBins = track?.cell_bins ?? null;
-    // The fire's OWN position, not `coords()` above — that prefers the point
-    // the user tapped, so the same fire would read differently depending on
-    // where on it you clicked.
-    //
-    // A non-Point geometry (the footprint-polygon click path) yields no usable
-    // position, and we show no reading at all rather than attach a real figure
-    // to a guess: there is nowhere to sample wind, and the footprint is one
-    // open-ended arrival band that may span several fires. The branch is on
-    // POSITION, not identity — a polygon carrying a full property bag still
-    // gets nothing, because the missing piece is the point to read at.
-    const pos = eventPosition(feat);
     const readout = pos ? readoutModel(track?.frp_live ?? null, pos, windPoints, new Date()) : null;
     const desktop = isDesktop();
     const onBeforeAfter = () =>
