@@ -135,12 +135,13 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # (see archive_tracks.py for why that window is too short to cover the
     # scar lookback directly). Must never block publishing live fire data, so
     # a failure here falls back to "archive nothing new this run" rather than
-    # aborting.
+    # aborting. Read once, up front: `default=` below is evaluated eagerly by
+    # Python before _safe's try/except exists, so a second, unguarded call
+    # here would defeat that guarantee for itself.
+    prev_archive_index = previous_archive_index(settings.out_dir)
     archive_index = _safe(
-        lambda: archive_past_tracks(
-            settings.out_dir, scar_events, now, previous_archive_index(settings.out_dir),
-        ),
-        default=previous_archive_index(settings.out_dir), label="archive-past-tracks",
+        lambda: archive_past_tracks(settings.out_dir, scar_events, now, prev_archive_index),
+        default=prev_archive_index, label="archive-past-tracks",
     )
     # EFFIS is asked at most once per run (and rate-limited to ~6 h inside
     # fetch_season_snapshot): one fragile backend, one request. The ORDER below

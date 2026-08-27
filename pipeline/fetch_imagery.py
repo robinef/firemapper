@@ -122,6 +122,14 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
     }
 
 
+def quiet_hours(members: list, now: datetime) -> float:
+    """Hours since a fire's last detection — the one definition of "quiet"
+    build_scars and archive_tracks.py both key their active/past split on.
+    Kept in one place so a scar's `kind` and whether it ever gets archived
+    cannot silently disagree after a future change to the threshold logic."""
+    return (now - max(m["acq_time"] for m in members)).total_seconds() / 3600
+
+
 def build_scars(
     events: dict, now: datetime, places: list | None = None,
     archived_ids: set[str] | None = None,
@@ -147,8 +155,7 @@ def build_scars(
     for eid, members in events.items():
         if len(members) < MIN_MEMBERS:
             continue  # speck
-        quiet_h = (now - max(m["acq_time"] for m in members)).total_seconds() / 3600
-        is_past = quiet_h > ACTIVE_MAX_H
+        is_past = quiet_hours(members, now) > ACTIVE_MAX_H
         track_gen = "archive" if is_past and eid in (archived_ids or ()) else None
         (past if is_past else active).append(
             _scar_from_fire(eid, members, today, is_past, places, track_gen)

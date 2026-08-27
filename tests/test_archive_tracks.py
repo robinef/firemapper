@@ -10,20 +10,17 @@ from pipeline.events import cluster
 from tests.synth import T, hs
 
 
-def _quiet_fire():
-    """Two detections on day 1; a `now` three days later is well past
-    ACTIVE_MAX_H (48h), so this fire is a "past" scar."""
-    return cluster([hs(45.0, 8.0, T(1, 0)), hs(45.005, 8.0, T(1, 6))], now=T(1, 12))
-
-
-def _active_fire():
-    """Detections right up to `now` — still inside ACTIVE_MAX_H."""
-    return cluster([hs(45.0, 8.0, T(1, 0)), hs(45.005, 8.0, T(1, 6))], now=T(1, 12))
+def _fire():
+    """Four detections on day 1 — at MIN_MEMBERS, so it clears the speck
+    filter. Whether this counts as "active" or "past" is entirely down to the
+    `now` passed to archive_past_tracks — see the two tests below, which pass
+    the same fixture through both branches."""
+    return cluster([hs(45.0 + 0.005 * i, 8.0, T(1, 6 * i)) for i in range(4)], now=T(1, 18))
 
 
 def test_writes_a_track_for_a_fire_quiet_past_active_max_h(tmp_path):
     out = tmp_path / "out"
-    scar_events = _quiet_fire()
+    scar_events = _fire()
     eid = next(iter(scar_events))
 
     index = archive_past_tracks(out, scar_events, now=T(4, 0), prev_index={})
@@ -37,11 +34,11 @@ def test_writes_a_track_for_a_fire_quiet_past_active_max_h(tmp_path):
 
 def test_still_active_fire_is_not_archived(tmp_path):
     out = tmp_path / "out"
-    scar_events = _active_fire()
+    scar_events = _fire()
     eid = next(iter(scar_events))
 
     # now == the fire's own last-detection instant: 0h quiet, well under 48h.
-    index = archive_past_tracks(out, scar_events, now=T(1, 6), prev_index={})
+    index = archive_past_tracks(out, scar_events, now=T(1, 18), prev_index={})
 
     assert eid not in index
     assert not (out / "archive" / "tracks" / f"{eid}.json").exists()
@@ -52,7 +49,7 @@ def test_unchanged_fire_is_not_rewritten_on_a_later_run(tmp_path):
     archiver against the same scar_events must not touch the file a second
     time. Proven by hand-planting a sentinel body and confirming it survives."""
     out = tmp_path / "out"
-    scar_events = _quiet_fire()
+    scar_events = _fire()
     eid = next(iter(scar_events))
 
     index = archive_past_tracks(out, scar_events, now=T(4, 0), prev_index={})
@@ -69,25 +66,25 @@ def test_changed_fire_content_is_rewritten(tmp_path):
     """Growing the same fire between runs (one more detection) must replace
     its archived track, since its digest changed."""
     out = tmp_path / "out"
-    small = cluster([hs(45.0, 8.0, T(1, 0)), hs(45.005, 8.0, T(1, 6))], now=T(1, 12))
+    small_members = [hs(45.0 + 0.005 * i, 8.0, T(1, 6 * i)) for i in range(4)]  # 4 distinct bins
+    small = cluster(small_members, now=T(1, 18))
     eid = next(iter(small))
     index = archive_past_tracks(out, small, now=T(4, 0), prev_index={})
 
-    grown = cluster(
-        [hs(45.0, 8.0, T(1, 0)), hs(45.005, 8.0, T(1, 6)), hs(45.008, 8.0, T(1, 12))],
-        now=T(1, 18),
-    )
+    # A 5th detection the next day — its own distinct bin, same event (well
+    # within cluster()'s CLOSE_AFTER_H).
+    grown = cluster(small_members + [hs(45.02, 8.0, T(2, 0))], now=T(2, 0))
     assert next(iter(grown)) == eid  # same event, one more detection
-    index2 = archive_past_tracks(out, grown, now=T(4, 0), prev_index=index)
+    index2 = archive_past_tracks(out, grown, now=T(5, 0), prev_index=index)
 
     assert index2[eid] != index[eid]
     body = json.loads((out / "archive" / "tracks" / f"{eid}.json").read_text())
-    assert len(body["series"]) == 3  # the grown fire's third 6h bin now on record
+    assert len(body["series"]) == 5  # the grown fire's fifth bin now on record
 
 
 def test_previous_archive_index_round_trips(tmp_path):
     out = tmp_path / "out"
-    scar_events = _quiet_fire()
+    scar_events = _fire()
     written = archive_past_tracks(out, scar_events, now=T(4, 0), prev_index={})
 
     assert previous_archive_index(out) == written
@@ -95,3 +92,34 @@ def test_previous_archive_index_round_trips(tmp_path):
 
 def test_previous_archive_index_is_empty_on_a_cold_start(tmp_path):
     assert previous_archive_index(tmp_path / "out") == {}
+
+
+def test_previous_archive_index_tolerates_a_non_dict_body(tmp_path):
+    """The archived-index file must never crash the run it protects — run.py
+    relies on this as an unguarded fallback default (see run.py's comment on
+    why the `default=` there cannot go through _safe's try/except)."""
+    out = tmp_path / "out"
+    from pipeline.config import ARCHIVE_TRACKS_INDEX
+    path = out / ARCHIVE_TRACKS_INDEX
+    path.parent.mkdir(parents=True)
+
+    path.write_text("null")
+    assert previous_archive_index(out) == {}
+
+    path.write_text("[1, 2, 3]")
+    assert previous_archive_index(out) == {}
+
+
+def test_a_speck_below_min_members_is_never_archived(tmp_path):
+    """A single isolated detection never becomes a visible scar (build_scars'
+    own MIN_MEMBERS filter drops it) — archiving it anyway would write a
+    permanent file nothing ever reads, unbounded by how much sensor noise
+    accumulates over time."""
+    out = tmp_path / "out"
+    speck = cluster([hs(45.0, 8.0, T(1, 0))], now=T(4, 0))  # 1 member, well past quiet
+    eid = next(iter(speck))
+
+    index = archive_past_tracks(out, speck, now=T(4, 0), prev_index={})
+
+    assert eid not in index
+    assert not (out / "archive" / "tracks" / f"{eid}.json").exists()

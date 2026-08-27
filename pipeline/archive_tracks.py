@@ -19,13 +19,16 @@ from pathlib import Path
 
 from .config import ARCHIVE_TRACKS_INDEX
 from .export import _cell_bins
-from .fetch_imagery import ACTIVE_MAX_H
+from .fetch_imagery import ACTIVE_MAX_H, MIN_MEMBERS, quiet_hours
 from .metrics import bins_series
 
 
 def previous_archive_index(out_dir: Path) -> dict[str, str]:
     """{id: sha256 of its archived track body}, or {} on a cold start (no
-    local file yet — hydrate() populates it from R2 before this is called)."""
+    local file yet — hydrate() populates it from R2 before this is called),
+    or on any unexpected shape (truncated upload, a future format change) —
+    this must never raise, since run.py's caller relies on it as a fallback
+    default for a failed archive_past_tracks() run."""
     path = out_dir / ARCHIVE_TRACKS_INDEX
     if not path.exists():
         return {}
@@ -33,11 +36,9 @@ def previous_archive_index(out_dir: Path) -> dict[str, str]:
         raw = json.loads(path.read_text())
     except json.JSONDecodeError:
         return {}
+    if not isinstance(raw, dict):
+        return {}
     return {k: v for k, v in raw.items() if isinstance(v, str)}
-
-
-def _quiet_hours(members: list[dict], now: datetime) -> float:
-    return (now - max(m["acq_time"] for m in members)).total_seconds() / 3600
 
 
 def _archive_body(eid: str, members: list[dict]) -> str:
@@ -67,7 +68,9 @@ def archive_past_tracks(
     index = dict(prev_index)
     tracks_dir = out_dir / "archive" / "tracks"
     for eid, members in scar_events.items():
-        if _quiet_hours(members, now) <= ACTIVE_MAX_H:
+        if len(members) < MIN_MEMBERS:
+            continue  # speck — never becomes a visible scar, not worth a permanent file
+        if quiet_hours(members, now) <= ACTIVE_MAX_H:
             continue  # still active — has a live track already, not ours to keep
         body = _archive_body(eid, members)
         digest = hashlib.sha256(body.encode()).hexdigest()
