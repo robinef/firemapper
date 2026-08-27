@@ -17,7 +17,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .config import GENERATIONS_KEPT, TRACK_INDEX, Settings
+from .config import ARCHIVE_TRACKS_INDEX, GENERATIONS_KEPT, TRACK_INDEX, Settings
 
 ARCHIVE_PREFIX = "archive/"
 DATA_PREFIX = "data/"
@@ -150,6 +150,19 @@ def hydrate(settings: Settings, client) -> str | None:
             snapshot = settings.data_dir / "raw" / "effis_ba.parquet"
             snapshot.parent.mkdir(parents=True, exist_ok=True)
             snapshot.write_bytes(body)
+
+    # The permanent past-scar track archive (archive_tracks.py). Only the
+    # small index is fetched here, deliberately — the archived track bodies
+    # themselves are NOT downloaded, the same round-trip-avoidance as the
+    # tracks/ skip above but permanent rather than conditional: they never
+    # change once written, so every run downloading all of them would grow
+    # unbounded with how many past fires have ever been archived. The index
+    # alone is enough for archive_past_tracks() to know what to skip.
+    archive_index_body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{ARCHIVE_TRACKS_INDEX}")
+    if archive_index_body is not None:
+        index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_bytes(archive_index_body)
     return generation
 
 
@@ -172,6 +185,16 @@ def publish(settings: Settings, generation_dir: Path, client) -> None:
     # past the workflow timeout, so the manifest would never be written and the
     # site would never advance. Concurrency here is what makes the cadence real.
     files = [p for p in sorted(generation_dir.rglob("*")) if p.is_file()]
+    # The permanent past-scar archive (archive_tracks.py) is a sibling of the
+    # generation dirs under out_dir, not inside one — `upload()` above already
+    # keys by path relative to out_dir, so no special-casing is needed here.
+    # This stays cheap because hydrate() never re-downloads archived track
+    # bodies: only files archive_past_tracks() wrote FRESH this run exist
+    # locally, so this walk only ever uploads new/changed past fires plus the
+    # small index, never the whole accumulated archive.
+    archive_dir = settings.out_dir / "archive"
+    if archive_dir.exists():
+        files += [p for p in sorted(archive_dir.rglob("*")) if p.is_file()]
     with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
         # list() forces the iterator so a failed upload re-raises here, before
         # the manifest is written.

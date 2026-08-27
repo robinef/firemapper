@@ -65,4 +65,19 @@ describe("addressing the generation that actually holds a track", () => {
     await loadTrack(liveManifest, "abc", "/data", fetchFn, undefined);
     expect(seen).toEqual(["/data/gen-NEW/tracks/abc.json"]);
   });
+
+  it("fetches a past-scar's permanent archive when track_gen is the archive sentinel", async () => {
+    // Past scars don't live in any numbered generation — their track was
+    // written once, permanently, outside the generation-pruning lifecycle
+    // (pipeline/archive_tracks.py). "archive" is not a real generation name,
+    // so it must never fall through to the `trackGen || m.generation` path.
+    const seen: string[] = [];
+    const fetchFn = (async (u: string) => {
+      seen.push(u);
+      return { json: async () => ({ id: "scar-1", series: [], cells: [] }) };
+    }) as unknown as typeof fetch;
+
+    await loadTrack(liveManifest, "scar-1", "/data", fetchFn, "archive");
+    expect(seen).toEqual(["/data/archive/tracks/scar-1.json"]);
+  });
 });

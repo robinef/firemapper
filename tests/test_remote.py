@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.config import load_settings
+from pipeline.config import ARCHIVE_TRACKS_INDEX, load_settings
 from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
 
 
@@ -440,3 +440,103 @@ def test_hydrate_still_restores_tracks_without_an_index(tmp_path):
 
     restored = list((settings.out_dir / gen / "tracks").glob("*.json"))
     assert len(restored) == 50
+
+
+def test_hydrate_downloads_the_permanent_archive_index(tmp_path):
+    """The one small file archive_past_tracks() needs to know what is already
+    archived — cheap, single object, unlike the per-generation tracks/ walk
+    it deliberately skips above."""
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{ARCHIVE_TRACKS_INDEX}": json.dumps({"e-past": "abc123"}).encode(),
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    hydrate(settings, client)
+
+    restored = json.loads((settings.out_dir / ARCHIVE_TRACKS_INDEX).read_text())
+    assert restored == {"e-past": "abc123"}
+
+
+def test_hydrate_never_downloads_archived_track_bodies(tmp_path):
+    """The whole point of the permanent archive is that it must NOT cost one
+    round trip per accumulated past fire, ever — only the index."""
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{ARCHIVE_TRACKS_INDEX}": json.dumps({"e-past": "abc123"}).encode(),
+        "data/archive/tracks/e-past.json": b'{"id":"e-past"}',
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    hydrate(settings, client)
+
+    assert "data/archive/tracks/e-past.json" not in client.fetched
+    assert not (settings.out_dir / "archive" / "tracks" / "e-past.json").exists()
+
+
+def test_hydrate_tolerates_no_archive_index_yet(tmp_path):
+    """Cold start for the archive feature specifically: a bucket that predates
+    it (or has archived no past fire yet) must not fail hydrate."""
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    assert hydrate(settings, client) == gen
+    assert not (settings.out_dir / ARCHIVE_TRACKS_INDEX).exists()
+
+
+def test_publish_uploads_the_permanent_archive(tmp_path):
+    """publish() must ship whatever archive_past_tracks() wrote locally this
+    run — the new/changed past-fire tracks plus the refreshed index — to the
+    same data/archive/ namespace prune never touches."""
+    settings, gen = _publishable(tmp_path)
+    archive_dir = settings.out_dir / "archive"
+    (archive_dir / "tracks").mkdir(parents=True)
+    (archive_dir / "tracks" / "e-past.json").write_text('{"id":"e-past"}')
+    (archive_dir / "tracks_index.json").write_text('{"e-past":"abc123"}')
+    fake = FakeS3()
+
+    publish(settings, gen, fake)
+
+    assert fake.objects["data/archive/tracks/e-past.json"] == b'{"id":"e-past"}'
+    assert fake.objects[f"data/{ARCHIVE_TRACKS_INDEX}"] == b'{"e-past":"abc123"}'
+
+
+def test_publish_with_no_local_archive_dir_does_not_error(tmp_path):
+    """Most runs archive nothing new (no fire just went quiet) — no local
+    archive/ directory gets created at all, and publish must not choke on it."""
+    settings, gen = _publishable(tmp_path)
+    fake = FakeS3()
+
+    publish(settings, gen, fake)  # must not raise
+
+    assert not any(k.startswith("data/archive/") for k in fake.objects)
+
+
+def test_prune_remote_leaves_the_permanent_archive_alone(tmp_path):
+    """The archive lives outside every generation prune touches — prove it
+    survives a prune cycle that evicts old generations."""
+    settings = _settings(tmp_path)
+    objects = {}
+    for stamp in ("gen-1", "gen-2", "gen-3", "gen-4"):
+        objects[f"data/{stamp}/events.geojson"] = b"{}"
+        objects[archive_key(stamp)] = b"P"
+    objects["data/archive/tracks/e-past.json"] = b'{"id":"e-past"}'
+    objects[f"data/{ARCHIVE_TRACKS_INDEX}"] = b'{"e-past":"abc123"}'
+
+    fake = FakeS3(objects)
+    prune_remote(settings, fake, keep=3)
+
+    assert "data/gen-1/events.geojson" not in fake.objects  # pruned, as before
+    assert "data/archive/tracks/e-past.json" in fake.objects
+    assert f"data/{ARCHIVE_TRACKS_INDEX}" in fake.objects

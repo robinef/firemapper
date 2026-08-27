@@ -498,12 +498,36 @@ export function setupFireCard(
     if (desktop) mountReadout(document.body, readout);
   };
 
-  const openScar = (e: maplibregl.MapLayerMouseEvent) => {
+  // A past scar with a permanent archive (s.track_gen === "archive", see
+  // pipeline/archive_tracks.py) loads the same H3 arrival-footprint detail an
+  // active fire's card shows — mirrors openFire below exactly, down to the
+  // openToken race guard, since the same "click fire B while fire A's track
+  // is still in flight" race applies here too. Curated megafires and EFFIS
+  // scars carry no track_gen and simply 404, same as a trackless live fire.
+  const openScar = async (e: maplibregl.MapLayerMouseEvent) => {
     const feat = e.features?.[0];
     if (!feat) return;
+    const mine = ++openToken;
     const s = feat.properties as unknown as Scar;
+    const scarId = String(s.id ?? "");
     const [lon, lat] = coords(e, feat);
-    open(scarCardHtml(s), lon, lat, String(s.id ?? ""), null, null, null,
+    let track: Track | null = null;
+    try {
+      track = await loadTrack(manifest, scarId, "/data", fetch, s.track_gen);
+    } catch {
+      /* no archived track — card still renders from props */
+    }
+    if (mine !== openToken) return; // superseded by a newer fire/scar click
+    const bins = track?.series ?? [];
+    const series: TimelineDay[] = bins.map((b) => ({
+      date: b.bin,
+      count: b.new_cells,
+      frp: b.frp_sum,
+    }));
+    const centroids = bins.map((b) => b.centroid);
+    const cellBins = track?.cell_bins ?? null;
+    open(scarCardHtml(s), lon, lat, scarId,
+      series.length ? series : null, centroids.length ? centroids : null, cellBins,
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
 

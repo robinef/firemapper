@@ -289,7 +289,7 @@ describe("readout mount wiring", () => {
 
     // A scar never goes through close(), so an overlay cleared only there
     // would sit beside a card that is not the fire it belongs to.
-    card.openScar(scarClick());
+    await card.openScar(scarClick());
     expect(panelHtml()).toContain("Test Basin");
     expect(overlay()).toBeNull();
   });
@@ -306,7 +306,7 @@ describe("readout mount wiring", () => {
   it("leaves a scar card's breakpoint crossing alone", async () => {
     nextTrack = recentTrack();
     const { card, media } = await mount(true);
-    card.openScar(scarClick());
+    await card.openScar(scarClick());
     expect(overlay()).toBeNull();
     media.cross(false);
     expect(overlay()).toBeNull();

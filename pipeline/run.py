@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .archive_tracks import archive_past_tracks, previous_archive_index
 from .config import EUROPE_BBOX, Settings, load_settings
 from .store import read_hotspots, write_points
 from .enrich import MIN_PLACES, fetch_gdacs, load_places
@@ -129,6 +130,19 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # clustered over a longer window so fires that have gone quiet persist as
     # "past" scars — no external burned-area service.
     scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    # A past scar's own H3 arrival-footprint detail: written once per fire,
+    # the run it first goes quiet enough to have left the live track window
+    # (see archive_tracks.py for why that window is too short to cover the
+    # scar lookback directly). Must never block publishing live fire data, so
+    # a failure here falls back to "archive nothing new this run" rather than
+    # aborting. Read once, up front: `default=` below is evaluated eagerly by
+    # Python before _safe's try/except exists, so a second, unguarded call
+    # here would defeat that guarantee for itself.
+    prev_archive_index = previous_archive_index(settings.out_dir)
+    archive_index = _safe(
+        lambda: archive_past_tracks(settings.out_dir, scar_events, now, prev_archive_index),
+        default=prev_archive_index, label="archive-past-tracks",
+    )
     # EFFIS is asked at most once per run (and rate-limited to ~6 h inside
     # fetch_season_snapshot): one fragile backend, one request. The ORDER below
     # is load-bearing — fetch_effis_ba no longer talks to the network, it reads
@@ -166,7 +180,10 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
             f"{season.get('area_count')} mapped burn areas"
         )
     imagery_result = attempt(
-        lambda: build_imagery(settings, scar_events, now, places, extra_scars=effis),
+        lambda: build_imagery(
+            settings, scar_events, now, places, extra_scars=effis,
+            archived_ids=set(archive_index),
+        ),
         label="imagery-scars", now=now, default=None,
     )
     imagery = imagery_result.data
