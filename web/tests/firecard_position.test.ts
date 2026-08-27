@@ -130,7 +130,9 @@ describe("fire card camera position", () => {
   it("centres on the scar, not on the point the user tapped", async () => {
     ({ setupFireCard } = await import("../src/firecard"));
     const { map, flights } = recordingMap();
-    build(map, null).openScar(offCentreScarClick());
+    // Now awaits a track load, same as openFire — see firecard_scar_track
+    // for coverage of what that track load actually does to the card.
+    await build(map, null).openScar(offCentreScarClick());
 
     expect(flights).toHaveLength(1);
     expect(flights[0].center).toEqual([10, 20]);

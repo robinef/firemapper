@@ -28,6 +28,17 @@ TRACK_MAP = "track_map.json"
 # their default from here so no caller can pick a number that breaks it.
 TRACK_REWRITE_EVERY = 10
 GENERATIONS_KEPT = TRACK_REWRITE_EVERY + 1
+# Permanent per-fire track archive for past-scar H3 detail. Lives under
+# data/archive/, a namespace generation pruning never touches — prune_remote
+# and prune_generations only ever delete things named `gen-*` (see remote.py's
+# _generation_names, which filters on that prefix by construction). Written
+# once per fire, the first run it goes quiet enough to be a "past" scar;
+# never rewritten after that, since a settled fire's cells do not change. That
+# is what makes this safe: extending the live GENERATIONS_KEPT window to cover
+# the 45-day scar lookback would keep every layer of every generation ~400x
+# longer (generations publish every ~15 min, not once a day); this instead
+# costs one small permanent file per real past fire, ever.
+ARCHIVE_TRACKS_INDEX = "archive/tracks_index.json"  # {id: sha256 of its archived body}
 
 
 @dataclass(frozen=True)

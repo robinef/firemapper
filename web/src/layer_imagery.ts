@@ -24,6 +24,12 @@ export interface Scar {
   started: string;
   before: string;
   after: string;
+  /** "archive" when this past scar has a permanent per-fire track (see
+   * pipeline/archive_tracks.py) — loadTrack resolves that sentinel to the
+   * fire's fixed, non-generation archive path. Absent/null for curated
+   * megafires and EFFIS scars, which never ran through our H3 detection and
+   * have no track to load. */
+  track_gen?: string | null;
 }
 
 export interface ImageryConfig {

@@ -121,9 +121,12 @@ describe("fire card open race", () => {
     );
 
     // Fire A's track is still loading when the user taps a past-scar marker —
-    // openScar renders synchronously, with no track to await.
+    // openScar now awaits its own track load too (same race guard as
+    // openFire), so scar-1's track must resolve before its card renders.
     const pA = card.openFire(fireClickEvent("fire-a", "Fire A"));
-    card.openScar(scarClickEvent("scar-1", "Scar One"));
+    const pScar = card.openScar(scarClickEvent("scar-1", "Scar One"));
+    pendingTracks.get("scar-1")!.resolve({ series: [], cell_bins: null });
+    await pScar;
 
     // Fire A's now-stale response finally lands — it must not win.
     pendingTracks.get("fire-a")!.resolve({ series: [], cell_bins: null });

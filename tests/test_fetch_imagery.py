@@ -40,6 +40,32 @@ def test_recent_fire_is_active_with_latest_after():
     assert s["place"] == "Gironde" and s["label"] == "Gironde · 24 Jul 2026"
     assert s["before"] == "2026-07-18"  # start 07-24 - 6
     assert s["after"] == "2026-07-26"  # yesterday
+    assert s["track_gen"] is None
+
+
+def test_past_scar_gets_archive_track_gen_when_its_id_was_archived():
+    events = {"e1": _fire(-1.0, 44.8, 1, "Gironde", start_day=1)}  # long quiet -> past
+    scars = build_scars(events, NOW, archived_ids={"e1"})
+    assert len(scars) == 1
+    assert scars[0]["kind"] == "past"
+    assert scars[0]["track_gen"] == "archive"
+
+
+def test_past_scar_has_no_track_gen_when_not_yet_archived():
+    events = {"e1": _fire(-1.0, 44.8, 1, "Gironde", start_day=1)}
+    scars = build_scars(events, NOW)  # no archived_ids at all
+    assert scars[0]["kind"] == "past"
+    assert scars[0]["track_gen"] is None
+
+
+def test_active_scar_never_gets_a_track_gen_even_if_its_id_is_archived():
+    """archived_ids only ever contains ids the archiver decided were past —
+    but an id collision (e.g. a reactivated fire reusing an old id) must not
+    hand an active fire a stale archive pointer."""
+    events = {"e1": _fire(-1.0, 44.8, 27, "Gironde", start_day=24)}  # active
+    scars = build_scars(events, NOW, archived_ids={"e1"})
+    assert scars[0]["kind"] == "active"
+    assert scars[0]["track_gen"] is None
 
 
 def test_scar_without_place_gets_generic_dated_label():

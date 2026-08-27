@@ -93,7 +93,7 @@ def _label_for(place: str | None, start: date, past: bool) -> str:
 
 
 def _scar_from_fire(eid: str, members: list, today: date, past: bool,
-                    places: list | None = None) -> dict:
+                    places: list | None = None, track_gen: str | None = None) -> dict:
     from .enrich import nearest_place
 
     lons = [m["lon"] for m in members]
@@ -118,10 +118,14 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
         "started": start.isoformat(),
         "before": before,
         "after": after,
+        "track_gen": track_gen,
     }
 
 
-def build_scars(events: dict, now: datetime, places: list | None = None) -> list[dict]:
+def build_scars(
+    events: dict, now: datetime, places: list | None = None,
+    archived_ids: set[str] | None = None,
+) -> list[dict]:
     """Compare-able burn scars from our own fire detections, split by lifecycle.
 
     A fire whose latest detection is within ACTIVE_MAX_H is "active"; one quiet
@@ -129,6 +133,13 @@ def build_scars(events: dict, now: datetime, places: list | None = None) -> list
     are dropped, each section is capped at MAX_SCARS, and the two sections are
     ranked differently on purpose — see the sort below. Tiles are the keyless
     GIBS true-colour layer client-side, so no per-scar fetch here.
+
+    `archived_ids` names past fires that already have a permanent per-fire
+    track (see archive_tracks.py) — those get `track_gen: "archive"` so the
+    frontend's openScar can load the same H3 arrival-footprint detail an
+    active fire's card shows. Only ever applied to PAST-kind entries: an
+    active fire already has a live track through the ordinary export path,
+    and an id collision must never hand it a stale archive pointer instead.
     """
     today = now.date()
     active: list[dict] = []
@@ -138,8 +149,9 @@ def build_scars(events: dict, now: datetime, places: list | None = None) -> list
             continue  # speck
         quiet_h = (now - max(m["acq_time"] for m in members)).total_seconds() / 3600
         is_past = quiet_h > ACTIVE_MAX_H
+        track_gen = "archive" if is_past and eid in (archived_ids or ()) else None
         (past if is_past else active).append(
-            _scar_from_fire(eid, members, today, is_past, places)
+            _scar_from_fire(eid, members, today, is_past, places, track_gen)
         )
 
     # Active fires are ranked by recency: they are still burning, so "what is
@@ -196,15 +208,18 @@ def _dedup_scars(scars: list[dict]) -> list[dict]:
 
 def build_imagery(
     settings, events: dict, now: datetime, places: list | None = None,
-    extra_scars: list[dict] | None = None,
+    extra_scars: list[dict] | None = None, archived_ids: set[str] | None = None,
 ) -> dict | None:
     """Imagery config for the manifest: keyless GIBS layer + per-scar dates,
     with an optional CDSE HD source. Live scars from our detections are joined
     with the curated real megafires (and any best-effort external burned-area
     scars in `extra_scars`, e.g. EFFIS), so the before/after mode always has a
     green→black example to show. `places` labels real scars with their nearest
-    town."""
-    scars = build_scars(events, now, places) + notable_scars() + (extra_scars or [])
+    town. `archived_ids` is forwarded to build_scars — see its docstring."""
+    scars = (
+        build_scars(events, now, places, archived_ids)
+        + notable_scars() + (extra_scars or [])
+    )
     scars = _dedup_scars(scars)
     if not scars:
         return None
