@@ -19,6 +19,13 @@ export interface LayerModule {
    *  both. A layer hidden at the current level is force-hidden on the map, so a
    *  detail layer left on never leaks back into the overview. */
   levels?: Level[];
+  /** This layer only ever shows CURRENT-MOMENT data (live FRP, live wind
+   *  samples, today's satellite pass) — it isn't computed for whichever fire
+   *  card happens to be open. A historical fire (a settled past scar, or a
+   *  closed live fire) has none of that at its own location, so the toggle
+   *  would just show nothing there with no way to tell why. Force-hidden at
+   *  level 2 when the open fire is historical, regardless of its own state. */
+  liveOnly?: boolean;
   /** Live status line under the toggle — e.g. how many fires are in view and
    *  how many this zoom actually draws. Re-evaluated on every render, so a
    *  module can report state that changes with the camera. Returning null
@@ -45,8 +52,11 @@ export interface Switcher {
   isOn(key: string): boolean;
   /** Re-render the rows, so camera-dependent status lines update. */
   refresh(): void;
-  /** Swap the panel between the overview (1) and per-fire detail (2) layer sets. */
-  setLevel(level: Level): void;
+  /** Swap the panel between the overview (1) and per-fire detail (2) layer sets.
+   *  `historical` force-hides `liveOnly` modules at level 2 — pass true for a
+   *  settled past scar or a closed live fire, which have no current-moment
+   *  data of their own for those layers to show. */
+  setLevel(level: Level, opts?: { historical?: boolean }): void;
 }
 
 /**
@@ -68,7 +78,9 @@ export function mountSwitcher(
    * a choice the reader made. */
   const filters = new Map<string, boolean>();
   let level: Level = 1;
-  const inLevel = (m: LayerModule) => (m.levels ?? [1, 2]).includes(level);
+  let historical = false;
+  const inLevel = (m: LayerModule) =>
+    (m.levels ?? [1, 2]).includes(level) && !(level === 2 && historical && m.liveOnly);
 
   const applyVis = (m: LayerModule) => {
     const on = inLevel(m) && !!state.get(m.key);
@@ -167,8 +179,9 @@ export function mountSwitcher(
   return {
     isOn: (k) => state.get(k) ?? false,
     refresh: () => render(false),
-    setLevel: (l) => {
+    setLevel: (l, opts) => {
       level = l;
+      historical = !!opts?.historical;
       render();
     },
   };

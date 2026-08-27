@@ -58,3 +58,50 @@ describe("level-aware layer switcher", () => {
     expect(map.vis["arrival-x"]).toBe("none");
   });
 });
+
+// A historical fire (a settled past scar, or a closed live fire) has no
+// current-moment data at its location — no live FRP, no fresh satellite
+// pass, no live wind sample tied to it. Layers that only ever show
+// current-moment data regardless of which fire is open (liveOnly) must stay
+// hidden there, even when their own toggle is on, or they show nothing
+// meaningful and the reader can't tell why.
+const LIVE_ONLY_MODULES: LayerModule[] = [
+  ...MODULES,
+  {
+    key: "wind", label: "Wind", question: "q", layerIds: ["wind-arrows"],
+    defaultOn: true, levels: [2], liveOnly: true,
+  },
+];
+
+function mountLiveOnly() {
+  document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+  const L = document.getElementById("l")!;
+  const map = stubMap();
+  const sw = mountSwitcher(L, document.getElementById("lg")!, LIVE_ONLY_MODULES, map as never);
+  const names = () => [...L.querySelectorAll(".layer-name")].map((x) => x.textContent);
+  return { sw, map, names };
+}
+
+describe("liveOnly layers on a historical fire", () => {
+  it("stays visible at level 2 for a live (non-historical) fire", () => {
+    const { sw, map, names } = mountLiveOnly();
+    sw.setLevel(2);
+    expect(names()).toContain("Wind");
+    expect(map.vis["wind-arrows"]).toBe("visible");
+  });
+
+  it("is force-hidden at level 2 for a historical fire, toggle or no", () => {
+    const { sw, map, names } = mountLiveOnly();
+    sw.setLevel(2, { historical: true });
+    expect(names()).not.toContain("Wind");
+    expect(map.vis["wind-arrows"]).toBe("none");
+  });
+
+  it("reappears once the reader leaves the historical fire for a live one", () => {
+    const { sw, map, names } = mountLiveOnly();
+    sw.setLevel(2, { historical: true });
+    sw.setLevel(2, { historical: false });
+    expect(names()).toContain("Wind");
+    expect(map.vis["wind-arrows"]).toBe("visible");
+  });
+});

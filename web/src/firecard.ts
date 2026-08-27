@@ -368,6 +368,11 @@ export function setupFireCard(
     fireSeries: TimelineDay[] | null,
     centroids: [number, number][] | null,
     cellBins: [string, string[]][] | null,
+    /** A settled past scar or a closed live fire has no current-moment data
+     *  of its own — force-hides the liveOnly sublayers (Fire intensity/
+     *  spread/wind/VIIRS) at level 2, which would otherwise show nothing
+     *  there with no way to tell why. See registry.ts's Switcher.setLevel. */
+    historical: boolean,
     onBeforeAfter: () => void,
   ) => {
     // Bumped here, not just in openFire: this is the single choke point every
@@ -390,7 +395,7 @@ export function setupFireCard(
     paintCard(html, onBeforeAfter);
     panel.classList.remove("hidden");
     document.body.classList.add("fire-focus");
-    switcher.setLevel(2); // swap the panel to this fire's detail layers
+    switcher.setLevel(2, { historical }); // swap to this fire's detail layers
     emitUi("detail:open");
     map.flyTo({ center: [lon, lat], zoom: 10.5 });
     dim(id);
@@ -488,7 +493,7 @@ export function setupFireCard(
     // the overlay will not be.
     open(fireCardHtml(p, track, desktop ? null : readout), lon, lat, p.id,
       series.length ? series : null, centroids.length ? centroids : null, cellBins,
-      onBeforeAfter);
+      p.status === "closed", onBeforeAfter);
     // AFTER open(), never before: open() resets both of these on the way in,
     // to clear whatever card came before. Setting them first would hand the
     // reset the very state it is meant to preserve.
@@ -528,6 +533,7 @@ export function setupFireCard(
     const cellBins = track?.cell_bins ?? null;
     open(scarCardHtml(s), lon, lat, scarId,
       series.length ? series : null, centroids.length ? centroids : null, cellBins,
+      s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };
 

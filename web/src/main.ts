@@ -186,6 +186,7 @@ async function boot() {
         layerIds: INTENSITY_LAYER_IDS,
         defaultOn: false,
         legend: INTENSITY_LEGEND,
+        liveOnly: true,
       },
       {
         key: "spread",
@@ -196,6 +197,7 @@ async function boot() {
         layerIds: SPREAD_LAYER_IDS,
         defaultOn: false,
         legend: SPREAD_LEGEND,
+        liveOnly: true,
       },
       {
         key: "wind",
@@ -206,6 +208,7 @@ async function boot() {
         layerIds: WIND_LAYER_IDS,
         defaultOn: false,
         legend: WIND_LEGEND,
+        liveOnly: true,
       },
       {
         key: "viirs",
@@ -216,6 +219,7 @@ async function boot() {
         layerIds: VIIRS_LAYER_IDS,
         defaultOn: false,
         legend: VIIRS_LEGEND,
+        liveOnly: true,
       },
       {
         key: "scars",
