@@ -24,7 +24,7 @@ jobs:
         run: uv run --with pytest pytest -q
 
   web:
-    name: web (tsc + vitest)
+    name: web (tsc + vitest + build)
     runs-on: ubuntu-latest
     defaults:
       run:
