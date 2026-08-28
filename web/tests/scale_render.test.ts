@@ -241,25 +241,29 @@ describe("reachability", () => {
 
 /**
  * The caption has to state the scope the number was actually computed over.
- * api2's EU aoi is the 27 member states by construction — unlike the old
- * per-perimeter WFS source, there is no leftover "couldn't parse this row's
- * country" bucket to report, so "Burned in Europe, excluding Russia and
- * Turkey" stands on its own without a supporting exclusion caveat.
+ * api2's `aoi=EU` fetch is the 27 EU member states, and ONLY the 27 EU member
+ * states — no UK, Norway, Switzerland, Iceland, Ukraine, or the Balkans, all
+ * of which the old per-perimeter WFS source's bespoke ~44-country allowlist
+ * used to count. "excluding Russia and Turkey" would UNDERSTATE what is now
+ * excluded, so the caption has to shrink to match the fetch: "Burned in the
+ * EU" is the only claim this data actually supports.
  */
 describe("scope", () => {
-  it("states the exclusions in the caption, not just 'Europe'", () => {
+  it("states the caption as EU, matching what was actually fetched", () => {
     const el = root();
     renderScale(el, DATA);
     const kicker = el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " ");
-    expect(kicker).toContain("excluding Russia and Turkey");
+    expect(kicker).toContain("Burned in the EU");
     expect(kicker).toContain("2026 season");
+    // Would understate the real, narrower exclusion (see doc comment above).
+    expect(kicker).not.toContain("excluding Russia and Turkey");
   });
 
   it("captions the zero state with the same scope", () => {
     const el = root();
     renderScale(el, { ...DATA, total_km2: 0, event_count: 0, unit: null, countries: [] });
     expect(el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " "))
-      .toContain("excluding Russia and Turkey");
+      .toContain("Burned in the EU");
   });
 
   it("states the count as wildfire events, with no leftover mapped-area copy", () => {

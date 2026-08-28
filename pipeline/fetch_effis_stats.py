@@ -159,8 +159,13 @@ def fetch_stats_snapshot(
             continue
         countries[iso3] = {
             "name": name,
-            "mddate": latest["mddate"],
-            "events": latest.get("events"),
+            # .get(), not [...]: only `area_ha` is guaranteed non-null by
+            # _latest_cumulative. A country missing `mddate` or `events` must
+            # degrade gracefully, same as a country whose HTTP call failed —
+            # not raise here, outside the try/except above, and take the
+            # other 26 already-fetched countries down with it.
+            "mddate": latest.get("mddate"),
+            "events": latest.get("events") or 0,
             "area_ha": latest["area_ha"],
         }
 
@@ -168,8 +173,8 @@ def fetch_stats_snapshot(
         "fetched_at": now.isoformat(),
         "season_year": year,
         "eu": {
-            "mddate": eu_latest["mddate"],
-            "events": eu_latest.get("events"),
+            "mddate": eu_latest.get("mddate"),
+            "events": eu_latest.get("events") or 0,
             "area_ha": eu_latest["area_ha"],
         },
         "countries": countries,

@@ -171,13 +171,15 @@ function staleNote(data: SeasonData): string {
 }
 
 /**
- * The scope, stated. api2's EU aoi is the 27 member states by construction —
- * Russia and Turkey are simply not queried, not filtered out of a larger set
- * — so a caption reading only "Burned in Europe" over a total that excludes
- * them is a claim the number does not support.
+ * The scope, stated. api2's `aoi=EU` fetch is the 27 EU member states, and
+ * ONLY the 27 EU member states — no UK, Norway, Switzerland, Iceland,
+ * Ukraine, or the Balkans. Those were covered under the old WFS source's
+ * bespoke wider-Europe allowlist, so "excluding Russia and Turkey" would now
+ * UNDERSTATE what the total leaves out. "Burned in the EU" is the only claim
+ * this fetch actually supports.
  */
 function kicker(data: SeasonData): string {
-  return `<p class="scale-kicker">Burned in Europe, excluding Russia and Turkey
+  return `<p class="scale-kicker">Burned in the EU
     · ${escapeHtml(data.season_year)} season</p>`;
 }
 
@@ -185,7 +187,7 @@ export function renderScale(root: HTMLElement, data: SeasonData | null): void {
   if (!data) {
     // No payload at all. Not a zero, and not a blank: say which it is.
     root.innerHTML = `<section data-state="unavailable" class="scale-empty">
-      <p class="scale-kicker">Burned in Europe</p>
+      <p class="scale-kicker">Burned in the EU</p>
       <p class="scale-zero">Season totals are unavailable right now.</p>
       <p class="scale-caveat">The seasonal burned-area archive could not be
         loaded. This says nothing about how much has burned — only that we

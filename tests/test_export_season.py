@@ -14,7 +14,7 @@ drafted at least once:
    where one upstream 400 froze the whole map.
 
 `event_count`/countries' `events` replace the old `area_count`/`areas`: the
-api2 stats source (pipeline/fetch_effis_season.py) counts distinct fire
+api2 stats source (pipeline/fetch_effis_stats.py) counts distinct fire
 events, not mapped perimeters, so there is no honest "mapped burn areas"
 figure left to publish. `unassigned_count`/`undated_count` are gone outright
 — those measured rows the old per-fire WFS source couldn't parse a
@@ -202,7 +202,7 @@ def test_end_to_end_the_page_date_comes_off_a_real_weeks_old_snapshot(export_gen
     today — for a figure nobody had refreshed since June.
 
     `fetched_at` is always written as an already-tz-aware ISO string by
-    fetch_effis_season.py (`now.isoformat()`), so there is no naive-timestamp
+    fetch_effis_stats.py (`now.isoformat()`), so there is no naive-timestamp
     reattachment step left to get wrong — the old parquet-backed version of
     this test existed specifically to catch DuckDB's TIMESTAMP dropping the
     UTC offset on the way in. This still asserts the offset survives, just

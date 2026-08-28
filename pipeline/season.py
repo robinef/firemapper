@@ -1,4 +1,4 @@
-"""Aggregate the api2 season snapshot (pipeline/fetch_effis_season.py) into
+"""Aggregate the api2 season snapshot (pipeline/fetch_effis_stats.py) into
 the totals /scale renders.
 
 No per-fire geometry or country-string normalization here anymore: the
@@ -39,7 +39,7 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
     countries_raw = (snapshot.get("countries") or {}).values()
     countries = sorted(
         (
-            {"name": c["name"], "km2": round(c["area_ha"] / 100.0, 1), "events": c.get("events")}
+            {"name": c["name"], "km2": round(c["area_ha"] / 100.0, 1), "events": c.get("events") or 0}
             for c in countries_raw
             if c.get("area_ha")  # excludes None and genuinely-zero countries
         ),
@@ -50,6 +50,7 @@ def season_totals(path: Path, year: int, top_n: int = 5) -> dict | None:
         "season_year": year,
         "fetched_at": snapshot.get("fetched_at"),
         "total_km2": round(eu["area_ha"] / 100.0, 1),
-        "event_count": eu.get("events"),
+        # Never null: the page dereferences this unconditionally.
+        "event_count": eu.get("events") or 0,
         "countries": countries[:top_n],
     }

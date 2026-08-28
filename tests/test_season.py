@@ -84,3 +84,13 @@ def test_returns_none_when_snapshot_is_malformed_json(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not json")
     assert season_totals(path, 2026) is None
+
+
+def test_event_count_defaults_to_zero_never_null(tmp_path):
+    """scale_render.ts calls `.toLocaleString()` on event_count with no null
+    guard — a None here crashes the page render. fetch_effis_stats.py already
+    guarantees a non-null `events` in a fresh snapshot; this is defense in
+    depth against an old or hand-edited snapshot that lacks the key."""
+    path = write_snapshot(tmp_path / "snap.json", eu={"mddate": "20260709", "area_ha": 12345})
+    season = season_totals(path, 2026)
+    assert season["event_count"] == 0
