@@ -1,12 +1,16 @@
 """The season snapshot's place in a pipeline run.
 
-Two things here are load-bearing and neither is visible from reading the
+Three things here are load-bearing and none is visible from reading the
 season modules alone:
 
 1. ORDER. `fetch_effis_ba` no longer talks to the network — it reads the
    snapshot `fetch_season_snapshot` writes. Fetch second and a cold start
-   publishes a map with no burn scars for a whole run, silently.
-2. The `pick_unit` GUARD. `pick_unit` raises on a non-positive total by
+   publishes a map with no burn scars for a whole run, silently. This is
+   about the live map's scars, unrelated to season_status below.
+2. INDEPENDENCE. `/scale`'s season totals come from `fetch_stats_snapshot`
+   (fetch_effis_stats.py, a different EFFIS backend), fetched separately from
+   the scars snapshot above with no ordering dependency on it.
+3. The `pick_unit` GUARD. `pick_unit` raises on a non-positive total by
    design, and a country's km2 rounds independently of the season total. An
    empty fire season must not become a crashed pipeline run.
 """
@@ -30,11 +34,10 @@ def a_season(**overrides) -> dict:
     10240.3/1572 = 6.5 (Greater London), 2940.1/105.4 = 27.9 (Paris).
     """
     base = {
-        "season_year": 2026, "total_km2": 10240.3, "area_count": 1184,
-        "unassigned_count": 3, "undated_count": 0,
+        "season_year": 2026, "total_km2": 10240.3, "event_count": 1184,
         "countries": [
-            {"name": "Spain", "km2": 2940.1, "areas": 402},
-            {"name": "Portugal", "km2": 812.4, "areas": 118},
+            {"name": "Spain", "km2": 2940.1, "events": 402},
+            {"name": "Portugal", "km2": 812.4, "events": 118},
         ],
     }
     base.update(overrides)
@@ -61,10 +64,11 @@ def captured(monkeypatch, tmp_path):
     monkeypatch.setattr(run, "build_imagery", lambda *a, **k: None)
     monkeypatch.setattr(run, "fetch_effis_ba", lambda *a, **k: [])
     # Defaulted here, not per test: under a fresh tmp_path there is no snapshot,
-    # so should_fetch() says yes and the real EFFIS WFS request fires. A test
-    # that forgets to stub it would silently go to the network. Tests that care
-    # about the status override this afterwards.
+    # so should_fetch() says yes and the real EFFIS request fires. A test that
+    # forgets to stub one of these would silently go to the network. Tests
+    # that care about a status override it afterwards.
     monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "fresh")
 
     def fake_export(*args, **kwargs):
         seen.update(kwargs)
@@ -88,7 +92,7 @@ def test_the_snapshot_is_fetched_before_the_scars_are_read(monkeypatch, captured
     order: list[str] = []
     monkeypatch.setattr(
         run, "fetch_season_snapshot",
-        lambda *a, **k: (order.append("season-fetch"), "fresh")[1],
+        lambda *a, **k: (order.append("scars-fetch"), "fresh")[1],
     )
     monkeypatch.setattr(
         run, "fetch_effis_ba", lambda *a, **k: (order.append("effis-ba"), [])[1],
@@ -96,15 +100,15 @@ def test_the_snapshot_is_fetched_before_the_scars_are_read(monkeypatch, captured
 
     captured()
 
-    assert order == ["season-fetch", "effis-ba"]
+    assert order == ["scars-fetch", "effis-ba"]
 
 
-def test_the_snapshot_is_fetched_for_the_run_s_own_clock(monkeypatch, captured):
+def test_the_stats_snapshot_is_fetched_for_the_run_s_own_clock(monkeypatch, captured):
     """The rate-limit gate compares against `now`; a replayed run must ask for
     its own window, not wall-clock time."""
     seen: dict = {}
     monkeypatch.setattr(
-        run, "fetch_season_snapshot",
+        run, "fetch_stats_snapshot",
         lambda settings, now, **k: (seen.update(now=now), "fresh")[1],
     )
 
@@ -114,34 +118,52 @@ def test_the_snapshot_is_fetched_for_the_run_s_own_clock(monkeypatch, captured):
     assert seen["now"].tzinfo is not None
 
 
-def test_a_raising_season_fetch_does_not_stop_the_run(monkeypatch, captured):
-    """fetch_season_snapshot is documented as non-raising, but a bad EFFIS week
+def test_a_raising_stats_fetch_does_not_stop_the_run(monkeypatch, captured):
+    """fetch_stats_snapshot is documented as non-raising, but a bad EFFIS week
     must never stop us publishing live fire data even if that contract breaks."""
     def boom(*a, **k):
         raise RuntimeError("EFFIS exploded")
 
-    monkeypatch.setattr(run, "fetch_season_snapshot", boom)
+    monkeypatch.setattr(run, "fetch_stats_snapshot", boom)
 
     seen = captured()
 
     assert seen["season_status"] == "stale"
 
 
-def test_the_fetch_status_travels_to_export(monkeypatch, captured):
+def test_a_raising_stats_fetch_does_not_touch_the_scars_snapshot(monkeypatch, captured):
+    """The season stats fetch and the scars snapshot are independent — a bad
+    season-stats week must not take the live map's scars down with it."""
+    def boom(*a, **k):
+        raise RuntimeError("EFFIS exploded")
+
+    monkeypatch.setattr(run, "fetch_stats_snapshot", boom)
+    scars_calls: list = []
+    monkeypatch.setattr(
+        run, "fetch_season_snapshot",
+        lambda *a, **k: (scars_calls.append(1), "fresh")[1],
+    )
+
+    captured()
+
+    assert scars_calls == [1]
+
+
+def test_the_stats_fetch_status_travels_to_export(monkeypatch, captured):
     """"reused" (rate-limited skip) is not "fresh" — the page's "as of" line
     depends on the difference, so run.py must not flatten it."""
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "reused")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "reused")
 
     seen = captured()
 
     assert seen["season_status"] == "reused"
 
 
-def test_the_totals_are_read_from_the_snapshot_the_fetch_writes(monkeypatch, captured):
+def test_the_totals_are_read_from_the_snapshot_the_stats_fetch_writes(monkeypatch, captured):
     """Reading anywhere else would aggregate a file nothing refreshes."""
-    from pipeline.fetch_effis_season import snapshot_path
+    from pipeline.fetch_effis_stats import snapshot_path
 
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "fresh")
     asked: dict = {}
 
     def fake_totals(path, year, *a, **k):
@@ -157,7 +179,7 @@ def test_the_totals_are_read_from_the_snapshot_the_fetch_writes(monkeypatch, cap
 
 
 def test_the_total_and_every_country_get_a_scale_unit(monkeypatch, captured):
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "fresh")
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: a_season())
 
     season = captured()["season"]
@@ -178,7 +200,7 @@ def test_a_zero_season_gets_no_unit_and_does_not_crash(monkeypatch, capsys, capt
     "we crashed picking one and someone caught it".
     """
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: a_season(
-        total_km2=0.0, area_count=0, countries=[],
+        total_km2=0.0, event_count=0, countries=[],
     ))
 
     season = captured()["season"]
@@ -199,8 +221,8 @@ def test_a_country_rounding_to_zero_does_not_crash_the_run(monkeypatch, capsys, 
     unit, which is what the assertions below catch.
     """
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: a_season(countries=[
-        {"name": "Malta", "km2": 0.0, "areas": 1},
-        {"name": "Spain", "km2": 2940.1, "areas": 402},
+        {"name": "Malta", "km2": 0.0, "events": 1},
+        {"name": "Spain", "km2": 2940.1, "events": 402},
     ]))
 
     season = captured()["season"]
@@ -215,7 +237,7 @@ def test_a_country_rounding_to_zero_does_not_crash_the_run(monkeypatch, capsys, 
 def test_no_snapshot_yields_a_null_season(monkeypatch, captured):
     """season_totals returns None when no snapshot exists at all — a different
     thing from a total of zero, and export renders it differently."""
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr(run, "season_totals", lambda *a, **k: None)
 
     seen = captured()
@@ -227,9 +249,9 @@ def test_no_snapshot_yields_a_null_season(monkeypatch, captured):
 def test_a_raising_season_totals_does_not_stop_the_run(monkeypatch, captured):
     """An unreadable snapshot degrades the season panel, not the whole map."""
     def boom(*a, **k):
-        raise RuntimeError("parquet is a picture of a duck")
+        raise RuntimeError("json is a picture of a duck")
 
-    monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
+    monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "fresh")
     monkeypatch.setattr(run, "season_totals", boom)
 
     seen = captured()

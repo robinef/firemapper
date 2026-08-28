@@ -1,0 +1,179 @@
+"""Season-to-date burned area from api2.effis.emergency.copernicus.eu.
+
+A separate source from `pipeline/fetch_effis_season.py`. That module polls
+the ies-ows.jrc.ec.europa.eu WFS (Oracle-backed) for individual burned-area
+POLYGONS, and `fetch_effis_ba` (pipeline/fetch_effis.py) reads its snapshot
+to draw before/after scar imagery on the live map — that dependency is real
+and this module must never touch it. api2 is EFFIS's own "Seasonal Trend"
+app's data source (confirmed via browser network capture), a different
+backend (gunicorn, not the Oracle WFS, and not affected by the WFS's
+`msOracleSpatialLayerOpen(): ... Connection failure` outage that has run
+since this repo's season feature launched). It has no per-fire polygons at
+all, only pre-aggregated weekly + cumulative burnt-area stats per year,
+EU-wide and per EU country — exactly the "how much burned this season"
+question `/scale` asks and nothing `fetch_effis_ba` needs.
+
+One HTTP request per country (27, hardcoded — EU membership is static) plus
+one EU-wide request; no pagination, unlike the WFS.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+STATS_BASE = "https://api2.effis.emergency.copernicus.eu/statistics/v2/effis"
+MIN_AGE_HOURS = 6.0
+
+# The 27 EU member states, as returned by
+# api2.../statistics/utils/countriesbyaoi?aoi=EU. `name` is already EFFIS's
+# own canonical English display name.
+EU_COUNTRIES: dict[str, str] = {
+    "AUT": "Austria", "BEL": "Belgium", "BGR": "Bulgaria", "HRV": "Croatia",
+    "CYP": "Cyprus", "CZE": "Czech Republic", "DNK": "Denmark",
+    "EST": "Estonia", "FIN": "Finland", "FRA": "France", "DEU": "Germany",
+    "GRC": "Greece", "HUN": "Hungary", "IRL": "Ireland", "ITA": "Italy",
+    "LVA": "Latvia", "LTU": "Lithuania", "LUX": "Luxembourg", "MLT": "Malta",
+    "NLD": "Netherlands", "POL": "Poland", "PRT": "Portugal",
+    "ROU": "Romania", "SVK": "Slovakia", "SVN": "Slovenia", "ESP": "Spain",
+    "SWE": "Sweden",
+}
+
+
+def snapshot_path(settings) -> Path:
+    return settings.data_dir / "raw" / "effis_stats.json"
+
+
+def _eu_url(year: int) -> str:
+    return f"{STATS_BASE}/weeklyaoi?aoi=EU&year={year}"
+
+
+def _country_url(iso3: str, year: int) -> str:
+    return f"{STATS_BASE}/weekly?country={iso3}&year={year}"
+
+
+def _latest_cumulative(payload: dict) -> dict | None:
+    """Season-to-date entry: the last `banfcumulative` row with a real
+    `area_ha`. Future weeks are pre-listed with `area_ha: null`, so this is
+    not simply the last entry in the array."""
+    entries = payload.get("banfcumulative")
+    if not isinstance(entries, list):
+        return None
+    actual = [e for e in entries if isinstance(e, dict) and e.get("area_ha") is not None]
+    return actual[-1] if actual else None
+
+
+def _fault(exc: Exception) -> str:
+    """One-line reason. api2 errors as plain HTTP + a body (JSON `detail`
+    when the backend is up but complaining, HTML/plain text on a gateway
+    failure) — unlike the WFS's OWS ExceptionReport XML, so no XML parsing
+    here."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    body = getattr(response, "text", "") or ""
+    detail = ""
+    if body:
+        try:
+            doc = json.loads(body)
+            if isinstance(doc, dict):
+                detail = doc.get("detail") or doc.get("message") or doc.get("error") or ""
+        except ValueError:
+            detail = body
+    if not detail:
+        detail = str(exc)
+    return f"HTTP {status}: {detail}" if status else detail
+
+
+def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS) -> bool:
+    """False while the stored snapshot is younger than the gate. api2 data
+    itself only advances weekly, so polling every pipeline run (~15 min)
+    would be pure waste."""
+    try:
+        stamp = json.loads(path.read_text()).get("fetched_at")
+    except Exception:  # noqa: BLE001 - missing/malformed snapshot: worth refetching
+        return True
+    try:
+        fetched_at = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return True
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    return (now - fetched_at).total_seconds() >= min_age_hours * 3600
+
+
+def fetch_stats_snapshot(
+    settings,
+    now: datetime,
+    http_get: Callable[[str], str] | None = None,
+) -> str:
+    """Fetch EU-wide + per-country season-to-date totals, write the snapshot,
+    return "fresh" | "reused" | "stale" — same vocabulary, same "never let
+    this bonus tier fail the run" contract as fetch_effis_season's fetcher.
+
+    A single failed country call degrades that country out of the list
+    rather than failing the whole snapshot: the EU total (what the page's
+    headline sentence needs) does not depend on any one country succeeding.
+    """
+    path = snapshot_path(settings)
+    if not should_fetch(path, now):
+        return "reused"
+
+    if http_get is None:
+        import requests
+
+        def http_get(url: str) -> str:  # pragma: no cover - network
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            return r.text
+
+    year = now.year
+    try:
+        eu_payload = json.loads(http_get(_eu_url(year)))
+    except Exception as exc:  # noqa: BLE001 - api2 best-effort, never fatal
+        print(
+            f"[warn] effis-stats: no rows, keeping previous snapshot — {_fault(exc)}",
+            file=sys.stderr,
+        )
+        return "stale"
+
+    eu_latest = _latest_cumulative(eu_payload)
+    if eu_latest is None:
+        print(
+            "[warn] effis-stats: no rows, keeping previous snapshot — "
+            "api2 returned no season-to-date week yet",
+            file=sys.stderr,
+        )
+        return "stale"
+
+    countries: dict[str, dict] = {}
+    for iso3, name in EU_COUNTRIES.items():
+        try:
+            payload = json.loads(http_get(_country_url(iso3, year)))
+        except Exception as exc:  # noqa: BLE001 - one country must not sink the rest
+            print(f"[warn] effis-stats: {iso3} skipped — {_fault(exc)}", file=sys.stderr)
+            continue
+        latest = _latest_cumulative(payload)
+        if latest is None:
+            continue
+        countries[iso3] = {
+            "name": name,
+            "mddate": latest["mddate"],
+            "events": latest.get("events"),
+            "area_ha": latest["area_ha"],
+        }
+
+    snapshot = {
+        "fetched_at": now.isoformat(),
+        "season_year": year,
+        "eu": {
+            "mddate": eu_latest["mddate"],
+            "events": eu_latest.get("events"),
+            "area_ha": eu_latest["area_ha"],
+        },
+        "countries": countries,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(snapshot))
+    return "fresh"

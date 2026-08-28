@@ -28,9 +28,9 @@ export type ScaleUnit = { name: string; km2: number; count: number };
 export type SeasonCountry = {
   name: string;
   km2: number;
-  areas: number;
+  events: number;
   /**
-   * Absent, not null, when a country's areas rounded to 0.0 km² — pick_unit
+   * Absent, not null, when a country's total rounded to 0.0 km² — pick_unit
    * raises on a non-positive total, so _attach_units simply skips the key.
    * The export copies the country dict through verbatim, so the browser sees
    * the gap too.
@@ -45,10 +45,8 @@ export type SeasonData = {
   observed_at: string | null;
   status: string;
   total_km2: number;
-  area_count: number;
+  event_count: number;
   min_fire_ha: number;
-  unassigned_count: number;
-  undated_count: number;
   unit: ScaleUnit | null;
   countries: SeasonCountry[];
 };
@@ -135,33 +133,19 @@ function countries(data: SeasonData): string {
 }
 
 /**
- * Why the headline is a floor. Every figure here comes from the artifact —
- * hardcoding "30 ha" would silently lie the day EFFIS changes its threshold.
+ * Why the headline is a floor, and why the count is events not areas. Every
+ * figure here comes from the artifact — hardcoding "30 ha" would silently lie
+ * the day EFFIS changes its threshold. `event_count` is api2's own distinct
+ * fire-event count, not a re-derivation, so it carries no perimeter-vs-fire
+ * ambiguity to caveat here.
  */
 function caveats(data: SeasonData): string {
   const parts = [
     `EFFIS rapid damage assessment maps burns from
      <strong>${escapeHtml(data.min_fire_ha)} ha</strong> up, so this is a floor,
      not a census.`,
-    `${data.area_count.toLocaleString("en-GB")} mapped burn areas.`,
+    `${data.event_count.toLocaleString("en-GB")} wildfire events.`,
   ];
-  if (data.unassigned_count > 0) {
-    // NOT "excluded for a missing size or country". This bucket is mostly
-    // DELIBERATE: season.py's allowlist omits Russia, Turkey and the Maghreb,
-    // and EFFIS covers all of them, so their perimeters land here by design.
-    // Calling that a defect reads as data we lost rather than scope we chose.
-    //
-    // "the countries counted here" rather than "that scope", because the
-    // nearest antecedent in this paragraph is the 30 ha floor — "that scope"
-    // would read as a size rule rather than a geographic one.
-    parts.push(`${data.unassigned_count.toLocaleString("en-GB")} mapped areas sit
-      outside the countries counted here — Russia, Turkey and North Africa — or
-      carry no usable size or country.`);
-  }
-  if (data.undated_count > 0) {
-    parts.push(`${data.undated_count.toLocaleString("en-GB")} undated rows sit
-      outside any season.`);
-  }
 
   return `<p class="scale-caveat">${parts.join(" ")}</p>
     <p class="scale-asof" data-asof>EFFIS archive as of ${escapeHtml(asOf(data.fetched_at))}${staleNote(data)}</p>`;
@@ -187,8 +171,9 @@ function staleNote(data: SeasonData): string {
 }
 
 /**
- * The scope, stated. season.py's allowlist deliberately omits Russia and
- * Turkey; a caption reading only "Burned in Europe" over a total that excludes
+ * The scope, stated. api2's EU aoi is the 27 member states by construction —
+ * Russia and Turkey are simply not queried, not filtered out of a larger set
+ * — so a caption reading only "Burned in Europe" over a total that excludes
  * them is a claim the number does not support.
  */
 function kicker(data: SeasonData): string {
@@ -212,13 +197,13 @@ export function renderScale(root: HTMLElement, data: SeasonData | null): void {
   // Routed on the TOTAL alone. A null unit must never reach this branch: a
   // pick_unit failure is swallowed by _safe(..., default=None) in run.py:170,
   // which leaves `unit` absent under a real, non-zero total. Routing on the
-  // unit would then print "no mapped burned areas" over a season that happened
-  // — the page stating the opposite of the truth. Zero is the only thing that
+  // unit would then print "no wildfire events" over a season that happened —
+  // the page stating the opposite of the truth. Zero is the only thing that
   // licenses that sentence.
   if (data.total_km2 <= 0) {
     root.innerHTML = `<section data-state="zero" class="scale-empty">
       ${kicker(data)}
-      <p class="scale-zero">No mapped burned areas yet this year.</p>
+      <p class="scale-zero">No wildfire events yet this year.</p>
       ${caveats(data)}
     </section>`;
     return;

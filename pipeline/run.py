@@ -13,7 +13,8 @@ from .events import cluster
 from .export import export
 from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_effis import fetch_effis_ba
-from .fetch_effis_season import fetch_season_snapshot, snapshot_path
+from .fetch_effis_season import fetch_season_snapshot
+from .fetch_effis_stats import fetch_stats_snapshot, snapshot_path as stats_snapshot_path
 from .fetch_imagery import build_imagery
 from .fetch_result import FetchResult, attempt, newest_timestamp
 from .scale import pick_unit
@@ -149,16 +150,24 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # the snapshot this writes, so fetching second would publish a scarless map
     # for a whole run on a cold start. fetch_season_snapshot is documented as
     # non-raising; _safe wraps it anyway because a bad EFFIS week must never
-    # stop us publishing live fire data.
-    season_status = _safe(
+    # stop us publishing live fire data. This snapshot feeds ONLY the live
+    # map's scars — it shares nothing with the /scale season figures below,
+    # which come from a different EFFIS backend (fetch_effis_stats.py).
+    effis_scars_status = _safe(
         lambda: fetch_season_snapshot(settings, now), default="stale",
-        label="effis-season",
+        label="effis-scars",
     )
     # EFFIS burned areas are a best-effort bonus tier: its Oracle backend is
     # often down, so fetch_effis_ba is self-guarding and _safe wraps it again.
     effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
-    print(f"[info] EFFIS burned-area scars: {len(effis)} (season: {season_status})")
+    print(f"[info] EFFIS burned-area scars: {len(effis)} (scars: {effis_scars_status})")
 
+    # Season totals for /scale: independent fetch, independent backend, no
+    # ordering dependency on the scars snapshot above.
+    season_status = _safe(
+        lambda: fetch_stats_snapshot(settings, now), default="stale",
+        label="effis-stats",
+    )
     # None means no snapshot to aggregate — a different page state from a season
     # total of zero. export writes no season.json for it and stamps the manifest
     # layer `fetched_at: null`, which is the flag the page reads. `season_status`
@@ -167,7 +176,7 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # over it failed) is a different fault from one under "unavailable" (there
     # is no snapshot at all), and only the pair distinguishes them.
     season = _safe(
-        lambda: season_totals(snapshot_path(settings), now.year), default=None,
+        lambda: season_totals(stats_snapshot_path(settings), now.year), default=None,
         label="season-totals",
     )
     if season:
@@ -177,7 +186,7 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
         print(
             f"[info] season {season.get('season_year')}: "
             f"{season.get('total_km2')} km2 over "
-            f"{season.get('area_count')} mapped burn areas"
+            f"{season.get('event_count')} wildfire events"
         )
     imagery_result = attempt(
         lambda: build_imagery(
