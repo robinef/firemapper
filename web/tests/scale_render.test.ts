@@ -25,14 +25,12 @@ const DATA: SeasonData = {
   observed_at: null,
   status: "fresh",
   total_km2: 10240.3,
-  area_count: 1184,
+  event_count: 1184,
   min_fire_ha: 30,
-  unassigned_count: 3,
-  undated_count: 0,
   unit: { name: "Greater London", km2: 1572, count: 6.5 },
   countries: [
-    { name: "Spain", km2: 2940.1, areas: 402, unit: { name: "Paris", km2: 105.4, count: 27.9 } },
-    { name: "Greece", km2: 1470.0, areas: 210, unit: { name: "Paris", km2: 105.4, count: 13.9 } },
+    { name: "Spain", km2: 2940.1, events: 402, unit: { name: "Paris", km2: 105.4, count: 27.9 } },
+    { name: "Greece", km2: 1470.0, events: 210, unit: { name: "Paris", km2: 105.4, count: 13.9 } },
   ],
 };
 
@@ -99,17 +97,17 @@ describe("renderScale", () => {
 
   it("renders a zero season as its own state, with no grid", () => {
     const el = root();
-    renderScale(el, { ...DATA, total_km2: 0, area_count: 0, unit: null, countries: [] });
+    renderScale(el, { ...DATA, total_km2: 0, event_count: 0, unit: null, countries: [] });
     expect(el.querySelector("[data-state]")?.getAttribute("data-state")).toBe("zero");
     expect(el.querySelectorAll("[data-tile]").length).toBe(0);
-    expect(el.textContent).toContain("No mapped burned areas");
+    expect(el.textContent).toContain("No wildfire events");
     // The caveats explain WHY a zero can be a zero, so they survive this state.
     expect(el.textContent).toContain("30 ha");
   });
 
   it("never prints a number in the zero state that could be read as a total", () => {
     const el = root();
-    renderScale(el, { ...DATA, total_km2: 0, area_count: 0, unit: null, countries: [] });
+    renderScale(el, { ...DATA, total_km2: 0, event_count: 0, unit: null, countries: [] });
     expect(el.textContent).not.toContain("0 km²");
     expect(el.textContent).not.toContain("×");
   });
@@ -122,7 +120,7 @@ describe("renderScale", () => {
     renderScale(el, { ...DATA, unit: null });
     expect(el.querySelector("[data-state]")?.getAttribute("data-state")).toBe("normal");
     expect(el.textContent).toContain("10,240 km²");
-    expect(el.textContent).not.toContain("No mapped burned areas");
+    expect(el.textContent).not.toContain("No wildfire events");
     // No unit means no honest grid — but the number still stands.
     expect(el.querySelectorAll("[data-tile]").length).toBe(0);
   });
@@ -145,7 +143,7 @@ describe("renderScale", () => {
       ...DATA,
       countries: [
         ...DATA.countries,
-        { name: "Malta", km2: 0, areas: 1 } as SeasonData["countries"][number],
+        { name: "Malta", km2: 0, events: 1 } as SeasonData["countries"][number],
       ],
     });
     expect(el.querySelectorAll("[data-country]").length).toBe(3);
@@ -234,7 +232,7 @@ describe("reachability", () => {
   it("still warns over a zero total, where a failed fetch matters most", () => {
     const el = root();
     renderScale(el, {
-      ...DATA, status: "stale", total_km2: 0, area_count: 0, unit: null, countries: [],
+      ...DATA, status: "stale", total_km2: 0, event_count: 0, unit: null, countries: [],
     });
     expect(el.querySelector("[data-state]")?.getAttribute("data-state")).toBe("zero");
     expect(el.querySelector("[data-stale]")).not.toBeNull();
@@ -243,44 +241,39 @@ describe("reachability", () => {
 
 /**
  * The caption has to state the scope the number was actually computed over.
- * season.py's allowlist deliberately omits Russia and Turkey — EFFIS covers
- * both — so their area lands in `unassigned_count`. A caption reading only
- * "Burned in Europe" over that total claims more than the figure supports, and
- * an exclusion line reading "excluded for a missing size or country" reports
- * that deliberate scope as if it were data we had lost.
+ * api2's `aoi=EU` fetch is the 27 EU member states, and ONLY the 27 EU member
+ * states — no UK, Norway, Switzerland, Iceland, Ukraine, or the Balkans, all
+ * of which the old per-perimeter WFS source's bespoke ~44-country allowlist
+ * used to count. "excluding Russia and Turkey" would UNDERSTATE what is now
+ * excluded, so the caption has to shrink to match the fetch: "Burned in the
+ * EU" is the only claim this data actually supports.
  */
 describe("scope", () => {
-  it("states the exclusions in the caption, not just 'Europe'", () => {
+  it("states the caption as EU, matching what was actually fetched", () => {
     const el = root();
     renderScale(el, DATA);
     const kicker = el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " ");
-    expect(kicker).toContain("excluding Russia and Turkey");
+    expect(kicker).toContain("Burned in the EU");
     expect(kicker).toContain("2026 season");
+    // Would understate the real, narrower exclusion (see doc comment above).
+    expect(kicker).not.toContain("excluding Russia and Turkey");
   });
 
   it("captions the zero state with the same scope", () => {
     const el = root();
-    renderScale(el, { ...DATA, total_km2: 0, area_count: 0, unit: null, countries: [] });
+    renderScale(el, { ...DATA, total_km2: 0, event_count: 0, unit: null, countries: [] });
     expect(el.querySelector(".scale-kicker")?.textContent?.replace(/\s+/g, " "))
-      .toContain("excluding Russia and Turkey");
+      .toContain("Burned in the EU");
   });
 
-  it("does not report deliberately out-of-scope countries as missing data", () => {
+  it("states the count as wildfire events, with no leftover mapped-area copy", () => {
     const el = root();
     renderScale(el, DATA);
     const text = el.textContent?.replace(/\s+/g, " ") ?? "";
-    expect(text).not.toContain("excluded for a missing size or country");
-    // Names them, so a reader can tell chosen scope from a genuine gap.
-    expect(text).toContain("Russia, Turkey and North Africa");
-    expect(text).toContain("3 mapped areas");
-  });
-
-  it("omits the exclusion line entirely when nothing was excluded", () => {
-    const el = root();
-    renderScale(el, { ...DATA, unassigned_count: 0 });
-    const text = el.textContent?.replace(/\s+/g, " ") ?? "";
-    expect(text).not.toContain("Russia, Turkey and North Africa");
+    expect(text).toContain("1,184 wildfire events");
+    expect(text).not.toContain("mapped burn areas");
     expect(text).not.toContain("mapped areas sit outside");
+    expect(text).not.toContain("undated rows");
   });
 });
 

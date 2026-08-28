@@ -616,10 +616,8 @@ def export(
                     "observed_at": None,
                     "status": season_status,
                     "total_km2": season["total_km2"],
-                    "area_count": season["area_count"],
+                    "event_count": season["event_count"],
                     "min_fire_ha": EFFIS_MIN_FIRE_HA,
-                    "unassigned_count": season["unassigned_count"],
-                    "undated_count": season["undated_count"],
                     # Absent whenever there is no honest unit — a zero total, for
                     # which pick_unit refuses to invent one (run.py:_attach_units).
                     # Emitted as null so a zero season stays a state the page can

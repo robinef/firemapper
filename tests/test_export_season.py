@@ -12,16 +12,23 @@ drafted at least once:
 3. A missing `season.json` never blocks publication. The season page is
    educational; the map carries live fire data. See `freshness.py` for the run
    where one upstream 400 froze the whole map.
+
+`event_count`/countries' `events` replace the old `area_count`/`areas`: the
+api2 stats source (pipeline/fetch_effis_stats.py) counts distinct fire
+events, not mapped perimeters, so there is no honest "mapped burn areas"
+figure left to publish. `unassigned_count`/`undated_count` are gone outright
+— those measured rows the old per-fire WFS source couldn't parse a
+country/date for; api2 is pre-aggregated per EU country, so there is no
+unparsed-row step left to count.
 """
 import json
 from datetime import date, datetime, timedelta, timezone
 
 SEASON = {
-    "season_year": 2026, "total_km2": 10240.3, "area_count": 1184,
-    "unassigned_count": 3, "undated_count": 0,
+    "season_year": 2026, "total_km2": 10240.3, "event_count": 1184,
     "unit": {"name": "Greater London", "km2": 1572.0, "count": 6.5},
     "countries": [
-        {"name": "Spain", "km2": 2940.1, "areas": 402,
+        {"name": "Spain", "km2": 2940.1, "events": 402,
          "unit": {"name": "Paris", "km2": 105.4, "count": 27.9}},
     ],
 }
@@ -32,10 +39,8 @@ def test_season_json_is_written(export_gen):
     gen = export_gen(season=SEASON, season_status="fresh", now=NOW)
     payload = json.loads((gen / "season.json").read_text())
     assert payload["total_km2"] == 10240.3
-    assert payload["area_count"] == 1184
+    assert payload["event_count"] == 1184
     assert payload["season_year"] == 2026
-    assert payload["unassigned_count"] == 3
-    assert payload["undated_count"] == 0
     assert payload["status"] == "fresh"
     assert payload["unit"]["name"] == "Greater London"
     assert payload["countries"][0]["unit"]["name"] == "Paris"
@@ -104,24 +109,24 @@ def test_zero_total_is_written_without_a_unit(export_gen):
     """A season that burned nothing is a real state, distinct from no data at
     all: the file is written, and `unit` is null because `pick_unit` refuses a
     non-positive total rather than drawing a grid of no tiles."""
-    zero = {**SEASON, "total_km2": 0.0, "area_count": 0, "countries": []}
+    zero = {**SEASON, "total_km2": 0.0, "event_count": 0, "countries": []}
     zero.pop("unit")
     gen = export_gen(season=zero, season_status="fresh", now=NOW)
     payload = json.loads((gen / "season.json").read_text())
     assert payload["total_km2"] == 0.0
-    assert payload["area_count"] == 0
+    assert payload["event_count"] == 0
     assert "unit" in payload and payload["unit"] is None
     assert payload["countries"] == []
 
 
 def test_a_country_without_an_honest_unit_keeps_a_null(export_gen):
-    """Country km2 rounds independently of the season total, so a 4 ha
-    perimeter is 0.0 km2 under a healthy total and gets no unit key. The
-    artifact must still carry the country."""
-    season = {**SEASON, "countries": [{"name": "Malta", "km2": 0.0, "areas": 1}]}
+    """Country km2 rounds independently of the season total, so a small
+    country's tally is 0.0 km2 under a healthy total and gets no unit key.
+    The artifact must still carry the country."""
+    season = {**SEASON, "countries": [{"name": "Malta", "km2": 0.0, "events": 1}]}
     gen = export_gen(season=season, season_status="fresh", now=NOW)
     payload = json.loads((gen / "season.json").read_text())
-    assert payload["countries"] == [{"name": "Malta", "km2": 0.0, "areas": 1}]
+    assert payload["countries"] == [{"name": "Malta", "km2": 0.0, "events": 1}]
 
 
 def test_validate_generation_passes_without_season_json(export_gen):
@@ -191,30 +196,28 @@ def test_a_snapshot_that_cannot_say_when_it_was_polled_falls_back_to_now(export_
 
 
 def test_end_to_end_the_page_date_comes_off_a_real_weeks_old_snapshot(export_gen, tmp_path):
-    """The whole chain, on a real parquet: stamp a snapshot three weeks before
-    `now`, aggregate it, export it, and the artifact still says three weeks ago.
-    Under the export-clock version this read "2026-07-12" — today — for a
-    figure nobody had refreshed since June.
+    """The whole chain, on a real api2 snapshot file: stamp a snapshot three
+    weeks before `now`, aggregate it, export it, and the artifact still says
+    three weeks ago. Under the export-clock version this read "2026-07-12" —
+    today — for a figure nobody had refreshed since June.
 
-    It is also the only test IN THIS FILE that can prove the UTC offset, being
-    the only one that starts from the stored column rather than from a datetime
-    written here. That column is naive (DuckDB TIMESTAMP carries no zone), so
-    the zone has to be re-attached on the way out; a bare "2026-06-20T09:30:00"
-    reaching the page is read as LOCAL time by the browser and can print the
-    wrong day. The sibling guard one layer down is
-    test_season.py::test_the_poll_time_carries_a_utc_offset — every other test
-    here hands `_season_polled_at` an already-aware datetime and so asserts
-    nothing about the zone at all."""
+    `fetched_at` is always written as an already-tz-aware ISO string by
+    fetch_effis_stats.py (`now.isoformat()`), so there is no naive-timestamp
+    reattachment step left to get wrong — the old parquet-backed version of
+    this test existed specifically to catch DuckDB's TIMESTAMP dropping the
+    UTC offset on the way in. This still asserts the offset survives, just
+    with nothing in this chain that could have dropped it.
+    """
     from pipeline.season import season_totals
-    from pipeline.store import _naive_utc, write_polygons
 
-    path = tmp_path / "snap" / "effis_ba.parquet"
-    write_polygons([{
-        "id": "ba.1", "area_ha": 10000.0, "country": "ES",
-        "firedate": date(2026, 6, 18), "place": None,
-        "geometry_wkt": "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
-        "fetched_at": _naive_utc(POLLED),
-    }], path)
+    path = tmp_path / "snap" / "effis_season.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "fetched_at": POLLED.isoformat(),
+        "season_year": 2026,
+        "eu": {"mddate": "20260618", "events": 1, "area_ha": 10000.0},
+        "countries": {},
+    }))
 
     season = season_totals(path, 2026)
     assert season["total_km2"] == 100.0  # the snapshot really was aggregated

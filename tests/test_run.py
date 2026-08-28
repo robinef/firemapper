@@ -10,9 +10,10 @@ from tests.synth import T, hs
 def test_process_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr("pipeline.run.fetch_gdacs", lambda: [])
     # No snapshot under a fresh tmp_path means should_fetch() says yes and the
-    # real EFFIS WFS request fires (timeout=120). Stub it: this test must not
-    # depend on the network, and offline it would hang for minutes.
+    # real EFFIS WFS/stats requests fire. Stub both: this test must not depend
+    # on the network, and offline it would hang for minutes.
     monkeypatch.setattr("pipeline.run.fetch_season_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr("pipeline.run.fetch_stats_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)
     monkeypatch.setattr("pipeline.run.fetch_frp_points", lambda bbox: [])
     monkeypatch.setattr("pipeline.run.fetch_wind", lambda pts: [])
@@ -93,8 +94,9 @@ def test_failed_frp_does_not_publish_wind_as_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "fetch_wind", lambda *a, **k: [{"lon": 1, "lat": 1}])
     monkeypatch.setattr(run_mod, "mtg_frp_extent", lambda *a, **k: None)
     monkeypatch.setattr(run_mod, "build_imagery", lambda *a, **k: None)
-    # See test_process_end_to_end: unpatched, this reaches the live EFFIS WFS.
+    # See test_process_end_to_end: unpatched, this reaches live EFFIS backends.
     monkeypatch.setattr(run_mod, "fetch_season_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr(run_mod, "fetch_stats_snapshot", lambda *a, **k: "stale")
 
     captured = {}
 
