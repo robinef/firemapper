@@ -550,7 +550,10 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     }
     if (landed.after === current.after) return;
     current = landed;
-    swipe.setAfterTiles(scarTiles(cfg, landed, picked).after);
+    // stepping=true: end the HD search window exactly at `landed.after`
+    // rather than sliding it forward to today, or a recently-settled scar's
+    // window never moves and every step re-queries the identical scene.
+    swipe.setAfterTiles(scarTiles(cfg, landed, picked, undefined, true).after);
     setCompareNotice(landed, cfg, step, picked);
   };
 

@@ -337,6 +337,33 @@ describe("HD search windows", () => {
     }
   });
 
+  it("stepping a recently-settled scar actually changes the search window", () => {
+    // A fire settled within the last windowDays(12) has `after + 12 >= today`,
+    // so the default "slide forward, capped at today" rule pins `end` at
+    // `today` regardless of `after` — every step would re-query the
+    // byte-identical window otherwise. Reproduced live: Mont-de-Marsan
+    // (started 2026-08-23, TODAY 2026-08-28) queried
+    // TIME=2026-08-23/2026-08-28 on first load AND after clicking step,
+    // byte-identical, so Sentinel Hub returned the same scene both times.
+    // The `stepping` flag (scarTiles's last arg) is what main.ts's step()
+    // passes to fix this — end the window exactly at the stepped date.
+    let scar = scarAged(5); // settled ~5 days ago — squarely in the collapsed zone
+    const windows = new Set<string>();
+    for (let i = 0; i < 6; i++) {
+      windows.add(scarTiles(HD, scar, undefined, TODAY, true).after[0]);
+      scar = shiftAfter(scar, -1, TODAY);
+    }
+    expect(windows.size).toBeGreaterThan(1);
+  });
+
+  it("without the stepping flag, still slides late (settle()'s own default behaviour)", () => {
+    // Confirms the fix is additive: an ordinary (non-stepping) call for a
+    // recently-settled scar keeps sliding the window to today, unchanged.
+    const scar = scarAged(5);
+    const [, to] = timeRange(scarTiles(HD, scar, undefined, TODAY).after[0]);
+    expect(to).toBe(TODAY);
+  });
+
   it("cannot emit an inverted range even from a malformed scar", () => {
     // scarFromProps (main.ts) builds a Scar from marker properties without
     // validating their order, so a bad manifest entry can carry started > after.

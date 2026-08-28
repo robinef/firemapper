@@ -177,8 +177,11 @@ export interface CompareLike {
 }
 
 export interface FireCard {
-  openFire: (e: maplibregl.MapLayerMouseEvent) => void;
-  openScar: (e: maplibregl.MapLayerMouseEvent) => void;
+  /** Both resolve once the card has actually painted (after its track load),
+   *  not merely once dispatched — a caller that needs the paint done, not
+   *  just started, must await it. */
+  openFire: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
+  openScar: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
   close: () => void;
   /** Whether a fire/scar card is currently showing. Callers that only want
    *  to dismiss an OPEN card (e.g. a background map tap) must check this
@@ -486,13 +489,13 @@ export function setupFireCard(
     if (!feat) return;
     const mine = ++openToken;
     const p = reparse(feat.properties ?? {});
-    // One position, read once: `pos` is the fire's own Point geometry, null
-    // for the footprint-polygon click path (no single point to read). Camera
-    // and before/after always need SOME coordinate, so `[lon, lat]` falls
-    // back to the tap point; the wind/intensity readout below uses `pos`
-    // directly and shows nothing rather than attach a real figure to a guess.
+    // `pos` is the fire's own Point geometry, null for the footprint-polygon
+    // click path (no single point to read) — the wind/intensity readout below
+    // uses it directly and shows nothing rather than attach a real figure to
+    // a guess. `coords()` applies the same fallback for the camera/
+    // before-after coordinate, which always needs SOME point.
     const pos = eventPosition(feat);
-    const [lon, lat] = pos ?? (e.lngLat ? [e.lngLat.lng, e.lngLat.lat] : [0, 0]);
+    const [lon, lat] = coords(e, feat);
     let track: Track | null = null;
     try {
       track = await loadTrack(manifest, p.id, "/data", fetch, p.track_gen);

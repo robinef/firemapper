@@ -408,17 +408,27 @@ export function scarTiles(
   picked?: { before?: Capture; after?: Capture },
   /** Injectable clock, so window arithmetic is testable at a fixed date. */
   today?: string,
+  /** True when called from step() — the reader explicitly asked to see THIS
+   * date, so the window must end exactly there rather than sliding forward
+   * toward today. `extend` is what settle()'s initial placement wants (avoid
+   * defaulting onto a still-burning frame); for a fire settled within the
+   * last windowDays it also means `end` sticks at `today` no matter what
+   * `scar.after` is, so every step re-queries the byte-identical window and
+   * Sentinel Hub returns the same scene forever (reproduced live on
+   * Mont-de-Marsan, TIME=2026-08-23/2026-08-28 unchanged across steps). */
+  stepping = false,
 ): { before: string[]; after: string[] } {
   if (cfg.hd) {
     const { wms_base, layer } = cfg.hd;
     // Active fire: look BACK from the nominal date for the newest usable pass —
     // the question is "what does it look like now". Settled scar: look FORWARD,
     // so the search cannot wander back into days when the fire was still
-    // burning (see TileOpts.forward).
+    // burning (see TileOpts.forward) — unless the reader is stepping, who
+    // gets exactly the date they asked for.
     const afterOpts: TileOpts =
       scar.kind === "active"
         ? { priority: "mostRecent", maxcc: 60, notBefore: scar.started, today }
-        : { priority: "leastCC", maxcc: 35, extend: true, notBefore: scar.started, today };
+        : { priority: "leastCC", maxcc: 35, extend: !stepping, notBefore: scar.started, today };
     return {
       // No `notBefore`/`extend` here on purpose: the baseline window ends at
       // its date and runs backwards, so it is entirely pre-ignition already.
