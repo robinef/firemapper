@@ -40,11 +40,34 @@ def test_returns_the_largest_scars_first(tmp_path):
 def test_shape_matches_what_build_imagery_consumes(tmp_path):
     settings = seed(tmp_path, [row("a", 900.0, place="Aragon")])
     scar = fetch_effis_ba(settings)[0]
-    assert set(scar) >= {"id", "label", "kind", "lon", "lat", "started", "before", "after"}
+    assert set(scar) >= {
+        "id", "label", "kind", "lon", "lat", "started", "before", "after", "area_km2",
+    }
     assert scar["kind"] == "past"
     assert scar["label"] == "Aragon · 2026"
     assert scar["place"] == "Aragon"
     assert "_area_ha" not in scar
+
+
+def test_scar_reports_the_mapped_area_in_km2(tmp_path):
+    """EFFIS gives a real perimeter, not a sensor-cell floor — 900 ha = 9 km²,
+    exact."""
+    settings = seed(tmp_path, [row("a", 900.0)])
+    scar = fetch_effis_ba(settings)[0]
+    assert scar["area_km2"] == 9.0
+
+
+def test_scar_carries_no_cell_count(tmp_path):
+    """No `cum_cells`: a mapped polygon has no sensor-floor uncertainty, so
+    areaText() must never show its "≤" unsized marker for an EFFIS scar."""
+    settings = seed(tmp_path, [row("a", 900.0)])
+    assert "cum_cells" not in fetch_effis_ba(settings)[0]
+
+
+def test_a_zero_area_row_still_reports_zero_not_missing(tmp_path):
+    settings = seed(tmp_path, [row("a", 0.0)])
+    scar = fetch_effis_ba(settings)[0]
+    assert scar["area_km2"] == 0.0
 
 
 def test_label_without_a_place(tmp_path):

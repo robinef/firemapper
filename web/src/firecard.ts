@@ -153,6 +153,7 @@ export function scarCardHtml(s: Scar): string {
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
     `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +
     `<div class="fc-stats">` +
+    stat("Burned area", areaText(s.area_km2, s.cum_cells)) +
     stat("Location", `${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}`) +
     stat("Before (pre-fire)", s.before) +
     stat("After (scar)", s.after) +

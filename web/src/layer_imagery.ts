@@ -24,6 +24,13 @@ export interface Scar {
   started: string;
   before: string;
   after: string;
+  /** Same method as a live fire's `area_km2` (see area.ts): dedup H3 cells ×
+   * the sensor's per-cell size for a FIRMS-derived scar, or the mapped
+   * polygon's real area for an EFFIS one. */
+  area_km2: number;
+  /** Deduped cell count, for areaText()'s "≤" unsized-footprint marker.
+   * Absent for an EFFIS scar — a real polygon carries no such uncertainty. */
+  cum_cells?: number | null;
   /** "archive" when this past scar has a permanent per-fire track (see
    * pipeline/archive_tracks.py) — loadTrack resolves that sentinel to the
    * fire's fixed, non-generation archive path. Absent/null for curated
@@ -304,6 +311,9 @@ export function scarFromClick(snap: FeatureSnapshot): Scar {
     started: isoDay(start),
     before: isoDay(before),
     after: isoDay(after),
+    // Same live-fire feature properties fireCardHtml already reads area from.
+    area_km2: typeof p.area_km2 === "number" ? p.area_km2 : 0,
+    cum_cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
   };
 }
 

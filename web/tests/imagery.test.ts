@@ -27,6 +27,7 @@ const scar: Scar = {
   started: "2026-07-20",
   before: "2026-07-14",
   after: "2026-08-03",
+  area_km2: 4.2,
 };
 
 // Pinned so the clamp-to-today branch is exercised deliberately, not by
@@ -262,6 +263,7 @@ function scarAged(ageDays: number, kind: "past" | "active" = "past"): Scar {
     id: "s", label: "s", kind, lon: -1, lat: 44.8, started,
     before: day(started, -6),
     after: after < started ? started : after,
+    area_km2: 3.5,
   };
 }
 
@@ -372,6 +374,7 @@ describe("HD search windows", () => {
     const bad: Scar = {
       id: "s", label: "s", kind: "past", lon: -1, lat: 44.8,
       started: "2026-08-01", before: "2026-07-01", after: "2026-07-10",
+      area_km2: 1.0,
     };
     const [from, to] = timeRange(scarTiles(HD, bad, undefined, TODAY).after[0]);
     expect(from <= to).toBe(true);
