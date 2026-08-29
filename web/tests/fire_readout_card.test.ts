@@ -101,7 +101,7 @@ describe("scarCardHtml", () => {
     const scar: Scar = {
       id: "s1", label: "Test Scar", place: "Test Basin", kind: "past",
       lon: 18.3, lat: 42.7, started: "2026-07-01",
-      before: "2026-06-20", after: "2026-07-15",
+      before: "2026-06-20", after: "2026-07-15", area_km2: 5.1,
     };
     const html = scarCardHtml(scar);
     expect(html).not.toContain("ro-body");

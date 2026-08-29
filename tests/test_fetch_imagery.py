@@ -1,5 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import h3
+
+from pipeline.events import METEOSAT_CELL_KM2, METEOSAT_RES
+from pipeline.metrics import CELL_KM2, area_km2
 from pipeline.fetch_imagery import (
     BASELINE_LEAD_DAYS,
     MAX_SCARS,
@@ -18,8 +22,9 @@ class _Settings:
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
 
 
-def _fire(lon, lat, latest_day, name=None, n=6, start_day=None):
-    """A fire with `n` members; latest detection on `latest_day`."""
+def _fire(lon, lat, latest_day, name=None, n=6, start_day=None, res=8):
+    """A fire with `n` members; latest detection on `latest_day`. `res` is the
+    H3 clustering resolution (8 = VIIRS default, 7 = Meteosat)."""
     start = start_day or latest_day
     ms = [
         {"lon": lon + 0.001 * i, "lat": lat, "name": name,
@@ -28,6 +33,8 @@ def _fire(lon, lat, latest_day, name=None, n=6, start_day=None):
     ]
     ms.append({"lon": lon, "lat": lat, "name": name,
                "acq_time": datetime(2026, 7, latest_day, tzinfo=timezone.utc)})
+    for m in ms:
+        m["cell"] = h3.latlng_to_cell(m["lat"], m["lon"], res)
     return ms
 
 
@@ -125,6 +132,18 @@ def test_build_imagery_always_has_notable_scars():
     assert all(s["kind"] == "past" for s in cfg["scars"])
 
 
+def test_notable_scars_carry_a_real_burned_area_not_a_confident_zero():
+    """A curated megafire that actually burned ~100+ km² must never render
+    "0 km²" for want of an area_km2 field — that would be a false, unflagged
+    claim, worse than showing nothing."""
+    cfg = build_imagery(_Settings(), {}, NOW)
+    notable = {s["id"]: s for s in cfg["scars"]
+               if s["id"] in {"landiras-2022", "la-teste-2022", "evros-2023", "rhodes-2023"}}
+    assert len(notable) == 4
+    for scar in notable.values():
+        assert scar["area_km2"] > 0
+
+
 def test_baseline_lead_reasonable():
     assert 3 <= BASELINE_LEAD_DAYS <= 14
 
@@ -154,6 +173,32 @@ def test_scars_carry_their_size():
     to show how big a burn was."""
     events = {"e1": _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18)}
     assert build_scars(events, NOW)[0]["cells"] == 9
+
+
+def test_scar_carries_burned_area_km2():
+    """Same method the live fire card uses (export.py): dedup cells × the
+    sensor's per-cell size, not the raw (possibly repeat-visited) member
+    count `cells` already carries."""
+    members = _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18)
+    scar = build_scars({"e1": members}, NOW)[0]
+    assert scar["area_km2"] == area_km2(members, CELL_KM2)
+
+
+def test_scar_carries_deduplicated_cell_count_for_unsized_marker():
+    """`cum_cells` is the deduped cell count, distinct from the raw member
+    count in `cells` — areaText() needs it to decide the "≤" unsized marker."""
+    members = _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18)
+    scar = build_scars({"e1": members}, NOW)[0]
+    assert scar["cum_cells"] == len({m["cell"] for m in members})
+
+
+def test_meteosat_scar_uses_the_wider_cell_size():
+    """A fire clustered at Meteosat resolution (7) prices its area at the
+    coarser 5.2 km² cell, not the VIIRS 0.7 km² default — same sensor-aware
+    choice export.py makes for live fires."""
+    members = _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18, res=METEOSAT_RES)
+    scar = build_scars({"e1": members}, NOW)[0]
+    assert scar["area_km2"] == area_km2(members, METEOSAT_CELL_KM2)
 
 
 def test_equal_size_past_scars_fall_back_to_recency():

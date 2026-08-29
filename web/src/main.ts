@@ -632,6 +632,8 @@ function scarFromProps(p: Record<string, unknown>): Scar | null {
     lon: p.lon as number,
     lat: p.lat as number,
     started: p.started as string,
+    area_km2: typeof p.area_km2 === "number" ? p.area_km2 : 0,
+    cum_cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
     before: p.before as string,
     after: p.after as string,
   };

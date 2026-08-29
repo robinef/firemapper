@@ -18,12 +18,9 @@ from .config import (
 from .fetch_result import FetchResult
 from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, nearest_place
-from .events import lifecycle, reactivation_links
-import h3
-
-from .events import METEOSAT_CELL_KM2, METEOSAT_RES
+from .events import cell_km2_for, lifecycle, reactivation_links
 from .isochrones import FootprintIndex, isochrone_features, open_band_geometry
-from .metrics import CELL_KM2, area_km2, bins_series, local_spread_vectors, movement, status
+from .metrics import area_km2, bins_series, local_spread_vectors, movement, status
 
 RECENT_DAYS = 7
 
@@ -114,7 +111,7 @@ def _events_features(events, liveness, places, alerts, now):
             sum(m["lat"] for m in members) / len(members),
             sum(m["lon"] for m in members) / len(members),
         ]
-        cell_km2 = METEOSAT_CELL_KM2 if h3.get_resolution(members[0]["cell"]) == METEOSAT_RES else CELL_KM2
+        cell_km2 = cell_km2_for(members)
         feats.append(
             {
                 "type": "Feature",

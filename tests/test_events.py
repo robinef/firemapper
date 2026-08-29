@@ -4,7 +4,18 @@ from datetime import timedelta
 
 import h3
 
-from pipeline.events import CLOSE_AFTER_H, _UF, cluster, event_id_for, lifecycle, reactivation_links
+from pipeline.events import (
+    CLOSE_AFTER_H,
+    METEOSAT_CELL_KM2,
+    METEOSAT_RES,
+    _UF,
+    cell_km2_for,
+    cluster,
+    event_id_for,
+    lifecycle,
+    reactivation_links,
+)
+from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
 
 
@@ -141,6 +152,18 @@ def test_meteosat_only_clusters_at_res7():
     assert len(ev) == 1, f"expected one MTG fire, got {len(ev)}"
     members = next(iter(ev.values()))
     assert all(h3.get_resolution(m["cell"]) == METEOSAT_RES for m in members)
+
+
+def test_cell_km2_for_uses_viirs_default_for_polar_members():
+    members = [hs(*A, T(20, 0))]
+    members[0]["cell"] = h3.latlng_to_cell(*A, 8)  # VIIRS clustering resolution
+    assert cell_km2_for(members) == CELL_KM2
+
+
+def test_cell_km2_for_uses_the_wider_meteosat_cell():
+    members = [hs(*A, T(20, 0))]
+    members[0]["cell"] = h3.latlng_to_cell(*A, METEOSAT_RES)
+    assert cell_km2_for(members) == METEOSAT_CELL_KM2
 
 
 def test_lifecycle_thresholds():

@@ -172,7 +172,7 @@ def fetch_effis_ba(
         # `limit` rather than being backfilled. Only reachable with a
         # foreign-written snapshot, which degrades to [] anyway.
         rows = con.execute(
-            f"""SELECT id, firedate, place,
+            f"""SELECT id, firedate, place, area_ha,
                        ST_X(ST_Centroid(geometry)) AS lon,
                        ST_Y(ST_Centroid(geometry)) AS lat
                 FROM read_parquet('{_sql_path(path)}')
@@ -189,7 +189,7 @@ def fetch_effis_ba(
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     scars: list[dict] = []
-    for fid, fire_date, place, lon, lat in rows:
+    for fid, fire_date, place, area_ha, lon, lat in rows:
         try:
             before = fire_date - timedelta(days=BASELINE_LEAD_DAYS)
             # Settled black scar, but never a date we cannot have imagery for
@@ -204,6 +204,9 @@ def fetch_effis_ba(
                 "kind": "past",
                 "lon": round(float(lon), 4),
                 "lat": round(float(lat), 4),
+                # A mapped polygon, not a sensor-cell floor — no `cum_cells`,
+                # so areaText() never puts the "≤" unsized marker on it.
+                "area_km2": round(float(area_ha) / 100, 1),
                 "started": fire_date.isoformat(),
                 "before": before.isoformat(),
                 "after": after.isoformat(),

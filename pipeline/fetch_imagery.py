@@ -27,6 +27,9 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from .events import cell_km2_for
+from .metrics import area_km2
+
 # GIBS true-colour layers (keyless). MODIS Terra is the daily default; VIIRS is
 # an alternative. Corrected-reflectance = natural colour.
 GIBS_LAYER = "MODIS_Terra_CorrectedReflectance_TrueColor"
@@ -107,6 +110,9 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
     if not name and places:
         p = nearest_place(lat, lon, places)
         name = p["name"] if p else None
+    # Same sensor-aware cell size the live fire card uses (events.py).
+    cell_km2 = cell_km2_for(members)
+    cum_cells = len({m["cell"] for m in members})
     return {
         "id": eid,
         "label": _label_for(name, start, past),
@@ -115,6 +121,8 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
         "lon": round(lon, 4),
         "lat": round(lat, 4),
         "cells": len(members),
+        "area_km2": area_km2(members, cell_km2),
+        "cum_cells": cum_cells,
         "started": start.isoformat(),
         "before": before,
         "after": after,
