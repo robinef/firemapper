@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import h3
 
 from .config import H3_RES
+from .metrics import CELL_KM2
 from .store import cell_at
 
 BIN_HOURS = 6
@@ -19,6 +20,14 @@ METEOSAT_CELL_KM2 = 5.2
 WINDOW_DAYS = 14
 ACTIVE_H_VIIRS = 24
 ACTIVE_H_METEOSAT = 2
+
+
+def cell_km2_for(members: list[dict]) -> float:
+    """The per-cell area for pricing a fire's footprint: the wider Meteosat
+    cell (res 7) when this fire clustered at Meteosat resolution, else the
+    VIIRS default. One place for the sensor-tier check so export.py's live
+    fire card and fetch_imagery.py's scar cards can't drift apart on it."""
+    return METEOSAT_CELL_KM2 if h3.get_resolution(members[0]["cell"]) == METEOSAT_RES else CELL_KM2
 
 
 def bin_start(t: datetime) -> datetime:

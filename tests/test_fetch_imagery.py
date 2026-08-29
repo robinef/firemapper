@@ -132,6 +132,18 @@ def test_build_imagery_always_has_notable_scars():
     assert all(s["kind"] == "past" for s in cfg["scars"])
 
 
+def test_notable_scars_carry_a_real_burned_area_not_a_confident_zero():
+    """A curated megafire that actually burned ~100+ km² must never render
+    "0 km²" for want of an area_km2 field — that would be a false, unflagged
+    claim, worse than showing nothing."""
+    cfg = build_imagery(_Settings(), {}, NOW)
+    notable = {s["id"]: s for s in cfg["scars"]
+               if s["id"] in {"landiras-2022", "la-teste-2022", "evros-2023", "rhodes-2023"}}
+    assert len(notable) == 4
+    for scar in notable.values():
+        assert scar["area_km2"] > 0
+
+
 def test_baseline_lead_reasonable():
     assert 3 <= BASELINE_LEAD_DAYS <= 14
 
