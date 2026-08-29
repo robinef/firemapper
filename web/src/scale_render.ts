@@ -83,6 +83,12 @@ function count(value: number): string {
   return value.toLocaleString("en-GB", { maximumFractionDigits: 1 });
 }
 
+/** Below this fill fraction a partial tile is a couple of pixels of
+ * full-opacity colour against the low-opacity ember fill — visually
+ * indistinguishable from an empty tile, so a real remainder would silently
+ * vanish from the "one you can check by eye" grid. */
+const MIN_VISIBLE_FRAC = 0.08;
+
 /** Whole tiles, plus one partial tile sized to the fractional remainder. */
 function grid(unit: ScaleUnit): string {
   const whole = Math.floor(unit.count);
@@ -91,11 +97,14 @@ function grid(unit: ScaleUnit): string {
   const fraction = unit.count - whole;
   const tiles = Array.from({ length: whole }, () => '<div data-tile="full"></div>');
   if (fraction > 0.001) {
-    tiles.push(`<div data-tile="partial" style="--frac:${fraction.toFixed(3)}"></div>`);
+    // A real remainder — even a small one — is still floored to
+    // MIN_VISIBLE_FRAC, same as a total that rounds to 0.0 whole tiles below.
+    const frac = Math.max(fraction, MIN_VISIBLE_FRAC);
+    tiles.push(`<div data-tile="partial" style="--frac:${frac.toFixed(3)}"></div>`);
   } else if (!tiles.length) {
     // A positive total that rounds to 0.0 tiles still burned something; an
     // empty grid would say it did not.
-    tiles.push('<div data-tile="partial" style="--frac:0.08"></div>');
+    tiles.push(`<div data-tile="partial" style="--frac:${MIN_VISIBLE_FRAC}"></div>`);
   }
 
   return `<div class="scale-grid" role="img" aria-label="${count(unit.count)} times ${escapeHtml(unit.name)}">${tiles.join("")}</div>

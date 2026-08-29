@@ -182,6 +182,22 @@ describe("renderScale", () => {
     expect(el.querySelectorAll('[data-tile="partial"]').length).toBe(1);
   });
 
+  it("gives a small real remainder a visible sliver, not an invisible one", () => {
+    // count=4.04: 4 whole tiles plus a real ~4% remainder. A --frac that small
+    // renders as a couple of pixels of full-opacity fire against a low-opacity
+    // ember fill — indistinguishable from an empty tile at normal viewing size,
+    // so a reader sees "4 tiles" and never learns a 5th unit was real too.
+    const el = root();
+    renderScale(el, {
+      ...DATA,
+      total_km2: 6351,
+      unit: { name: "Greater London", km2: 1572, count: 4.04 },
+    });
+    const partial = el.querySelector('[data-tile="partial"]') as HTMLElement;
+    const frac = parseFloat(partial.style.getPropertyValue("--frac"));
+    expect(frac).toBeGreaterThanOrEqual(0.08);
+  });
+
   it("replaces prior content instead of appending on a re-render", () => {
     const el = root();
     renderScale(el, DATA);
