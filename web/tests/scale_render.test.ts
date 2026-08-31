@@ -148,6 +148,15 @@ describe("renderScale", () => {
     });
     expect(el.querySelectorAll("[data-country]").length).toBe(3);
     expect(el.textContent).toContain("Malta");
+    // Real, nonzero area (season.py already excludes true zero) that rounds
+    // to "0.0 km²" in the label must still show as a visible bar, not one
+    // indistinguishable from a row with nothing at all — same principle as
+    // the tile grid's MIN_VISIBLE_FRAC floor.
+    const malta = [...el.querySelectorAll("[data-country]")].find((li) =>
+      li.textContent?.includes("Malta"),
+    )!;
+    const width = parseFloat(malta.querySelector<HTMLElement>(".scale-row-bar i")!.style.width);
+    expect(width).toBeGreaterThan(0);
   });
 
   it("escapes names that reach innerHTML", () => {
