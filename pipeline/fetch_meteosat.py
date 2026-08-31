@@ -205,7 +205,14 @@ def fetch_frp_points(
     for f in features:
         geom, props = f.get("geometry") or {}, f.get("properties") or {}
         if geom.get("type") == "Point":
-            lon, lat = geom["coordinates"][0], geom["coordinates"][1]
+            # This layer's GeoJSON Point coordinates come back as [lat, lon],
+            # not RFC 7946's [lon, lat] — a property of mtg_fd:frp itself,
+            # not the request: verified live that neither srsName=EPSG:4326
+            # nor CRS:84 changes it. A separate gotcha from the BBOX-operand
+            # axis order handled in _wfs_points_url above; do not conflate
+            # the two fixes into one, or a future "obvious" srsName tweak
+            # will silently reintroduce this swap.
+            lat, lon = geom["coordinates"][0], geom["coordinates"][1]
         elif props.get("Lon") is not None and props.get("Lat") is not None:
             lon, lat = props["Lon"], props["Lat"]  # geometry-less response
         else:

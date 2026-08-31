@@ -56,16 +56,23 @@ def test_mtg_frp_extent_parses_live_window():
     }
 
 
+# view.eumetsat.int's mtg_fd:frp layer returns GeoJSON Point coordinates as
+# [lat, lon], not RFC 7946's mandated [lon, lat] — confirmed live on
+# 2026-08-31 against a known real fire (District of Taher, lon 6.04, lat
+# 36.70): querying a tight bbox around it returns points like [36.7, 6.4],
+# which only satisfies the bbox filter read as [lat, lon]. Neither
+# srsName=EPSG:4326 nor CRS:84 changes this — it's the layer's own behaviour,
+# not fixable from the request. These fixtures model the real wire format.
 FRP_FC = {
     "type": "FeatureCollection",
     "features": [
-        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-1.15012, 44.81634]},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [44.81634, -1.15012]},
          "properties": {"FRP": 44.16, "Confidence": 66, "time": "2026-07-24T08:20:00Z"}},
-        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-1.2, 44.9]},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [44.9, -1.2]},
          "properties": {"FRP": 12.0, "Confidence": 10, "time": "2026-07-24T08:20:00Z"}},
         {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[]]},
          "properties": {"FRP": 99.0}},
-        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 45]},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [45, 0]},
          "properties": {"Confidence": 80}},
     ],
 }
