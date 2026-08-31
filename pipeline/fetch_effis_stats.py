@@ -20,9 +20,16 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+# Country calls are independent, I/O-bound HTTP requests, so a small pool of
+# workers turns 27 sequential round-trips into a handful of overlapping ones.
+# Capped well below 27 to stay polite to api2's single host, not to bound
+# local resource use.
+COUNTRY_FETCH_WORKERS = 8
 
 STATS_BASE = "https://api2.effis.emergency.copernicus.eu/statistics/v2/effis"
 MIN_AGE_HOURS = 6.0
@@ -147,17 +154,17 @@ def fetch_stats_snapshot(
         )
         return "stale"
 
-    countries: dict[str, dict] = {}
-    for iso3, name in EU_COUNTRIES.items():
+    def _fetch_one(item: tuple[str, str]) -> tuple[str, dict | None]:
+        iso3, name = item
         try:
             payload = json.loads(http_get(_country_url(iso3, year)))
         except Exception as exc:  # noqa: BLE001 - one country must not sink the rest
             print(f"[warn] effis-stats: {iso3} skipped — {_fault(exc)}", file=sys.stderr)
-            continue
+            return iso3, None
         latest = _latest_cumulative(payload)
         if latest is None:
-            continue
-        countries[iso3] = {
+            return iso3, None
+        return iso3, {
             "name": name,
             # .get(), not [...]: only `area_ha` is guaranteed non-null by
             # _latest_cumulative. A country missing `mddate` or `events` must
@@ -168,6 +175,16 @@ def fetch_stats_snapshot(
             "events": latest.get("events") or 0,
             "area_ha": latest["area_ha"],
         }
+
+    # Independent I/O-bound calls, so a worker pool overlaps their round-trips
+    # rather than paying 27 timeouts back to back. Each still degrades on its
+    # own via _fetch_one's own try/except — a pool failure isolates exactly
+    # the way the old sequential loop did, just concurrently.
+    with ThreadPoolExecutor(max_workers=COUNTRY_FETCH_WORKERS) as pool:
+        results = pool.map(_fetch_one, EU_COUNTRIES.items())
+    countries: dict[str, dict] = {
+        iso3: entry for iso3, entry in results if entry is not None
+    }
 
     snapshot = {
         "fetched_at": now.isoformat(),

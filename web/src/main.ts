@@ -680,7 +680,9 @@ function renderCellPicker(
       return (
         `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
         `<b>${escapeHtml(String(name))}</b>` +
-        `<span>${escapeHtml(areaText(Number(p.area_km2 ?? 0), typeof p.cum_cells === "number" ? p.cum_cells : null))} · ${escapeHtml(started)} · ` +
+        // Same typeof guard as scarFromClick/scarFromProps above: a string in
+        // area_km2 must fall back to 0, not silently coerce via Number().
+        `<span>${escapeHtml(areaText(typeof p.area_km2 === "number" ? p.area_km2 : 0, typeof p.cum_cells === "number" ? p.cum_cells : null))} · ${escapeHtml(started)} · ` +
         `${escapeHtml(String(p.status ?? ""))}</span></button>`
       );
     })

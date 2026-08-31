@@ -534,7 +534,15 @@ export function setupFireCard(
     const feat = e.features?.[0];
     if (!feat) return;
     const mine = ++openToken;
-    const s = feat.properties as unknown as Scar;
+    const raw = (feat.properties ?? {}) as Record<string, unknown>;
+    // Same guard scarFromClick (layer_imagery.ts) and scarFromProps (main.ts)
+    // apply before building a Scar: a marker missing area_km2/cum_cells must
+    // never let scarCardHtml print the literal text "undefined km²".
+    const s: Scar = {
+      ...(raw as unknown as Scar),
+      area_km2: typeof raw.area_km2 === "number" ? raw.area_km2 : 0,
+      cum_cells: typeof raw.cum_cells === "number" ? raw.cum_cells : null,
+    };
     const scarId = String(s.id ?? "");
     const [lon, lat] = coords(e, feat);
     // Curated megafires, EFFIS scars, and a real past fire not yet archived
