@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .archive_tracks import archive_past_tracks, previous_archive_index
-from .config import EUROPE_BBOX, Settings, load_settings
+from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
 from .store import read_hotspots, write_points
 from .enrich import MIN_PLACES, fetch_gdacs, load_places
 from .events import cluster
@@ -21,10 +21,6 @@ from .scale import pick_unit
 from .season import season_totals
 from .timeline import build_timeline
 from .day_slices import build_day_slices
-
-# Cluster over a longer window than the live layer so fires that have gone quiet
-# still surface as historical ("past") scars.
-SCAR_WINDOW_DAYS = 45
 from .fetch_wind import fetch_wind, wind_sample_points
 from .fetch_meteosat import (
     EUMETVIEW_WMS,

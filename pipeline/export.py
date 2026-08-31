@@ -15,6 +15,7 @@ from .config import (
     TRACK_REWRITE_EVERY,
     Settings,
 )
+from .coverage import build_coverage
 from .fetch_result import FetchResult
 from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, nearest_place
@@ -670,6 +671,7 @@ def export(
                 "timeline": timeline,
                 "day_slice_dates": day_dates,
                 "isochrone_bands": len(iso_feats),
+                "coverage": build_coverage(settings, now),
             }
         )
     )
