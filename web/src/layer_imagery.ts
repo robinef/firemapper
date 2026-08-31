@@ -1,4 +1,5 @@
 import * as maplibregl from "maplibre-gl";
+import { numOr } from "./area";
 
 /**
  * Before/after Sentinel-2 true-colour swipe.
@@ -312,8 +313,8 @@ export function scarFromClick(snap: FeatureSnapshot): Scar {
     before: isoDay(before),
     after: isoDay(after),
     // Same live-fire feature properties fireCardHtml already reads area from.
-    area_km2: typeof p.area_km2 === "number" ? p.area_km2 : 0,
-    cum_cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
+    area_km2: numOr(p.area_km2, 0),
+    cum_cells: numOr(p.cum_cells, null),
   };
 }
 

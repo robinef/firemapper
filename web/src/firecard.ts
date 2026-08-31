@@ -1,6 +1,6 @@
 import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
-import { areaText, footprintNote } from "./area";
+import { areaText, footprintNote, numOr } from "./area";
 import { loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
@@ -538,11 +538,11 @@ export function setupFireCard(
     // Same guard scarFromClick (layer_imagery.ts) and scarFromProps (main.ts)
     // apply before building a Scar: a marker missing area_km2/cum_cells must
     // never let scarCardHtml print the literal text "undefined km²".
-    const s: Scar = {
-      ...(raw as unknown as Scar),
-      area_km2: typeof raw.area_km2 === "number" ? raw.area_km2 : 0,
-      cum_cells: typeof raw.cum_cells === "number" ? raw.cum_cells : null,
-    };
+    const s = {
+      ...raw,
+      area_km2: numOr(raw.area_km2, 0),
+      cum_cells: numOr(raw.cum_cells, null),
+    } as unknown as Scar;
     const scarId = String(s.id ?? "");
     const [lon, lat] = coords(e, feat);
     // Curated megafires, EFFIS scars, and a real past fire not yet archived

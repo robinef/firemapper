@@ -188,10 +188,11 @@ def fetch_stats_snapshot(
     # own via _fetch_one's own try/except — a pool failure isolates exactly
     # the way the old sequential loop did, just concurrently.
     with ThreadPoolExecutor(max_workers=COUNTRY_FETCH_WORKERS) as pool:
-        results = pool.map(_fetch_one, EU_COUNTRIES.items())
-    countries: dict[str, dict] = {
-        iso3: entry for iso3, entry in results if entry is not None
-    }
+        countries: dict[str, dict] = {
+            iso3: entry
+            for iso3, entry in pool.map(_fetch_one, EU_COUNTRIES.items())
+            if entry is not None
+        }
 
     snapshot = {
         "fetched_at": now.isoformat(),
