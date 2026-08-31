@@ -15,6 +15,14 @@ export interface Manifest {
   isochrone_bands?: number;
   timeline?: TimelineDay[] | null;
   day_slice_dates?: string[];
+  /** How far back each layer reaches. Absent on manifests published before this field existed. */
+  coverage?: {
+    live_window_hours: number;
+    firms_lookback_days: number;
+    scar_window_days: number;
+    archive_floor_date: string;
+    effis_note: string;
+  };
 }
 
 export interface TimelineDay {

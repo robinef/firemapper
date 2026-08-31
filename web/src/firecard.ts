@@ -9,6 +9,7 @@ import type { FeatureSnapshot, Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
 import type { EventProps, Manifest, TimelineDay, Track } from "./types";
 import { safeHttpUrl } from "./escape";
+import { statRow } from "./stat_row";
 import { emitUi } from "./ui_events";
 import {
   eventPosition,
@@ -78,10 +79,6 @@ function reparse(props: Record<string, unknown>): EventProps {
   return out as unknown as EventProps;
 }
 
-function stat(label: string, value: string): string {
-  return `<div class="fc-stat"><span>${label}</span><b>${value}</b></div>`;
-}
-
 export function fireCardHtml(p: EventProps, track: Track | null, readout?: Readout | null): string {
   const st = STATUS[p.status] ?? STATUS.closed;
   const stt = STATE[p.state] ?? STATE.steady;
@@ -89,14 +86,14 @@ export function fireCardHtml(p: EventProps, track: Track | null, readout?: Reado
   const peak = track && track.series.length ? Math.max(...track.series.map((b) => b.frp_sum)) : 0;
   const mv = p.movement;
   const rows = [
-    stat("Burned area", areaText(p.area_km2, p.cum_cells)),
-    footprintNote(p.cum_cells) ? stat("Footprint", footprintNote(p.cum_cells)) : "",
-    stat("Ignited", `${fmtDate(p.started)} · ${rel(p.started)}`),
-    stat("Last detection", rel(p.freshness.viirs)),
-    p.freshness.meteosat ? stat("Live (Meteosat)", rel(p.freshness.meteosat)) : "",
-    peak ? stat("Peak intensity", `${Math.round(peak)} MW`) : "",
-    mv ? stat("Spreading", `${compass(mv.bearing_deg)} · ${(mv.distance_24h_m / 1000).toFixed(1)} km / 24 h`) : "",
-    p.place ? stat("Nearest town", `${esc(p.place.name)} (${p.place.distance_km} km)`) : "",
+    statRow("Burned area", areaText(p.area_km2, p.cum_cells)),
+    footprintNote(p.cum_cells) ? statRow("Footprint", footprintNote(p.cum_cells)) : "",
+    statRow("Ignited", `${fmtDate(p.started)} · ${rel(p.started)}`),
+    statRow("Last detection", rel(p.freshness.viirs)),
+    p.freshness.meteosat ? statRow("Live (Meteosat)", rel(p.freshness.meteosat)) : "",
+    peak ? statRow("Peak intensity", `${Math.round(peak)} MW`) : "",
+    mv ? statRow("Spreading", `${compass(mv.bearing_deg)} · ${(mv.distance_24h_m / 1000).toFixed(1)} km / 24 h`) : "",
+    p.place ? statRow("Nearest town", `${esc(p.place.name)} (${p.place.distance_km} km)`) : "",
   ].join("");
   // Both halves of the GDACS alert are third-party: the pipeline copies title
   // and link straight out of gdacs.org's RSS without validating either. The
@@ -153,10 +150,10 @@ export function scarCardHtml(s: Scar): string {
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
     `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +
     `<div class="fc-stats">` +
-    stat("Burned area", areaText(s.area_km2, s.cum_cells)) +
-    stat("Location", `${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}`) +
-    stat("Before (pre-fire)", s.before) +
-    stat("After (scar)", s.after) +
+    statRow("Burned area", areaText(s.area_km2, s.cum_cells)) +
+    statRow("Location", `${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}`) +
+    statRow("Before (pre-fire)", s.before) +
+    statRow("After (scar)", s.after) +
     `</div>` +
     `<button class="fc-ba">Before / after imagery →</button>`
   );
