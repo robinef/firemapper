@@ -102,7 +102,7 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     expect(mountOverview).not.toHaveBeenCalled();
   });
 
-  it("falls back to the overview with no footprint for a scar with no archived track", async () => {
+  it("hides the timeline, rather than showing the continental overview, for a scar with no archived track", async () => {
     ({ setupFireCard } = await import("../src/firecard"));
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map, sourceObjs } = footprintMap();
@@ -113,11 +113,15 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
       document.getElementById("timeline")!, switcher, mountOverview, () => {},
     );
 
-    // No track_gen at all — a curated megafire or EFFIS scar.
+    // No track_gen at all — a curated megafire or EFFIS scar, e.g. Landiras
+    // 2022, years before any track/archive data existed for it. The Europe-
+    // wide "today" histogram is real, but it is not this fire's — showing it
+    // under a 2022 card reads as if Landiras were still active.
     await card.openScar(scarClickEvent("scar-curated"));
 
     expect(sourceObjs.has("fire-bin")).toBe(false);
-    expect(mountOverview).toHaveBeenCalledTimes(1);
+    expect(mountOverview).not.toHaveBeenCalled();
+    expect(document.getElementById("timeline")!.style.display).toBe("none");
     expect(document.getElementById("panel")!.innerHTML).toContain("scar-curated");
   });
 

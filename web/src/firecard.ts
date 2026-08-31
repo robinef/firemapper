@@ -461,7 +461,12 @@ export function setupFireCard(
         initialIndex,
       });
     } else {
-      mountOverview();
+      // No track for this fire/scar (curated megafire, EFFIS scar, or a real
+      // past fire not yet archived) — mountTimeline(el, null) hides the row
+      // entirely, same as its own "no data" path. Falling back to the
+      // continental overview here would show 2026's Europe-wide activity
+      // under, say, a 2022 fire's card: real, but not this fire's.
+      mountTimeline(timelineEl, null);
     }
   };
 
