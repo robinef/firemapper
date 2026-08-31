@@ -50,6 +50,20 @@ describe("resolving a slice cell to fires", () => {
     expect(firesInCell([fireAt(BORDEAUX[0], BORDEAUX[1], "bdx")] as never, cell)).toEqual([]);
   });
 
+  it("does not let a non-numeric area_km2 corrupt the biggest-first sort with NaN", () => {
+    // Same failure mode firelist.test.ts guards buildFireIndex against: a
+    // non-numeric area_km2 fed through Number(x ?? 0) becomes NaN, and a
+    // comparator returning NaN is treated as "equal" by the engine (stable
+    // sort, no swap) — so the malformed entry must start out of order for a
+    // broken comparator to visibly leave it there.
+    const cell = latLngToCell(BORDEAUX[1], BORDEAUX[0], SLICE_RES);
+    const fires = [
+      fireAt(BORDEAUX[0], BORDEAUX[1], "malformed", { area_km2: "not-a-number" }),
+      fireAt(BORDEAUX[0] + 0.01, BORDEAUX[1] + 0.01, "big", { area_km2: 284.9 }),
+    ];
+    expect(firesInCell(fires as never, cell).map((f) => f.properties!.id)).toEqual(["big", "malformed"]);
+  });
+
   it("ignores features that are not points", () => {
     const cell = latLngToCell(BORDEAUX[1], BORDEAUX[0], SLICE_RES);
     const poly = {
