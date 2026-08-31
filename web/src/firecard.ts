@@ -535,9 +535,13 @@ export function setupFireCard(
     if (!feat) return;
     const mine = ++openToken;
     const raw = (feat.properties ?? {}) as Record<string, unknown>;
-    // Same guard scarFromClick (layer_imagery.ts) and scarFromProps (main.ts)
-    // apply before building a Scar: a marker missing area_km2/cum_cells must
-    // never let scarCardHtml print the literal text "undefined km²".
+    // Guards only area_km2/cum_cells — the fields that were missing on real
+    // data (notable_scars.json) and rendered the literal text "undefined
+    // km²". Every other field (id/label/kind/lon/lat/started/before/after)
+    // stays an unvalidated spread: every current pipeline scar-construction
+    // path sets them unconditionally, so a fabricated fallback here would be
+    // actively misleading rather than protective. NOT full parity with
+    // scarFromClick/scarFromProps, which validate every field individually.
     const s = {
       ...raw,
       area_km2: numOr(raw.area_km2, 0),
