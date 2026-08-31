@@ -115,14 +115,21 @@ function grid(unit: ScaleUnit): string {
  * Countries get bars, never grids. The headline usually lands on Greater London
  * while a country lands on Paris, so two grids side by side would invite a
  * reader to compare a 6-tile row with a 28-tile row and conclude the wrong
- * thing. A bar is measured against its own row's maximum and makes no such
- * offer.
+ * thing. A bar is measured against the country LIST's own shared max (the
+ * top country, e.g. Spain) — comparable to each other, but on a scale that
+ * has nothing to do with the headline's unit, so it makes no cross-section
+ * offer the way two grids would.
  */
 function countries(data: SeasonData): string {
   if (!data.countries.length) return "";
   const max = Math.max(...data.countries.map((c) => c.km2), 0) || 1;
 
   const rows = data.countries.map((c) => {
+    // season.py already excludes a genuinely-zero country (its area_ha is
+    // falsy), so anything reaching here burned something real — even one
+    // that rounds to "0.0 km²" in c.km2 itself. Floored to a visible width
+    // rather than 0%, same principle as grid()'s MIN_VISIBLE_FRAC: a real
+    // amount must not render as indistinguishable from an empty row.
     const width = Math.max(1, Math.round((c.km2 / max) * 100));
     const unit = c.unit ? `${count(c.unit.count)} × ${escapeHtml(c.unit.name)}` : "—";
     return `<li data-country class="scale-row">
