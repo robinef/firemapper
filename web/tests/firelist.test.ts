@@ -95,6 +95,19 @@ describe("searching", () => {
     const many = buildFireIndex(fc(Array.from({ length: 100 }, (_, i) => fire(`f${i}`, i))));
     expect(searchFires(many, "", 40)).toHaveLength(40);
   });
+
+  it("does not let a non-numeric area_km2 corrupt the size sort with NaN", () => {
+    // The list's whole point is size ordering ("a named speck cannot outrank
+    // a megafire" above) — Number("bad") is NaN, and NaN in a sort comparator
+    // silently breaks ordering for just the affected fire.
+    const bad = fc([fire("big", 284.9), {
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: [-0.5, 44.8] },
+      properties: { id: "malformed", area_km2: "not-a-number", status: "closed", started: "2026-07-22T04:00:00Z" },
+    }]);
+    const index = buildFireIndex(bad);
+    expect(index.find((e) => e.id === "malformed")!.areaKm2).toBe(0);
+  });
 });
 
 describe("rendering", () => {

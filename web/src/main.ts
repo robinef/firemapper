@@ -9,7 +9,7 @@ import {
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
-import { areaText } from "./area";
+import { areaText, numOr } from "./area";
 import { escapeHtml } from "./escape";
 import { createMap } from "./map";
 import {
@@ -632,8 +632,8 @@ function scarFromProps(p: Record<string, unknown>): Scar | null {
     lon: p.lon as number,
     lat: p.lat as number,
     started: p.started as string,
-    area_km2: typeof p.area_km2 === "number" ? p.area_km2 : 0,
-    cum_cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
+    area_km2: numOr(p.area_km2, 0),
+    cum_cells: numOr(p.cum_cells, null),
     before: p.before as string,
     after: p.after as string,
   };
@@ -680,7 +680,7 @@ function renderCellPicker(
       return (
         `<button class="cell-pick" data-id="${escapeHtml(String(p.id ?? ""))}">` +
         `<b>${escapeHtml(String(name))}</b>` +
-        `<span>${escapeHtml(areaText(Number(p.area_km2 ?? 0), typeof p.cum_cells === "number" ? p.cum_cells : null))} · ${escapeHtml(started)} · ` +
+        `<span>${escapeHtml(areaText(numOr(p.area_km2, 0), numOr(p.cum_cells, null)))} · ${escapeHtml(started)} · ` +
         `${escapeHtml(String(p.status ?? ""))}</span></button>`
       );
     })

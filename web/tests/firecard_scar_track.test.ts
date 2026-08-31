@@ -145,4 +145,24 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
 
     expect(loadTrack).not.toHaveBeenCalled();
   });
+
+  it("never prints the literal word 'undefined' when a marker carries no area_km2", async () => {
+    // scarFromClick (layer_imagery.ts) and scarFromProps (main.ts) both guard
+    // area_km2/cum_cells with a typeof check before building a Scar — openScar
+    // read feat.properties straight into a Scar with no such guard, so a
+    // marker missing the field (scarClickEvent's fixture carries none) would
+    // print scarCardHtml's "Burned area" row as the literal text "undefined".
+    ({ setupFireCard } = await import("../src/firecard"));
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const { map } = footprintMap();
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const card = setupFireCard(
+      map, { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    await card.openScar(scarClickEvent("scar-no-area"));
+
+    expect(document.getElementById("panel")!.innerHTML).not.toContain("undefined");
+  });
 });

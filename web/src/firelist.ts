@@ -1,4 +1,4 @@
-import { areaText } from "./area";
+import { areaText, numOr } from "./area";
 /**
  * Find a fire by name.
  *
@@ -72,8 +72,8 @@ export function buildFireIndex(events: GeoJSON.FeatureCollection): FireEntry[] {
       // date is in it: "Fire" repeated forty times is not a searchable list.
       label: place ?? `Fire · ${prettyDate(started)}`,
       status: typeof p.status === "string" ? p.status : "",
-      areaKm2: Number(p.area_km2 ?? 0),
-      cells: typeof p.cum_cells === "number" ? p.cum_cells : null,
+      areaKm2: numOr(p.area_km2, 0),
+      cells: numOr(p.cum_cells, null),
       started,
       lon,
       lat,

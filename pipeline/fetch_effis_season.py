@@ -177,8 +177,9 @@ def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS
 
     Age comes from the snapshot's own `fetched_at` column, NOT the file mtime:
     the file is rewritten by an R2 hydrate on every CI run, so its mtime says
-    when we downloaded it, not when EFFIS was last asked. That same column is
-    what the page's "as of" date is published from (season._polled_at).
+    when we downloaded it, not when EFFIS was last asked. This snapshot only
+    feeds fetch_effis_ba (live-map scar imagery) now — /scale's own "as of"
+    date comes from fetch_effis_stats.py's independent snapshot instead.
 
     The path is interpolated into SQL, so it goes through `_sql_path`. Raw, an
     apostrophe in the data directory breaks the query, the `except` below reads
@@ -299,13 +300,12 @@ def fetch_season_snapshot(
     """Refresh the perimeter archive. Returns "fresh", "reused" or "stale".
 
     Guaranteed non-raising: any failure leaves the previous snapshot exactly as
-    it was, so a bad EFFIS week degrades the page to "as of <date>" rather than
-    blanking it.
-
-    That degradation is only real because the untouched snapshot keeps its
-    original `fetched_at`, and season._polled_at publishes THAT — not the run's
-    clock. Stamp the page with the export time and this function still returns
-    "stale" while the page silently re-dates a frozen figure to today."""
+    it was, so a bad EFFIS week degrades fetch_effis_ba to the same (aging)
+    scar list rather than losing it. Scar cards date themselves from each
+    perimeter's own firedate, not from this snapshot's fetch time — unlike
+    fetch_effis_stats.py's snapshot, nothing here publishes a page-facing "as
+    of" date, so a stale return has no visible staleness indicator to keep
+    honest."""
     path = snapshot_path(settings)
     try:
         if not should_fetch(path, now):

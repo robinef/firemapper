@@ -1,6 +1,6 @@
 import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
-import { areaText, footprintNote } from "./area";
+import { areaText, footprintNote, numOr } from "./area";
 import { loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
@@ -534,7 +534,19 @@ export function setupFireCard(
     const feat = e.features?.[0];
     if (!feat) return;
     const mine = ++openToken;
-    const s = feat.properties as unknown as Scar;
+    const raw = (feat.properties ?? {}) as Record<string, unknown>;
+    // Guards only area_km2/cum_cells — the fields that were missing on real
+    // data (notable_scars.json) and rendered the literal text "undefined
+    // km²". Every other field (id/label/kind/lon/lat/started/before/after)
+    // stays an unvalidated spread: every current pipeline scar-construction
+    // path sets them unconditionally, so a fabricated fallback here would be
+    // actively misleading rather than protective. NOT full parity with
+    // scarFromClick/scarFromProps, which validate every field individually.
+    const s = {
+      ...raw,
+      area_km2: numOr(raw.area_km2, 0),
+      cum_cells: numOr(raw.cum_cells, null),
+    } as unknown as Scar;
     const scarId = String(s.id ?? "");
     const [lon, lat] = coords(e, feat);
     // Curated megafires, EFFIS scars, and a real past fire not yet archived

@@ -14,6 +14,16 @@
  * fire is `minor`, so a label can never carry an unresolved area.
  */
 
+/** A number, or the given fallback for anything else — including a string,
+ * which a bare `Number(x ?? fallback)` would silently coerce (or turn into
+ * NaN) instead of falling back. Every consumer of a fire/scar's untrusted
+ * feature properties (area_km2, cum_cells) should read them through this,
+ * not repeat the guard inline — a missed call site is exactly how the
+ * "undefined km²" and NaN-sort bugs this module exists to prevent happen. */
+export function numOr<T extends number | null>(value: unknown, fallback: T): number | T {
+  return typeof value === "number" ? value : fallback;
+}
+
 /** True when the footprint is a single cell, i.e. detected but not measured.
  *
  * `cells == null` catches null AND undefined deliberately. A JSON null passes

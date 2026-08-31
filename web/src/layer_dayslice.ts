@@ -1,5 +1,6 @@
 import * as maplibregl from "maplibre-gl";
 import { cellToBoundary, latLngToCell } from "h3-js";
+import { numOr } from "./area";
 
 /**
  * Overview time-scrubber: click a day on the bottom histogram and this paints
@@ -48,8 +49,8 @@ export function firesInCell(
     })
     .sort(
       (a, b) =>
-        Number((b.properties as { area_km2?: number })?.area_km2 ?? 0) -
-        Number((a.properties as { area_km2?: number })?.area_km2 ?? 0),
+        numOr((b.properties as Record<string, unknown> | null)?.area_km2, 0) -
+        numOr((a.properties as Record<string, unknown> | null)?.area_km2, 0),
     );
 }
 
