@@ -138,14 +138,17 @@ def fetch_stats_snapshot(
     year = now.year
     try:
         eu_payload = json.loads(http_get(_eu_url(year)))
+        # Same try as the fetch: a malformed (non-object) body must produce
+        # the deliberate "stale" message below, not an uncaught AttributeError
+        # from _latest_cumulative that run.py's _safe() catches anyway but
+        # without this function's own diagnostic.
+        eu_latest = _latest_cumulative(eu_payload)
     except Exception as exc:  # noqa: BLE001 - api2 best-effort, never fatal
         print(
             f"[warn] effis-stats: no rows, keeping previous snapshot — {_fault(exc)}",
             file=sys.stderr,
         )
         return "stale"
-
-    eu_latest = _latest_cumulative(eu_payload)
     if eu_latest is None:
         print(
             "[warn] effis-stats: no rows, keeping previous snapshot — "
@@ -158,10 +161,14 @@ def fetch_stats_snapshot(
         iso3, name = item
         try:
             payload = json.loads(http_get(_country_url(iso3, year)))
+            # Inside the same try as the fetch: a body that parses as JSON but
+            # isn't the expected object shape (api2 returning a bare list/null
+            # for one country) must degrade this country alone, not raise out
+            # of the pool and discard every already-fetched country with it.
+            latest = _latest_cumulative(payload)
         except Exception as exc:  # noqa: BLE001 - one country must not sink the rest
             print(f"[warn] effis-stats: {iso3} skipped — {_fault(exc)}", file=sys.stderr)
             return iso3, None
-        latest = _latest_cumulative(payload)
         if latest is None:
             return iso3, None
         return iso3, {

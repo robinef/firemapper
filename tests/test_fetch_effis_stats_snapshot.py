@@ -117,6 +117,24 @@ def test_one_country_failing_does_not_fail_the_whole_snapshot(tmp_path):
     assert "DEU" in snapshot["countries"]
 
 
+def test_one_country_returning_a_malformed_body_does_not_sink_the_others(tmp_path):
+    """A body that parses as JSON but isn't the expected object shape (api2
+    returning a bare list/null for one country) must degrade like any other
+    per-country failure, not raise out of the whole batch and discard every
+    already-fetched country with it."""
+    settings = FakeSettings(tmp_path)
+
+    def http_get(url):
+        if "country=FRA" in url:
+            return "[]"
+        return cumulative_payload()
+
+    assert fetch_stats_snapshot(settings, NOW, http_get) == "fresh"
+    snapshot = json.loads(snapshot_path(settings).read_text())
+    assert "FRA" not in snapshot["countries"]
+    assert "DEU" in snapshot["countries"]
+
+
 def test_a_week_with_area_but_no_events_key_defaults_to_zero_not_null(tmp_path):
     """api2 has been observed to omit `events` on a week that still reports
     `area_ha`. season.py/scale_render.ts treat event_count as a plain number
