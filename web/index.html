@@ -19,6 +19,14 @@
       <button id="rail-layers" type="button" aria-label="Layers">⚙</button>
       <button id="rail-search" type="button" aria-label="Find a fire">🔍</button>
       <button id="rail-info" type="button" aria-label="Data freshness and sources">ℹ</button>
+      <!-- /scale, not /scale.html: Workers Assets defaults html_handling to
+           auto-trailing-slash, so the extensionless path is canonical and
+           /scale.html merely 307s onto it. Both resolve; this one saves a hop.
+           A real <a>, not a rail view: /scale is its own page/bundle, not a
+           client-side nav.push() entry in this SPA's view stack. Was a text
+           link buried at the bottom of the layers sidebar — a reader had to
+           open the gear menu and scroll to find it. -->
+      <a id="rail-scale" href="/scale" aria-label="How much has burned this year?">📊</a>
     </nav>
     <!-- One container for every non-map view. data-view picks which child
          shows; data-size is the fire card's peek/full state on mobile. -->
@@ -27,10 +35,6 @@
       <aside id="sidebar">
         <div id="layers"></div>
         <div id="legend"></div>
-        <!-- /scale, not /scale.html: Workers Assets defaults html_handling to
-             auto-trailing-slash, so the extensionless path is canonical and
-             /scale.html merely 307s onto it. Both resolve; this one saves a hop. -->
-        <a id="scale-link" href="/scale">How much has burned this year?</a>
       </aside>
       <div id="panel" class="hidden"></div>
       <div id="info"></div>

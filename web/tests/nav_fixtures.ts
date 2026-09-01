@@ -56,6 +56,7 @@ export function mountShellDom(): void {
       <button id="rail-layers"></button>
       <button id="rail-search"></button>
       <button id="rail-info"></button>
+      <a id="rail-scale" href="/scale"></a>
     </nav>
     <div id="view" data-view="map">
       <div id="view-bar"></div>

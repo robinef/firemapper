@@ -353,9 +353,12 @@ describe("scale page shell", () => {
 
   it("is linked from the map, or it is unreachable", () => {
     // The page shipped once with nothing pointing at it. A build guard does not
-    // help when the asset is fine and simply has no door.
-    expect(mapShell).toContain('id="scale-link"');
-    expect(mapShell).toMatch(/<a[^>]*id="scale-link"[^>]*href="\/scale"|<a[^>]*href="\/scale"[^>]*id="scale-link"/);
+    // help when the asset is fine and simply has no door. It also shipped a
+    // second time reachable only from inside the layers sidebar — a menu
+    // behind a menu is not much of a door either — so this checks the rail,
+    // not just "linked from somewhere".
+    expect(mapShell).toContain('id="rail-scale"');
+    expect(mapShell).toMatch(/<a[^>]*id="rail-scale"[^>]*href="\/scale"|<a[^>]*href="\/scale"[^>]*id="rail-scale"/);
   });
 });
 
