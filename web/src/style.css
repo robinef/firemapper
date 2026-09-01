@@ -454,13 +454,17 @@ body.compare-mode #fire-readout { display: none; }
 .view-back:hover, .view-close:hover { color: #ffcf8f; }
 
 #rail { position: absolute; z-index: 9; display: flex; gap: 6px; }
-#rail button {
+#rail button, #rail a {
   width: 44px; height: 44px; border-radius: 10px; cursor: pointer;
   background: var(--panel); color: var(--fg);
   border: 1px solid rgba(255,255,255,.14);
   box-shadow: 0 2px 12px rgba(0,0,0,.45); font-size: 17px; line-height: 1;
+  /* #rail a: a real page link, not a button — reset its inline/underline
+     defaults so it sits identically to its <button> siblings. */
+  display: flex; align-items: center; justify-content: center;
+  text-decoration: none;
 }
-#rail button:hover { border-color: #ff6b00; }
+#rail button:hover, #rail a:hover { border-color: #ff6b00; }
 
 /* Compare owns the whole map surface: no rail at any width (nothing may
    compete with the divider drag, and on desktop the rail sits at the left
