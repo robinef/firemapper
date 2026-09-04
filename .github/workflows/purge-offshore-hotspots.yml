@@ -22,14 +22,14 @@ jobs:
   steps:
    - uses: actions/checkout@v7
    - uses: astral-sh/setup-uv@v10.0.1
-    with:
-     enable-cache: true
+     with:
+      enable-cache: true
    - run: uv sync
    - run: uv run python -m scripts.purge_offshore_hotspots ${{ inputs.dry_run && '--dry-run' || '' }}
-    env:
-     PYTHONUNBUFFERED: "1"
-     FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
-     R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-     R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-     R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-     R2_BUCKET: ${{ secrets.R2_BUCKET }}
+     env:
+      PYTHONUNBUFFERED: "1"
+      FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
