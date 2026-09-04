@@ -31,7 +31,7 @@ describe("layer levels", () => {
   // to show. ?wind=1 is the escape hatch — unlocks level 1 too and defaults
   // the toggle on, without changing the module for everyone else.
   it("reads ?wind=1 from the query string to gate the wind module's levels/defaultOn", () => {
-    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*params\.get\("wind"\)\s*===\s*"1"/);
+    expect(mainSource).toMatch(/params\.get\("wind"\)\s*===\s*"1"/);
     expect(mainSource).toMatch(
       /key:\s*"wind"(?:(?!key:)[\s\S])*?levels:\s*\(FORCE_WIND\s*\?\s*\[1,\s*2\]\s*:\s*\[2\]\)/,
     );
@@ -43,5 +43,21 @@ describe("layer levels", () => {
   it("reads ?fire=<id> and opens that fire's card via openFromList", () => {
     expect(mainSource).toMatch(/FORCE_FIRE\s*=\s*params\.get\("fire"\)/);
     expect(mainSource).toMatch(/if\s*\(FORCE_FIRE\)\s*openFromList\(FORCE_FIRE\)/);
+  });
+
+  // ?layers=<key,...> pre-checks a module's toggle so a QA/demo link lands
+  // already showing the layer under test, no manual click needed.
+  it("reads ?layers=<key,...> and pre-checks the matching modules' toggles", () => {
+    expect(mainSource).toMatch(
+      /FORCE_LAYERS\s*=\s*new Set\(\(params\.get\("layers"\)\s*\?\?\s*""\)\.split\(","\)\.filter\(Boolean\)\)/,
+    );
+    for (const key of ["closed", "intensity", "spread", "viirs"]) {
+      expect(mainSource).toMatch(
+        new RegExp(`key:\\s*"${key}"(?:(?!key:)[\\s\\S])*?defaultOn:\\s*FORCE_LAYERS\\.has\\("${key}"\\)`),
+      );
+    }
+    // wind keeps its own FORCE_WIND flag (also unlocks level 1), but that
+    // flag must itself fold in ?layers=wind.
+    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*FORCE_LAYERS\.has\("wind"\)\s*\|\|\s*params\.get\("wind"\)\s*===\s*"1"/);
   });
 });
