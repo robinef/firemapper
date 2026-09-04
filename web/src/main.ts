@@ -71,7 +71,12 @@ const BASE = "/data";
 // grid points to actually render -- a debug/QA affordance, not a default
 // behaviour change.
 const params = new URLSearchParams(location.search);
-const FORCE_WIND = params.get("wind") === "1";
+// ?layers=intensity,spread,viirs,closed,wind pre-checks those modules' toggles
+// on boot, e.g. so a QA link opens already showing the thing under test
+// instead of landing on a blank map that needs manual clicking to prove it
+// works. Keys match each module's `key` below.
+const FORCE_LAYERS = new Set((params.get("layers") ?? "").split(",").filter(Boolean));
+const FORCE_WIND = FORCE_LAYERS.has("wind") || params.get("wind") === "1";
 // Opens a specific fire's card on boot, e.g. to link straight to one with a
 // wind sample close enough to actually render (see openFromList below).
 const FORCE_FIRE = params.get("fire");
@@ -183,7 +188,7 @@ async function boot() {
         label: "Burned out (recent)",
         question: "Which fires have stopped, and what did they leave?",
         layerIds: CLOSED_LAYER_IDS,
-        defaultOn: false,
+        defaultOn: FORCE_LAYERS.has("closed"),
         legend: CLOSED_LEGEND,
       },
       {
@@ -197,7 +202,7 @@ async function boot() {
         label: "Fire intensity",
         question: "How violently is it burning right now?",
         layerIds: INTENSITY_LAYER_IDS,
-        defaultOn: false,
+        defaultOn: FORCE_LAYERS.has("intensity"),
         legend: INTENSITY_LEGEND,
         liveOnly: true,
       },
@@ -208,7 +213,7 @@ async function boot() {
         label: "Fire spread",
         question: "Which way is it moving, and how fast?",
         layerIds: SPREAD_LAYER_IDS,
-        defaultOn: false,
+        defaultOn: FORCE_LAYERS.has("spread"),
         legend: SPREAD_LEGEND,
         liveOnly: true,
       },
@@ -233,7 +238,7 @@ async function boot() {
         label: "VIIRS detail",
         question: "Finest-resolution detection footprint (375 m)",
         layerIds: VIIRS_LAYER_IDS,
-        defaultOn: false,
+        defaultOn: FORCE_LAYERS.has("viirs"),
         legend: VIIRS_LEGEND,
         liveOnly: true,
       },
