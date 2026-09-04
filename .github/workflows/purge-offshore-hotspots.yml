@@ -1,9 +1,10 @@
 name: purge-offshore-hotspots
 # One-off maintenance trigger for scripts/purge_offshore_hotspots.py — removes
-# already-ingested FIRMS type 2/3 (static land source / offshore, i.e. gas
-# flares) detections from the R2 archive so they stop clustering into visible
-# events. Manual only: this is a single retroactive cleanup, not a recurring
-# job. Safe to delete once it has been run against prod.
+# already-ingested open-water FIRMS detections (sun glint, ships, gas flares —
+# classified via a land/sea mask on the stored lat/lon, since FIRMS's NRT area
+# API has no field to tell them apart) from the R2 archive so they stop
+# clustering into visible events. Manual only: this is a single retroactive
+# cleanup, not a recurring job. Safe to delete once it has been run against prod.
 on:
  workflow_dispatch:
   inputs:
@@ -28,7 +29,6 @@ jobs:
    - run: uv run python -m scripts.purge_offshore_hotspots ${{ inputs.dry_run && '--dry-run' || '' }}
      env:
       PYTHONUNBUFFERED: "1"
-      FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
