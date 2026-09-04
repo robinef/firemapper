@@ -70,7 +70,11 @@ const BASE = "/data";
 // (overview) too, pre-checked, and enough map is in view there for multiple
 // grid points to actually render -- a debug/QA affordance, not a default
 // behaviour change.
-const FORCE_WIND = new URLSearchParams(location.search).get("wind") === "1";
+const params = new URLSearchParams(location.search);
+const FORCE_WIND = params.get("wind") === "1";
+// Opens a specific fire's card on boot, e.g. to link straight to one with a
+// wind sample close enough to actually render (see openFromList below).
+const FORCE_FIRE = params.get("fire");
 
 // Rebuilt layer by layer against docs/cartography-rules.md. Overview shows the
 // coarse "where are the fires" layers; a fire's card shows its detail. "When did
@@ -454,6 +458,10 @@ async function boot() {
       splash.classList.add("done");
       setTimeout(() => splash.remove(), 450);
     }
+    // ?fire=<id> deep-links straight to that fire's card, same path as a
+    // search-list click. Silently no-ops for an unknown/expired id, same as
+    // openFromList already does for a stale search result.
+    if (FORCE_FIRE) openFromList(FORCE_FIRE);
   });
 }
 
