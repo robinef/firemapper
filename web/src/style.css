@@ -150,6 +150,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 /* Level-2 fire card (right panel). */
 .fc-close { position: absolute; top: 12px; right: 14px; background: none; border: none;
   color: var(--fg); font-size: 22px; cursor: pointer; line-height: 1; }
+.fc-share { position: absolute; top: 12px; right: 46px; background: none; border: none;
+  color: var(--fg); font-size: 16px; cursor: pointer; line-height: 1; opacity: .75; }
+.fc-share:hover { opacity: 1; }
 .fc-title { font-size: 20px; font-weight: 700; margin: 2px 40px 2px 0; }
 .fc-sub { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
 .fc-badge { display: inline-block; padding: 4px 11px; border-radius: 6px; font-weight: 800;
@@ -278,7 +281,7 @@ body.compare-mode #fire-readout { display: none; }
   .layer-row { min-height: 44px; align-items: center; }
   /* No .compare-exit rule here, and none above either: nothing renders that
      class any more. The shell's back bar is the way out of compare. */
-  .panel-close, .fc-close, .scrub-play {
+  .panel-close, .fc-close, .fc-share, .scrub-play {
     min-width: 44px; min-height: 44px;
   }
   /* The histogram is ONE 44px+ target, not 30 individually-sized bars. */
