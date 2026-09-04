@@ -31,10 +31,20 @@ describe("layer levels", () => {
   // to show. ?wind=1 is the escape hatch — unlocks level 1 too and defaults
   // the toggle on, without changing the module for everyone else.
   it("reads ?wind=1 from the query string to gate the wind module's levels/defaultOn", () => {
-    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*new URLSearchParams\(location\.search\)\.get\("wind"\)\s*===\s*"1"/);
+    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*params\.get\("wind"\)\s*===\s*"1"/);
     expect(mainSource).toMatch(
       /key:\s*"wind"(?:(?!key:)[\s\S])*?levels:\s*\(FORCE_WIND\s*\?\s*\[1,\s*2\]\s*:\s*\[2\]\)/,
     );
     expect(mainSource).toMatch(/key:\s*"wind"(?:(?!key:)[\s\S])*?defaultOn:\s*FORCE_WIND/);
+  });
+
+  // Companion to ?wind=1: the default view doesn't reliably show an in-view
+  // wind sample, so ?lat=&lon=&zoom= lets a URL point straight at one.
+  it("reads ?lat=&lon=&zoom= to override the initial map view", () => {
+    expect(mainSource).toMatch(/FORCE_LAT\s*=\s*params\.has\("lat"\)\s*\?\s*Number\(params\.get\("lat"\)\)\s*:\s*NaN/);
+    expect(mainSource).toMatch(/FORCE_LON\s*=\s*params\.has\("lon"\)\s*\?\s*Number\(params\.get\("lon"\)\)\s*:\s*NaN/);
+    expect(mainSource).toMatch(/FORCE_ZOOM\s*=\s*params\.has\("zoom"\)\s*\?\s*Number\(params\.get\("zoom"\)\)\s*:\s*NaN/);
+    expect(mainSource).toMatch(/Number\.isFinite\(FORCE_LAT\)\s*&&\s*Number\.isFinite\(FORCE_LON\)/);
+    expect(mainSource).toMatch(/center:\s*\[FORCE_LON,\s*FORCE_LAT\]/);
   });
 });

@@ -63,6 +63,8 @@ import type { Manifest } from "./types";
 
 const BASE = "/data";
 
+const params = new URLSearchParams(location.search);
+
 // The wind grid is a coarse ~0.5deg mesh (~200 points, whole globe): at level
 // 2's tight per-fire zoom the nearest sample is very often off-screen even
 // when it's within the readout's 60km threshold, so the toggle looks broken
@@ -70,7 +72,16 @@ const BASE = "/data";
 // (overview) too, pre-checked, and enough map is in view there for multiple
 // grid points to actually render -- a debug/QA affordance, not a default
 // behaviour change.
-const FORCE_WIND = new URLSearchParams(location.search).get("wind") === "1";
+const FORCE_WIND = params.get("wind") === "1";
+
+// The default view (web/src/map.ts's [10, 44] @ 4.2) doesn't reliably land on
+// a spot with an in-view wind sample. ?lat=&lon=&zoom= overrides it so a URL
+// can point straight at one, e.g. ?wind=1&lat=44&lon=23&zoom=5.5 (Balkans).
+// Number(null) is 0, not NaN, so absence is checked via `.has` -- otherwise a
+// URL with only ?lon= would silently snap latitude to the equator.
+const FORCE_LAT = params.has("lat") ? Number(params.get("lat")) : NaN;
+const FORCE_LON = params.has("lon") ? Number(params.get("lon")) : NaN;
+const FORCE_ZOOM = params.has("zoom") ? Number(params.get("zoom")) : NaN;
 
 // Rebuilt layer by layer against docs/cartography-rules.md. Overview shows the
 // coarse "where are the fires" layers; a fire's card shows its detail. "When did
@@ -78,6 +89,12 @@ const FORCE_WIND = new URLSearchParams(location.search).get("wind") === "1";
 // footprint in the card, not a global toggle.
 async function boot() {
   const map = createMap("map");
+  if (Number.isFinite(FORCE_LAT) && Number.isFinite(FORCE_LON)) {
+    map.jumpTo({
+      center: [FORCE_LON, FORCE_LAT],
+      zoom: Number.isFinite(FORCE_ZOOM) ? FORCE_ZOOM : map.getZoom(),
+    });
+  }
   if (import.meta.env.DEV) {
     (window as unknown as { __map: maplibregl.Map }).__map = map;
   }
