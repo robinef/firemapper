@@ -233,6 +233,29 @@ def test_fetch_frp_points_parses_rounds_and_filters():
     }
 
 
+def test_fetch_frp_points_drops_pixels_over_open_water():
+    """MTG's full-disk coverage extends far out over the Atlantic; a hot pixel
+    there is sun glint, not a wildfire — same rationale as the FIRMS-side land
+    mask, and this layer needs its own filter since it never passes through
+    pipeline.fetch_firms."""
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            # On land (same fixture as test_fetch_frp_points_parses_rounds_and_filters).
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [44.81634, -1.15012]},
+             "properties": {"FRP": 44.16, "Confidence": 66, "time": "2026-07-24T08:20:00Z"}},
+            # Mid-Atlantic, hundreds of km offshore.
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [38.0, -20.0]},
+             "properties": {"FRP": 99.0, "Confidence": 90, "time": "2026-07-24T08:20:00Z"}},
+        ],
+    }
+    pts = fetch_frp_points(
+        (-25.0, 34.0, 45.0, 72.0), http_text=lambda url: json.dumps(fc), min_confidence=50,
+    )
+    assert len(pts) == 1
+    assert pts[0]["lon"] == -1.1501
+
+
 def test_fetch_frp_points_raises_on_failure():
     """Must NOT return []. Swallowing the error here made an outage identical to
     "no fires burning", and on 2026-07-30 that published an empty intensity
