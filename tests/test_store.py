@@ -7,6 +7,7 @@ from pipeline.store import (
     append_hotspots,
     cell_at,
     connect,
+    delete_by_src_id,
     read_hotspots,
     write_points,
 )
@@ -47,6 +48,24 @@ def test_append_dedups_and_keeps_geometry(tmp_path):
     assert append_hotspots([_hot(45.0, 8.0, 21, "b")], store) == 1   # new
     assert _has_geo(store)
     assert len(read_hotspots(store)) == 2
+
+
+def test_delete_by_src_id_removes_only_the_matched_rows(tmp_path):
+    store = tmp_path / "hotspots.parquet"
+    append_hotspots([_hot(44.8, -0.5, 20, "a"), _hot(45.0, 8.0, 21, "b")], store)
+    assert delete_by_src_id(store, {"a"}) == 1
+    rows = read_hotspots(store)
+    assert [r["src_id"] for r in rows] == ["b"]
+    assert _has_geo(store)  # rewrite must stay valid GeoParquet
+
+
+def test_delete_by_src_id_is_a_noop_without_a_match_or_a_store(tmp_path):
+    store = tmp_path / "hotspots.parquet"
+    assert delete_by_src_id(store, {"nope"}) == 0  # no store yet
+    append_hotspots([_hot(44.8, -0.5, 20, "a")], store)
+    assert delete_by_src_id(store, {"nope"}) == 0  # no match
+    assert delete_by_src_id(store, set()) == 0  # empty set
+    assert len(read_hotspots(store)) == 1
 
 
 def test_write_points_snapshot_geoparquet(tmp_path):
