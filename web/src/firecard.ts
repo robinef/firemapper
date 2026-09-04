@@ -45,6 +45,9 @@ const STATE: Record<string, { t: string; c: string }> = {
 // Circle layers dimmed to spotlight the selected fire (paint saved/restored).
 const DIM_LAYERS = [...fireLayerIds, "scars-glow", "scars-dot"];
 const DIM_PROPS = ["circle-opacity", "circle-stroke-opacity"] as const;
+// Module keys main.ts's ?layers= param understands (mirrors its FORCE_LAYERS
+// set there) — fires/scars are always on and have no toggle worth encoding.
+const SHAREABLE_LAYERS = ["closed", "intensity", "spread", "wind", "viirs"];
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
@@ -125,6 +128,7 @@ export function fireCardHtml(p: EventProps, track: Track | null, readout?: Reado
   return (
     peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
+    `<button class="fc-share" aria-label="Copy shareable link" title="Copy shareable link">🔗</button>` +
     `<div class="fc-title">${esc(title)}</div>` +
     `<div class="fc-sub">${fmtDate(p.started)} · <span style="color:${st.c}">${st.t}</span> fire</div>` +
     `<span class="fc-badge" style="background:${stt.c}">${stt.t}</span>` +
@@ -309,10 +313,34 @@ export function setupFireCard(
    * nothing, with nothing about the card LOOKING wrong. Anything that repaints
    * the card goes through here, so the two can never come apart again.
    */
-  const paintCard = (html: string, onBeforeAfter: () => void) => {
+  const paintCard = (html: string, onBeforeAfter: () => void, id: string) => {
     panel.innerHTML = html;
     panel.querySelector(".fc-close")?.addEventListener("click", close);
     panel.querySelector(".fc-ba")?.addEventListener("click", onBeforeAfter);
+    const shareBtn = panel.querySelector<HTMLButtonElement>(".fc-share");
+    shareBtn?.addEventListener("click", () => void copyShareLink(shareBtn, id));
+  };
+
+  // Builds the current URL for THIS fire with whatever layers are toggled on
+  // right now (not their boot-time defaults) — so a link copied mid-session
+  // lands the next reader on the same view, same idea as ?fire=/?layers= in
+  // main.ts but sourced from live switcher state instead of the query string.
+  const copyShareLink = async (btn: HTMLButtonElement, id: string) => {
+    const layers = SHAREABLE_LAYERS.filter((k) => switcher.isOn(k));
+    const url = new URL(location.href);
+    url.search = "";
+    url.searchParams.set("fire", id);
+    if (layers.length) url.searchParams.set("layers", layers.join(","));
+    try {
+      await navigator.clipboard.writeText(url.toString());
+    } catch {
+      return; // insecure context / permission denied / no clipboard in tests
+    }
+    const original = btn.textContent;
+    btn.textContent = "✓";
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 1500);
   };
 
   // A card open across a rotation (or a desktop window dragged narrow) has to
@@ -416,7 +444,7 @@ export function setupFireCard(
     clearReadout(document.body);
     clearBin();
     onEnter(); // clear any overview state (e.g. a painted day slice)
-    paintCard(html, onBeforeAfter);
+    paintCard(html, onBeforeAfter, id);
     panel.classList.remove("hidden");
     document.body.classList.add("fire-focus");
     switcher.setLevel(2, { historical }); // swap to this fire's detail layers
@@ -521,7 +549,7 @@ export function setupFireCard(
     // reset the very state it is meant to preserve.
     lastReadout = readout;
     rerenderCard = () =>
-      paintCard(fireCardHtml(p, track, isDesktop() ? null : readout), onBeforeAfter);
+      paintCard(fireCardHtml(p, track, isDesktop() ? null : readout), onBeforeAfter, p.id);
     if (desktop) mountReadout(document.body, readout);
   };
 
