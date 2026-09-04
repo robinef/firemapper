@@ -31,10 +31,17 @@ describe("layer levels", () => {
   // to show. ?wind=1 is the escape hatch — unlocks level 1 too and defaults
   // the toggle on, without changing the module for everyone else.
   it("reads ?wind=1 from the query string to gate the wind module's levels/defaultOn", () => {
-    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*new URLSearchParams\(location\.search\)\.get\("wind"\)\s*===\s*"1"/);
+    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*params\.get\("wind"\)\s*===\s*"1"/);
     expect(mainSource).toMatch(
       /key:\s*"wind"(?:(?!key:)[\s\S])*?levels:\s*\(FORCE_WIND\s*\?\s*\[1,\s*2\]\s*:\s*\[2\]\)/,
     );
     expect(mainSource).toMatch(/key:\s*"wind"(?:(?!key:)[\s\S])*?defaultOn:\s*FORCE_WIND/);
+  });
+
+  // Companion to ?wind=1: a URL naming a fire that has a wind sample nearby
+  // deep-links straight to its card, same path as clicking a search-list row.
+  it("reads ?fire=<id> and opens that fire's card via openFromList", () => {
+    expect(mainSource).toMatch(/FORCE_FIRE\s*=\s*params\.get\("fire"\)/);
+    expect(mainSource).toMatch(/if\s*\(FORCE_FIRE\)\s*openFromList\(FORCE_FIRE\)/);
   });
 });
