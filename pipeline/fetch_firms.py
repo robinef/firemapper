@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import EUROPE_BBOX, Settings
+from .landmask import is_near_land
 
 # Same VIIRS instrument on three platforms. Tried in order per history window:
 # an outage on one satellite must not become a hole in the timeline. Observed
@@ -25,13 +26,6 @@ FIRMS_SOURCES = [
     ("MODIS_NRT", "modis"),
 ]
 _LOW_CONF = {"viirs": {"l"}, "modis": {str(i) for i in range(0, 30)}}  # modis numeric <30
-# FIRMS `type`: 0 = presumed vegetation fire, 1 = active volcano, 2 = other
-# static land source, 3 = offshore (observed to be gas flares — persistent,
-# realistic FRP, and clustered exactly like a real fire, which is why
-# confidence alone never caught them). Missing `type` is kept, not dropped:
-# not every source/version of this API returns the column, and a detection
-# with no type info is not evidence it's a false positive.
-_EXCLUDED_TYPES = {"2", "3"}
 
 REDACTED = "<FIRMS_MAP_KEY>"
 
@@ -88,11 +82,11 @@ def parse_firms_csv(text: str, tier: str) -> list[dict]:
         conf = rec.get("confidence", "").strip().lower()
         if conf in _LOW_CONF.get(tier, set()):
             continue
-        if rec.get("type", "").strip() in _EXCLUDED_TYPES:
-            continue
         d, hm = rec["acq_date"], rec["acq_time"].zfill(4)
         t = datetime.strptime(f"{d} {hm}", "%Y-%m-%d %H%M").replace(tzinfo=timezone.utc)
         lat, lon = float(rec["latitude"]), float(rec["longitude"])
+        if not is_near_land(lat, lon):
+            continue
         sat = rec.get("satellite", "")
         rows.append(
             {

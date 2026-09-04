@@ -16,8 +16,8 @@ from pipeline.fetch_firms import (
 )
 
 FIRMS_CSV = """latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight
-40.123,3.456,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,n,2.0NRT,290.0,12.5,N
-40.125,3.458,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,l,2.0NRT,290.0,1.5,N
+40.4168,-3.7038,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,n,2.0NRT,290.0,12.5,N
+40.4188,-3.7058,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,l,2.0NRT,290.0,1.5,N
 """
 
 
@@ -25,32 +25,25 @@ def test_parse_firms_csv_filters_low_confidence():
     rows = parse_firms_csv(FIRMS_CSV, tier="viirs")
     assert len(rows) == 1
     r = rows[0]
-    assert r["lat"] == 40.123 and r["tier"] == "viirs"
+    assert r["lat"] == 40.4168 and r["tier"] == "viirs"
     assert r["acq_time"] == datetime(2026, 7, 20, 1, 36, tzinfo=timezone.utc)
     assert r["src_id"]
 
 
-FIRMS_CSV_WITH_TYPE = """latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight,type
-40.1,3.1,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,0
-40.2,3.2,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,2
-40.3,3.3,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,3
+FIRMS_CSV_OVER_WATER = """latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight
+40.4168,-3.7038,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N
+38.0,-20.0,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N
 """
 
 
-def test_parse_firms_csv_drops_static_land_and_offshore_sources():
-    """type 2 (static land source, e.g. a flare stack) and 3 (offshore, e.g. a
-    gas platform) are not wildfires — confidence alone never filters them out
-    because they read back as persistent, high-confidence detections."""
-    rows = parse_firms_csv(FIRMS_CSV_WITH_TYPE, tier="viirs")
+def test_parse_firms_csv_drops_hotspots_over_open_water():
+    """A VIIRS/MODIS detection with a centroid far from any coastline is sun
+    glint, a ship, or a gas flare — never a wildfire — and the FIRMS NRT area
+    API gives no field to tell those apart (no `type` column, confirmed
+    empirically). The land mask is the only filter that catches it."""
+    rows = parse_firms_csv(FIRMS_CSV_OVER_WATER, tier="viirs")
     assert len(rows) == 1
-    assert rows[0]["lon"] == 3.1
-
-
-def test_parse_firms_csv_keeps_rows_with_no_type_column():
-    # FIRMS_CSV (module fixture) has no `type` column at all — missing type
-    # must not be treated as evidence of a false positive.
-    rows = parse_firms_csv(FIRMS_CSV, tier="viirs")
-    assert len(rows) == 1
+    assert rows[0]["lon"] == -3.7038
 
 
 def test_append_dedups(tmp_path):
