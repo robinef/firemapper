@@ -30,6 +30,29 @@ def test_parse_firms_csv_filters_low_confidence():
     assert r["src_id"]
 
 
+FIRMS_CSV_WITH_TYPE = """latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight,type
+40.1,3.1,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,0
+40.2,3.2,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,2
+40.3,3.3,330.1,0.4,0.4,2026-07-20,0136,N20,VIIRS,h,2.0NRT,290.0,12.5,N,3
+"""
+
+
+def test_parse_firms_csv_drops_static_land_and_offshore_sources():
+    """type 2 (static land source, e.g. a flare stack) and 3 (offshore, e.g. a
+    gas platform) are not wildfires — confidence alone never filters them out
+    because they read back as persistent, high-confidence detections."""
+    rows = parse_firms_csv(FIRMS_CSV_WITH_TYPE, tier="viirs")
+    assert len(rows) == 1
+    assert rows[0]["lon"] == 3.1
+
+
+def test_parse_firms_csv_keeps_rows_with_no_type_column():
+    # FIRMS_CSV (module fixture) has no `type` column at all — missing type
+    # must not be treated as evidence of a false positive.
+    rows = parse_firms_csv(FIRMS_CSV, tier="viirs")
+    assert len(rows) == 1
+
+
 def test_append_dedups(tmp_path):
     rows = parse_firms_csv(FIRMS_CSV, tier="viirs")
     store = tmp_path / "hotspots.parquet"
