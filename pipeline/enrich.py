@@ -50,14 +50,22 @@ def load_places(path: Path, min_places: int = 0) -> list[dict]:
     return out
 
 
-def nearest_place(lat: float, lon: float, places: list[dict]) -> dict | None:
+def nearest_place(lat: float, lon: float, places: list[dict], max_km: float = 100.0) -> dict | None:
+    """Nearest settlement in the gazetteer, or None beyond `max_km`.
+
+    EUROPE_BBOX reaches deep into the Atlantic to cover the western coast, so a
+    sensor false-positive out at sea still gets a "nearest" city — just one
+    hundreds of km away. Without this cutoff that distance got stamped on the
+    fire's display name regardless, which is how an offshore glint ends up
+    labelled with a real town it isn't anywhere near.
+    """
     if not places:
         return None
     best = min(places, key=lambda p: haversine_m(lat, lon, p["lat"], p["lon"]))
-    return {
-        "name": best["name"],
-        "distance_km": round(haversine_m(lat, lon, best["lat"], best["lon"]) / 1000, 1),
-    }
+    distance_km = round(haversine_m(lat, lon, best["lat"], best["lon"]) / 1000, 1)
+    if distance_km > max_km:
+        return None
+    return {"name": best["name"], "distance_km": distance_km}
 
 
 def fetch_gdacs(http_get: Callable[[str], str] | None = None) -> list[dict]:

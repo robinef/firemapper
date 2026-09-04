@@ -38,6 +38,20 @@ def test_nearest_place():
     assert p["name"] == "Testville" and p["distance_km"] < 10
 
 
+def test_nearest_place_rejects_a_match_beyond_max_km():
+    """An offshore false-positive hundreds of km from land must not be labelled
+    with whatever town happens to be closest — that's how a mid-Atlantic sensor
+    glint gets displayed to users as a fire in Cascais."""
+    places = [{"name": "Cascais", "lat": 38.7, "lon": -9.4}]
+    assert nearest_place(38.7, -13.2, places) is None  # ~420 km offshore
+
+
+def test_nearest_place_accepts_a_match_within_max_km():
+    places = [{"name": "Cascais", "lat": 38.7, "lon": -9.4}]
+    p = nearest_place(38.75, -9.45, places)
+    assert p["name"] == "Cascais"
+
+
 def test_gdacs_parse_and_match():
     alerts = fetch_gdacs(http_get=lambda url: GDACS_RSS)
     assert len(alerts) == 1  # WF only
