@@ -153,6 +153,29 @@ def append_hotspots(rows: list[dict], store: Path) -> int:
     return int(new)
 
 
+def delete_by_src_id(store: Path, src_ids: set[str]) -> int:
+    """Drop stored rows whose src_id is in `src_ids`. Returns the number
+    removed. A no-op (0) on an absent store or an empty set — callers don't
+    need to guard either case themselves."""
+    if not store.exists() or not src_ids:
+        return 0
+    con = connect()
+    before = con.execute(
+        f"SELECT count(*) FROM read_parquet('{_sql_path(store)}')"
+    ).fetchone()[0]
+    con.execute(
+        f"""COPY (
+              SELECT * FROM read_parquet('{_sql_path(store)}')
+              WHERE src_id NOT IN (SELECT unnest(?))
+            ) TO '{_sql_path(store)}__tmp' (FORMAT PARQUET)""",
+        [list(src_ids)],
+    )
+    tmp = store.with_name(store.name + "__tmp")
+    after = con.execute(f"SELECT count(*) FROM read_parquet('{_sql_path(tmp)}')").fetchone()[0]
+    tmp.replace(store)
+    return before - after
+
+
 def write_points(rows: list[dict], path: Path, lon_key: str = "lon", lat_key: str = "lat") -> int:
     """Persist a live layer (MTG FRP / wind) as a GeoParquet snapshot
     — overwrites, so it is always the latest. Scalar dict fields become columns;
