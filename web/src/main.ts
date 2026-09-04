@@ -63,6 +63,15 @@ import type { Manifest } from "./types";
 
 const BASE = "/data";
 
+// The wind grid is a coarse ~0.5deg mesh (~200 points, whole globe): at level
+// 2's tight per-fire zoom the nearest sample is very often off-screen even
+// when it's within the readout's 60km threshold, so the toggle looks broken
+// with nothing to click to fix it. ?wind=1 unlocks the toggle at level 1
+// (overview) too, pre-checked, and enough map is in view there for multiple
+// grid points to actually render -- a debug/QA affordance, not a default
+// behaviour change.
+const FORCE_WIND = new URLSearchParams(location.search).get("wind") === "1";
+
 // Rebuilt layer by layer against docs/cartography-rules.md. Overview shows the
 // coarse "where are the fires" layers; a fire's card shows its detail. "When did
 // the fire reach each place?" is answered per-fire by the arrival-coloured
@@ -202,11 +211,14 @@ async function boot() {
       {
         key: "wind",
         freshnessKeys: ["wind"],
-        levels: [2] as (1|2)[],
+        // Normally level 2 only (see FORCE_WIND above for why that's a poor
+        // way to actually see the grid). ?wind=1 unlocks level 1 too, where
+        // the sparse ~0.5deg mesh has room to show more than one arrow.
+        levels: (FORCE_WIND ? [1, 2] : [2]) as (1|2)[],
         label: "Wind",
         question: "Which way is the wind pushing it?",
         layerIds: WIND_LAYER_IDS,
-        defaultOn: false,
+        defaultOn: FORCE_WIND,
         legend: WIND_LEGEND,
         liveOnly: true,
       },

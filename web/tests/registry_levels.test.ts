@@ -25,4 +25,16 @@ describe("layer levels", () => {
       expect(mainSource).toMatch(new RegExp(`key:\\s*"${key}"(?:(?!key:)[\\s\\S])*?liveOnly:\\s*true`));
     });
   }
+
+  // The wind grid is a coarse ~0.5deg mesh: at level 2's tight per-fire zoom
+  // the nearest sample is very often off-screen, so the toggle has nothing
+  // to show. ?wind=1 is the escape hatch — unlocks level 1 too and defaults
+  // the toggle on, without changing the module for everyone else.
+  it("reads ?wind=1 from the query string to gate the wind module's levels/defaultOn", () => {
+    expect(mainSource).toMatch(/FORCE_WIND\s*=\s*new URLSearchParams\(location\.search\)\.get\("wind"\)\s*===\s*"1"/);
+    expect(mainSource).toMatch(
+      /key:\s*"wind"(?:(?!key:)[\s\S])*?levels:\s*\(FORCE_WIND\s*\?\s*\[1,\s*2\]\s*:\s*\[2\]\)/,
+    );
+    expect(mainSource).toMatch(/key:\s*"wind"(?:(?!key:)[\s\S])*?defaultOn:\s*FORCE_WIND/);
+  });
 });
