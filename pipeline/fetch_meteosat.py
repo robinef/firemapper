@@ -17,6 +17,7 @@ import h3
 
 from .config import H3_RES, Settings
 from .fetch_firms import _src_id, append_hotspots
+from .landmask import is_near_land
 
 # EUMETView serves the MTG Fire Radiative Power product over plain WMS with a
 # ~10-minute time dimension — no Data Store account or NRT licence needed.
@@ -220,6 +221,13 @@ def fetch_frp_points(
         frp = props.get("FRP")
         conf = props.get("Confidence")
         if frp is None or (conf is not None and conf < min_confidence):
+            continue
+        # Same rationale as pipeline.landmask on the FIRMS side: MTG's full-disk
+        # coverage extends far out over open water, and a hot pixel there is sun
+        # glint, not a wildfire. This layer is fused into events/scars AND
+        # rendered directly as a heatmap, so an unfiltered pixel here reaches the
+        # map by two routes that pipeline.fetch_firms's filter never touches.
+        if not is_near_land(round(float(lat), 4), round(float(lon), 4)):
             continue
         out.append(
             {
