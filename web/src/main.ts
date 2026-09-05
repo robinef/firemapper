@@ -265,12 +265,14 @@ async function boot() {
     // and the whole event window is 14 days. Built from the events already
     // loaded, so it costs no extra request and covers closed fires too.
     const fireIndex = buildFireIndex(events);
-    const openFromList = (id: string) => {
+    // Returns whether `id` matched a live/closed event, so FORCE_FIRE below
+    // can fall back to the past-scar index on a miss.
+    const openFromList = (id: string): boolean => {
       const entry = fireIndex.find((e) => e.id === id);
       const feature = events.features.find(
         (f) => (f.properties as { id?: string })?.id === id,
       );
-      if (!entry || !feature) return;
+      if (!entry || !feature) return false;
       // openFire's own open() only flies once its `await loadTrack(...)`
       // resolves — on a slow connection the camera would otherwise sit still
       // for the whole round trip, and not move at all if a second list click
@@ -282,6 +284,30 @@ async function boot() {
         features: [feature],
         lngLat: { lng: entry.lon, lat: entry.lat },
       } as unknown as maplibregl.MapLayerMouseEvent);
+      return true;
+    };
+    // Companion to openFromList, for a scar's share link: past scars never
+    // enter `events`/fireIndex (they're pulled from manifest.imagery.scars,
+    // rendered by addScars), so ?fire=<id> needs its own lookup here. Only
+    // "past" scars are ever clickable/shareable — addScars filters the same
+    // way when it builds the map layer these ids came from.
+    const scarIndex = new Map(
+      (manifest.imagery?.scars ?? [])
+        .filter((s) => s.kind === "past")
+        .map((s) => [s.id, s]),
+    );
+    const openScarFromList = (id: string): boolean => {
+      const s = scarIndex.get(id);
+      if (!s) return false;
+      map.flyTo({ center: [s.lon, s.lat], zoom: 10.5 });
+      fireCard.openScar({
+        features: [{
+          properties: { ...s },
+          geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        }],
+        lngLat: { lng: s.lon, lat: s.lat },
+      } as unknown as maplibregl.MapLayerMouseEvent);
+      return true;
     };
     let lastQuery = "";
     const showFireList = (query: string) => {
@@ -464,9 +490,11 @@ async function boot() {
       setTimeout(() => splash.remove(), 450);
     }
     // ?fire=<id> deep-links straight to that fire's card, same path as a
-    // search-list click. Silently no-ops for an unknown/expired id, same as
-    // openFromList already does for a stale search result.
-    if (FORCE_FIRE) openFromList(FORCE_FIRE);
+    // search-list click; a miss falls back to the past-scar index (a scar's
+    // own share button copies the same param). Silently no-ops if neither
+    // knows the id, same as openFromList already does for a stale search
+    // result.
+    if (FORCE_FIRE && !openFromList(FORCE_FIRE)) openScarFromList(FORCE_FIRE);
   });
 }
 

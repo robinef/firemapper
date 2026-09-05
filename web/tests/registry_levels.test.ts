@@ -42,7 +42,18 @@ describe("layer levels", () => {
   // deep-links straight to its card, same path as clicking a search-list row.
   it("reads ?fire=<id> and opens that fire's card via openFromList", () => {
     expect(mainSource).toMatch(/FORCE_FIRE\s*=\s*params\.get\("fire"\)/);
-    expect(mainSource).toMatch(/if\s*\(FORCE_FIRE\)\s*openFromList\(FORCE_FIRE\)/);
+    expect(mainSource).toMatch(
+      /if\s*\(FORCE_FIRE\s*&&\s*!openFromList\(FORCE_FIRE\)\)\s*openScarFromList\(FORCE_FIRE\)/,
+    );
+  });
+
+  // A scar's own share button copies the same ?fire=<id> param, so a miss
+  // against the live/closed event index must fall back to past scars too.
+  it("falls back to a past scar when ?fire=<id> isn't a live/closed event", () => {
+    expect(mainSource).toMatch(
+      /scarIndex\s*=\s*new Map\(\s*\(manifest\.imagery\?\.scars\s*\?\?\s*\[\]\)\s*\.filter\(\(s\)\s*=>\s*s\.kind\s*===\s*"past"\)/,
+    );
+    expect(mainSource).toMatch(/openScarFromList\s*=\s*\(id:\s*string\):\s*boolean\s*=>/);
   });
 
   // ?layers=<key,...> pre-checks a module's toggle so a QA/demo link lands

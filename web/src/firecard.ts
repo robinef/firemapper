@@ -151,6 +151,7 @@ export function scarCardHtml(s: Scar): string {
   return (
     peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
+    `<button class="fc-share" aria-label="Copy shareable link" title="Copy shareable link">🔗</button>` +
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
     `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +
     `<div class="fc-stats">` +

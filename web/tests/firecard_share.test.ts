@@ -101,10 +101,16 @@ describe("fire card share link", () => {
     expect(url.searchParams.has("layers")).toBe(false);
   });
 
-  it("has no share button on a scar card — ?fire= can't deep-link a past scar", async () => {
+  it("copies ?fire=<scarId> from a scar card's share button too", async () => {
     ({ setupFireCard } = await import("../src/firecard"));
-    await build(switcherWithLayersOn()).openScar(scarClick());
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
 
-    expect(document.querySelector(".fc-share")).toBeNull();
+    await build(switcherWithLayersOn()).openScar(scarClick());
+    document.querySelector<HTMLButtonElement>(".fc-share")!.click();
+    await Promise.resolve();
+
+    const url = new URL(writeText.mock.calls[0][0] as string);
+    expect(url.searchParams.get("fire")).toBe("scar-1");
   });
 });
