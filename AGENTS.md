@@ -36,9 +36,9 @@ npm test           # vitest
   `data/raw/*.parquet` with a `geometry` column and precomputed H3 keys
   (`h3_r4/6/7/8`). Query through `pipeline/store.py::connect()` — don't hand-roll
   parquet reads. `connect_h3()` adds the community `h3` extension for adjacency.
-- **Clustering** groups detections into events by H3 adjacency + a 48 h window.
-  The adjacency edges are built in SQL (`events._edges_sql`); a differential test
-  guards that it matches a pure-Python reference exactly.
+- **Clustering** groups detections into events by H3 adjacency + a 48 h window; a second pass (polar tier only) lets fires of ≥20 cells bridge a one-cell gap (`BRIDGE_K`/`BRIDGE_MIN_CELLS` in `pipeline/events.py`).
+  Both passes build their edges in SQL (`events._edges_sql`, `events._bridge_edges_sql`); a differential test
+  guards that they match a pure-Python reference exactly.
 - **Sensor fusion:** VIIRS/MODIS own event geometry + ignition dates; live
   Meteosat MTG adds low-latency liveness and catches fresh fires.
 - **Frontend layers** each answer one question and own their legend; the switcher
