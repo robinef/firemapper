@@ -1,3 +1,5 @@
+import h3
+
 from pipeline.timeline import build_timeline
 from tests.synth import T, hs
 
@@ -24,3 +26,12 @@ def test_frp_summed_per_day():
     rows = [hs(45.0, 8.0, T(20, 1), frp=30.0), hs(45.0, 8.0, T(20, 2), frp=20.0)]
     tl = build_timeline(rows, now, days=2)
     assert tl[-1]["frp"] == 50.0
+
+
+def test_excludes_static_source_cells():
+    now = T(20, 12)
+    static = h3.latlng_to_cell(45.0, 8.0, 8)
+    rows = [hs(45.0, 8.0, T(20, 6)), hs(46.0, 9.0, T(20, 6))]  # one static, one real
+    tl = build_timeline(rows, now, days=1, exclude_cells={static})
+    assert tl[0]["count"] == 1
+    assert build_timeline(rows, now, days=1)[0]["count"] == 2  # no exclusion -> both counted

@@ -85,7 +85,16 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # burned-area service. The live set is the same events, restricted to
     # those detected within WINDOW_DAYS; the window is on a fire's latest
     # detection (events.cluster), so an event is identical in both.
-    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    # Fixed heat sources (flares, refineries, oil fields, volcanoes) chain
+    # into months-long "fires" now that history is kept in full — filtered
+    # out of events/scars here, and reused below so the timeline and day
+    # slices exclude the same cells rather than each guessing separately.
+    cluster_report: dict = {}
+    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS, report=cluster_report)
+    static_cells = cluster_report.get("static_cells", set())
+    if static_cells:
+        n_static = len(cluster_report.get("static_events", {}))
+        print(f"[info] static heat sources: {n_static} events, {len(static_cells)} cells excluded")
     events = recent_events(scar_events, now, WINDOW_DAYS)
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
@@ -201,7 +210,8 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
 
     # Daily fire-activity timeline (polar detections) for the bottom histogram.
     timeline_result = attempt(
-        lambda: build_timeline(rows, now), label="timeline", now=now, default=[],
+        lambda: build_timeline(rows, now, exclude_cells=static_cells),
+        label="timeline", now=now, default=[],
         # A timeline of all-zero days is not data, whatever its length: report
         # the newest day that actually had a detection.
         observed=lambda days: newest_timestamp(
@@ -213,7 +223,9 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
 
     # Per-day Europe-wide detection slices — click a histogram day to paint it.
     day_slices = _safe(
-        lambda: build_day_slices(settings.data_dir / "raw" / "hotspots.parquet", now),
+        lambda: build_day_slices(
+            settings.data_dir / "raw" / "hotspots.parquet", now, exclude_cells=static_cells
+        ),
         default={}, label="day-slices",
     )
     print(f"[info] day slices: {len(day_slices)} days")

@@ -12,14 +12,25 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from .store import cell_at
 
-def build_timeline(rows: list[dict], now: datetime, days: int = 30) -> list[dict]:
-    """[{date, count, frp}] per UTC day for the last `days`, oldest first."""
+
+def build_timeline(
+    rows: list[dict], now: datetime, days: int = 30, exclude_cells: set[str] | None = None
+) -> list[dict]:
+    """[{date, count, frp}] per UTC day for the last `days`, oldest first.
+
+    `exclude_cells` drops detections in known static heat sources (events.
+    static_cells — flares, refineries, oil fields) so the histogram reads the
+    trend in wildfire activity, not a constant industrial floor: measured on
+    the prod archive, static cells are 0.6% of all detected cells but 17.7%
+    of all detections (10-49% on any given day)."""
     start = (now - timedelta(days=days - 1)).date()
+    exclude = exclude_cells or set()
     counts: dict[str, int] = {}
     frp: dict[str, float] = {}
     for r in rows:
-        if r["tier"] == "meteosat":
+        if r["tier"] == "meteosat" or cell_at(r, 8) in exclude:
             continue
         d = r["acq_time"].date()
         if d < start or r["acq_time"] > now:

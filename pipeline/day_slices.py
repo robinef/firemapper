@@ -14,8 +14,15 @@ import h3
 from .store import connect
 
 
-def build_day_slices(store: Path, now: datetime, days: int = 30, res: int = 5) -> dict[str, list]:
-    """{ 'YYYY-MM-DD': [[h3_cell, count], ...] } for the last `days`."""
+def build_day_slices(
+    store: Path, now: datetime, days: int = 30, res: int = 5,
+    exclude_cells: set[str] | None = None,
+) -> dict[str, list]:
+    """{ 'YYYY-MM-DD': [[h3_cell, count], ...] } for the last `days`.
+
+    `exclude_cells` (res-8 h3 ids) drops known static heat sources (events.
+    static_cells) — the same set the timeline histogram excludes, so a day's
+    slice and its histogram bar agree on what counts as fire activity."""
     if not store.exists():
         return {}
     cutoff = (now - timedelta(days=days)).date().isoformat()
@@ -24,7 +31,9 @@ def build_day_slices(store: Path, now: datetime, days: int = 30, res: int = 5) -
         "SELECT CAST(acq_time AS DATE) d, h3_r6, count(*) n "
         f"FROM read_parquet('{str(store)}') "
         f"WHERE tier <> 'meteosat' AND CAST(acq_time AS DATE) >= DATE '{cutoff}' "
-        "GROUP BY 1, 2"
+        "  AND h3_r8 NOT IN (SELECT * FROM UNNEST(?)) "
+        "GROUP BY 1, 2",
+        [list(exclude_cells or ())],
     ).fetchall()
     agg: dict[str, dict[str, int]] = {}
     for d, cell6, n in rows:

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import h3
 
-from .config import H3_RES, MAX_FIRE_DAYS
+from .config import H3_RES, MAX_FIRE_DAYS, STATIC_CELL_DAYS, STATIC_EVENT_FRAC
 from .metrics import CELL_KM2
 from .store import cell_at
 
@@ -219,8 +219,35 @@ def _cluster_one(rows: list[dict], res: int, bridge: bool = False) -> dict[str, 
     }
 
 
+def static_cells(rows: list[dict], res: int) -> set[str]:
+    """Cells detected on >= STATIC_CELL_DAYS distinct days among `rows` — a
+    fixed heat source (flare, refinery, waste site, volcano), not a wildfire.
+    FIRMS's NRT area API has no `type` column to tell those apart directly
+    (see pipeline/landmask.py's docstring for the sibling offshore case), but
+    a real fire's front moves: measured on the prod archive, every wildfire —
+    including 21-28 day ones — never redetects one cell on more than 12
+    distinct days, while every known industrial source exceeds 25."""
+    days: dict[str, set] = defaultdict(set)
+    for r in rows:
+        days[cell_at(r, res)].add(r["acq_time"].date())
+    return {c for c, ds in days.items() if len(ds) >= STATIC_CELL_DAYS}
+
+
+def is_static(members: list[dict], static: set[str]) -> bool:
+    """True when >= STATIC_EVENT_FRAC of an event's members sit in static
+    cells — event-level, not cell-level, so a flare's non-static jitter cells
+    (chained in by 48h adjacency) are dropped with it, while a real fire that
+    spreads into a static cell keeps its identity as long as that stays a
+    minority of its detections."""
+    if not members:
+        return False
+    hits = sum(1 for m in members if m["cell"] in static)
+    return hits / len(members) >= STATIC_EVENT_FRAC
+
+
 def cluster(
-    rows: list[dict], now: datetime, window_days: int = WINDOW_DAYS
+    rows: list[dict], now: datetime, window_days: int = WINDOW_DAYS,
+    report: dict | None = None,
 ) -> dict[str, list[dict]]:
     """Fuse polar (VIIRS/MODIS) and Meteosat detections into fire events.
 
@@ -232,6 +259,11 @@ def cluster(
     ARE their own fires (fresh detections VIIRS has not caught yet) and are kept,
     clustered at METEOSAT_RES so ~2 km pixels join. With no polar data at all
     (no FIRMS key), every event comes from Meteosat.
+
+    `report`, when given, is filled with `{"static_cells": set, "static_events":
+    dict}` — the fixed heat sources dropped from the result (see static_cells /
+    is_static), for callers that need the same classification elsewhere (the
+    timeline histogram and day-slices exclude the same cells).
     """
     # The window is on a fire's LATEST detection, applied to events after
     # clustering — not to rows before it. Cutting rows at the window made a
@@ -247,14 +279,32 @@ def cluster(
     polar = [r for r in in_window if r["tier"] != "meteosat"]
     meteo = [r for r in in_window if r["tier"] == "meteosat"]
 
-    events = recent_events(_cluster_one(polar, H3_RES, bridge=True), now, window_days)
+    # Static heat sources (flares, refineries, oil fields, volcanoes) are
+    # classified over the FULL in-window polar set — before the recency
+    # filter — and removed from events. They still feed the Meteosat mask
+    # below regardless of their own recency: a flare that paused for weeks is
+    # still a flare, and an MTG pixel landing on it must not read as a fresh
+    # fire the moment its polar event ages out of the live window.
+    polar_events = _cluster_one(polar, H3_RES, bridge=True)
+    static = static_cells(polar, H3_RES)
+    non_static: dict[str, list[dict]] = {}
+    static_events: dict[str, list[dict]] = {}
+    for eid, members in polar_events.items():
+        (static_events if is_static(members, static) else non_static)[eid] = members
+    if report is not None:
+        report["static_cells"] = static
+        report["static_events"] = static_events
+
+    events = recent_events(non_static, now, window_days)
     if meteo:
-        # Res-7 footprint of every polar event IN THE WINDOW, for the overlap
-        # test. Stale polar events must not take part: over a season they
-        # cover most burnable land, and a fresh MTG-only fire over one would
-        # be suppressed here and then its suppressor dropped — in neither set.
+        # Res-7 footprint of every non-static polar event IN THE WINDOW, plus
+        # ALL static polar events regardless of recency, for the overlap test.
+        # A stale NON-static event must not take part (over a season those
+        # cover most burnable land and a fresh MTG-only fire over one would be
+        # suppressed here and then its suppressor dropped — in neither set),
+        # but a static one's whole point is that it persists.
         polar_cells7: set[str] = set()
-        for members in events.values():
+        for members in list(events.values()) + list(static_events.values()):
             for c in {cell_at(m, METEOSAT_RES) for m in members}:
                 polar_cells7 |= set(h3.grid_disk(c, 1))
         # Keep only Meteosat-only fires (no polar event under them).
