@@ -39,17 +39,19 @@ def test_day_slices_group_by_day_and_res5_cell(tmp_path):
     assert sum(c[1] for c in ds["2026-07-21"]) == 1
 
 
-def test_day_slices_excludes_static_source_cells(tmp_path):
+def test_day_slices_excludes_dropped_static_source_detections_by_src_id(tmp_path):
     store = tmp_path / "hotspots.parquet"
     append_hotspots(
-        [_hot(44.80, -0.50, 20, "a"), _hot(44.805, -0.505, 20, "b"), _hot(48.00, 2.00, 21, "c")],
+        [_hot(44.80, -0.50, 20, "flare"), _hot(44.805, -0.505, 20, "b"), _hot(48.00, 2.00, 21, "c")],
         store,
     )
     now = datetime(2026, 7, 22, tzinfo=timezone.utc)
-    r8 = h3.latlng_to_cell(44.80, -0.50, 8)
-    ds = build_day_slices(store, now, days=10, res=5, exclude_cells={r8})
-    # The static cell's whole res-5 day-slice disappears; the other cell stays.
-    assert set(ds) == {"2026-07-21"}
+    ds = build_day_slices(store, now, days=10, res=5, exclude_ids={"flare"})
+    cell20 = h3.latlng_to_cell(44.80, -0.50, 5)
+    # Only the excluded detection drops; the other one in the SAME res-5 cell
+    # (a real, kept event) still counts — not excluded by cell.
+    assert ds["2026-07-20"] == [[cell20, 1]]
+    assert set(ds) == {"2026-07-20", "2026-07-21"}
 
 
 def test_day_slices_empty_without_store(tmp_path):

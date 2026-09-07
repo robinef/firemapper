@@ -17,10 +17,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline.config import SCAR_WINDOW_DAYS
-from pipeline.enrich import Places, place_for
+from pipeline.config import H3_RES, SCAR_WINDOW_DAYS
+from pipeline.enrich import MIN_PLACES, Places, load_places, place_for
 from pipeline.events import _cluster_one, cluster, static_cells
-from pipeline.config import H3_RES
 from pipeline.store import read_hotspots
 
 RUNTIME_BUDGET_PCT = 20
@@ -50,11 +49,10 @@ def main(argv: list[str]) -> int:
             r["acq_time"] = r["acq_time"].replace(tzinfo=timezone.utc)
 
     places_path = Path(__file__).parent.parent / "data" / "places" / "cities5000.txt"
-    places = Places([]) if not places_path.exists() else None
-    if places is None:
-        from pipeline.enrich import load_places
-
-        places = load_places(places_path)
+    # Same min_places floor production uses (config.MIN_PLACES): a truncated
+    # gazetteer must raise loudly here too, not silently mislabel everything
+    # and let a name-substring check pass or fail for the wrong reason.
+    places = load_places(places_path, min_places=MIN_PLACES) if places_path.exists() else Places([])
 
     report: dict = {}
     t0 = time.time()
@@ -84,9 +82,11 @@ def main(argv: list[str]) -> int:
             ok = False
 
     # Everything else (unfiltered) must still contain each MUST_KEEP fire.
-    unfiltered = _cluster_one(
-        [r for r in rows if r["tier"] != "meteosat"], H3_RES, bridge=True
-    )
+    # `rows` is already non-meteosat (line 47); reuse it rather than re-filter.
+    # This pass doubles as the runtime baseline below — no separate 3rd pass.
+    t0 = time.time()
+    unfiltered = _cluster_one(rows, H3_RES, bridge=True)
+    baseline_s = time.time() - t0
     kept_names = []
     for eid, members in unfiltered.items():
         if eid in static_events or len(members) < 4:
@@ -99,12 +99,9 @@ def main(argv: list[str]) -> int:
             print(f"[FAIL] expected to keep a fire matching {must!r}, none found among kept events")
             ok = False
 
-    static = static_cells([r for r in rows if r["tier"] != "meteosat"], H3_RES)
+    static = static_cells(rows, H3_RES)
     print(f"cells classified static: {len(static)}")
 
-    t0 = time.time()
-    _cluster_one([r for r in rows if r["tier"] != "meteosat"], H3_RES, bridge=True)
-    baseline_s = time.time() - t0
     slower_pct = 100 * (filtered_s - baseline_s) / baseline_s if baseline_s else 0
     print(f"runtime: filtered {filtered_s:.1f}s vs baseline {baseline_s:.1f}s ({slower_pct:+.0f}%)")
     if slower_pct > RUNTIME_BUDGET_PCT:

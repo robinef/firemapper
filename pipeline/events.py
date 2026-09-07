@@ -226,7 +226,26 @@ def static_cells(rows: list[dict], res: int) -> set[str]:
     (see pipeline/landmask.py's docstring for the sibling offshore case), but
     a real fire's front moves: measured on the prod archive, every wildfire —
     including 21-28 day ones — never redetects one cell on more than 12
-    distinct days, while every known industrial source exceeds 25."""
+    distinct days, while every known industrial source exceeds 25.
+
+    Known residual risk: this counts days across the WHOLE row span, not per
+    clustering event, so several genuinely separate fire episodes that reburn
+    the exact same ~0.7 km² cell weeks or months apart could in principle sum
+    past the threshold. Checked three cheaper discriminants against the prod
+    archive's 736 flagged cells before accepting this: detection density
+    (days / span) ranges 0.29-1.0 with no gap near a constructed 3-episode
+    counterexample's ~0.32; longest same-cell gap in days and distinct-event
+    count per cell BOTH range from "one continuous streak" to "many short
+    pings" for genuinely static sources, fully overlapping where a rare
+    multi-episode reburn would sit. No one-dimensional signal from point
+    detections alone separates them; a real fix would need real-world
+    burned-area geometry FIRMS doesn't provide. Accepted because: unverified
+    in any of the 90 days / 435k detections / 736 flagged cells measured
+    (every labelled real fire, up to 28 days, survived); reburns of one
+    specific tiny cell within a 90-day window are themselves rare. If ever
+    suspected, `scripts/replay_static_sources.py`'s per-event dump shows the
+    date list — a genuine reburn shows as widely-gapped multi-day runs, not
+    the near-daily pings a persistent source stays classified for."""
     days: dict[str, set] = defaultdict(set)
     for r in rows:
         days[cell_at(r, res)].add(r["acq_time"].date())
