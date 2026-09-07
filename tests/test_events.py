@@ -5,6 +5,8 @@ from datetime import timedelta
 import h3
 
 from pipeline.events import (
+    BRIDGE_K,
+    BRIDGE_MIN_CELLS,
     CLOSE_AFTER_H,
     METEOSAT_CELL_KM2,
     METEOSAT_RES,
@@ -21,7 +23,12 @@ from tests.synth import T, hs
 
 def _reference_partition(rows, res=8):
     """Pure-Python connected components (the pre-SQL union-find), as a set of
-    frozensets of src_ids — the oracle the DuckDB clustering must match."""
+    frozensets of src_ids — the oracle the DuckDB clustering must match.
+
+    Pass 1: same cell time-consecutive, or k-ring-1 neighbours, within
+    CLOSE_AFTER_H. Pass 2 (bridging): two pass-1 components join when at
+    least one spans BRIDGE_MIN_CELLS cells and any member pair sits within
+    BRIDGE_K rings and CLOSE_AFTER_H of each other."""
     nodes = [dict(r) for r in rows]
     for n in nodes:
         n["cell"] = h3.latlng_to_cell(n["lat"], n["lon"], res)
@@ -32,6 +39,8 @@ def _reference_partition(rows, res=8):
     for i in range(len(nodes)):
         uf.find(i)
     md = timedelta(hours=CLOSE_AFTER_H)
+    def within(a, b):
+        return abs((nodes[a]["acq_time"] - nodes[b]["acq_time"]).total_seconds()) <= md.total_seconds()
     for cell, idx in by_cell.items():
         idx.sort(key=lambda i: nodes[i]["acq_time"])
         for a, b in zip(idx, idx[1:]):
@@ -42,12 +51,99 @@ def _reference_partition(rows, res=8):
                 continue
             for a in idx:
                 for b in by_cell[nb]:
-                    if abs((nodes[a]["acq_time"] - nodes[b]["acq_time"]).total_seconds()) <= md.total_seconds():
+                    if within(a, b):
+                        uf.union(a, b)
+    # Pass 2: bridge across BRIDGE_K rings when one side is big enough.
+    comp1 = [uf.find(i) for i in range(len(nodes))]
+    cells_of = defaultdict(set)
+    for i, c in enumerate(comp1):
+        cells_of[c].add(nodes[i]["cell"])
+    big = {c for c, cs in cells_of.items() if len(cs) >= BRIDGE_MIN_CELLS}
+    for cell, idx in by_cell.items():
+        for nb in h3.grid_disk(cell, BRIDGE_K):
+            if nb not in by_cell:
+                continue
+            for a in idx:
+                for b in by_cell[nb]:
+                    if comp1[a] == comp1[b] or (comp1[a] not in big and comp1[b] not in big):
+                        continue
+                    if within(a, b):
                         uf.union(a, b)
     comps = defaultdict(set)
     for i in range(len(nodes)):
         comps[uf.find(i)].add(rows[i]["src_id"])
     return {frozenset(v) for v in comps.values()}
+
+
+def _disk_fire(center_cell, k, t):
+    """One detection per cell of grid_disk(center, k) at time t — a contiguous
+    blob of 1 + 3k(k+1) cells (k=3 → 37 cells, above BRIDGE_MIN_CELLS)."""
+    return [hs(*h3.cell_to_latlng(c), t) for c in h3.grid_disk(center_cell, k)]
+
+
+def _cell_at_distance(from_cells, d):
+    """A cell exactly `d` rings from the nearest of `from_cells`."""
+    anchor = next(iter(from_cells))
+    for radius in range(d, d + 12):
+        for c in h3.grid_ring(anchor, radius):
+            if min(h3.grid_distance(c, f) for f in from_cells) == d:
+                return c
+    raise AssertionError("no cell at that distance")
+
+
+CENTER = h3.latlng_to_cell(45.0, 8.0, 8)
+
+
+def test_big_fire_bridges_a_one_cell_gap():
+    # A ≥BRIDGE_MIN_CELLS fire and a cluster two rings away (one empty cell
+    # between) detected in the same pass: one fire. Live 2026-07-25 the
+    # Saint-Médard-en-Jalles front (407 cells) and its southern half toward
+    # Andernos (124 cells) were split exactly like this, Δt = 0.
+    big = _disk_fire(CENTER, 3, T(20, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    assert len(big_cells) >= BRIDGE_MIN_CELLS
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    south = [hs(*h3.cell_to_latlng(far), T(20, 0)), hs(*h3.cell_to_latlng(far), T(20, 6))]
+    assert len(cluster(big, now=T(21, 0))) == 1
+    assert len(cluster(south, now=T(21, 0))) == 1
+    assert len(cluster(big + south, now=T(21, 0))) == 1
+
+
+def test_small_fires_do_not_bridge_a_one_cell_gap():
+    # Neither side reaches BRIDGE_MIN_CELLS: two agricultural burns 1.7 km
+    # apart on the same afternoon stay two fires (pass-1 behaviour).
+    a = [hs(*A, T(20, 0)) for _ in range(3)]
+    far = _cell_at_distance({h3.latlng_to_cell(*A, 8)}, BRIDGE_K)
+    b = [hs(*h3.cell_to_latlng(far), T(20, 1)) for _ in range(3)]
+    assert len(cluster(a + b, now=T(21, 0))) == 2
+
+
+def test_bridge_never_reaches_past_two_rings():
+    # Literal 3, not BRIDGE_K + 1: the reach is a product decision (one empty
+    # cell, ~1.7 km), and widening it must be a deliberate edit here too.
+    assert BRIDGE_K == 2
+    big = _disk_fire(CENTER, 3, T(20, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, 3)
+    other = [hs(*h3.cell_to_latlng(far), T(20, 0))]
+    assert len(cluster(big + other, now=T(21, 0))) == 2
+
+
+def test_bridge_respects_the_48h_window():
+    big = _disk_fire(CENTER, 3, T(20, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    late = [hs(*h3.cell_to_latlng(far), T(23, 0))]  # 72 h later
+    assert len(cluster(big + late, now=T(24, 0))) == 2
+
+
+def test_bridged_event_keeps_the_earliest_id():
+    big = _disk_fire(CENTER, 3, T(20, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    south = [hs(*h3.cell_to_latlng(far), T(20, 12))]
+    id_big = next(iter(cluster(big, now=T(21, 0))))
+    assert next(iter(cluster(big + south, now=T(21, 0)))) == id_big
 
 
 def test_sql_clustering_matches_python_reference():

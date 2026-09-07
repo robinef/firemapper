@@ -12,6 +12,19 @@ from .store import cell_at
 
 BIN_HOURS = 6
 CLOSE_AFTER_H = 48
+# Bridging (pass 2 of _cluster_one). Adjacency alone (k-ring 1) splits a real
+# fire front the moment it skips one cell — a road, a firebreak, a smoke-masked
+# pixel, or simply a front that advanced two cells between 12 h revisits. Live
+# 2026-07-25 the Saint-Médard-en-Jalles fire (407 cells) and its southern half
+# toward Andernos-les-Bains (124 cells) sat one empty cell apart, detected in
+# the SAME overpass, and became two fires. Widening reach globally is wrong:
+# on the prod archive k=2 joins 8556 component pairs, mostly clusters of
+# small agricultural burns on the same afternoon. Gating on size fixes the
+# asymmetry — a 14 km² blob skipping a cell is one fire; two 1-cell specks
+# 1.7 km apart are two — and cuts that to 466 pairs. Only polar (VIIRS/MODIS)
+# events bridge; Meteosat already clusters at the coarser res 7.
+BRIDGE_K = 2
+BRIDGE_MIN_CELLS = 20
 # Meteosat pixels sit ~2 km apart; at H3 res 8 (~0.46 km edge) k-ring-1 never
 # connects them and every pixel becomes its own "fire". Res 7 cells (~5.2 km²)
 # make adjacent MTG pixels neighbours.
@@ -114,9 +127,54 @@ def _edges_sql(rows: list[dict], res: int) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in rel]
 
 
-def _cluster_one(rows: list[dict], res: int) -> dict[str, list[dict]]:
+def _bridge_edges_sql(
+    rows: list[dict], res: int, comp: list[int], big: set[int]
+) -> list[tuple[int, int]]:
+    """Pass-2 edges, as (component, component) pairs: two pass-1 components
+    join when at least one is in `big` (≥ BRIDGE_MIN_CELLS cells) and any pair
+    of their members sits within BRIDGE_K rings and CLOSE_AFTER_H of each
+    other. Same DuckDB h3 machinery as _edges_sql; the size gate is applied in
+    SQL so the ring expansion only ever fans out from big components."""
+    import pyarrow as pa
+
+    from .store import _naive_utc, connect_h3
+
+    tbl = pa.table(
+        {
+            "rid": list(range(len(rows))),
+            "lat": [float(r["lat"]) for r in rows],
+            "lon": [float(r["lon"]) for r in rows],
+            "acq_time": [_naive_utc(r["acq_time"]) for r in rows],
+            "comp": comp,
+            "big": [c in big for c in comp],
+        }
+    )
+    con = connect_h3()
+    con.register("arrow_n", tbl)
+    con.execute(
+        f"CREATE TEMP TABLE n AS SELECT rid, h3_latlng_to_cell(lat, lon, {int(res)}) AS cell, "
+        f"acq_time, comp, big FROM arrow_n"
+    )
+    rel = con.execute(
+        f"""
+        WITH disk AS (  -- fan out from BIG components only
+            SELECT comp, acq_time, unnest(h3_grid_disk(cell, {int(BRIDGE_K)})) AS ncell
+            FROM n WHERE big
+        )
+        SELECT DISTINCT d.comp, b.comp
+        FROM disk d JOIN n b ON b.cell = d.ncell
+        WHERE d.comp <> b.comp
+          AND abs(epoch(d.acq_time) - epoch(b.acq_time)) <= {int(CLOSE_AFTER_H)} * 3600
+        """
+    ).fetchall()
+    return [(int(a), int(b)) for a, b in rel]
+
+
+def _cluster_one(rows: list[dict], res: int, bridge: bool = False) -> dict[str, list[dict]]:
     """One sensor's detections at a single H3 resolution → fire events. Adjacency
-    is computed in DuckDB (_edges_sql); the trivial union-find runs here."""
+    is computed in DuckDB (_edges_sql); the trivial union-find runs here. With
+    `bridge`, a second pass joins big components across a one-cell gap (see
+    BRIDGE_K / BRIDGE_MIN_CELLS)."""
     if not rows:
         return {}
     nodes: list[dict] = []
@@ -131,6 +189,16 @@ def _cluster_one(rows: list[dict], res: int) -> dict[str, list[dict]]:
         uf.find(i)  # every node is at least its own component
     for a, b in _edges_sql(rows, res):
         uf.union(a, b)
+
+    if bridge:
+        comp = [uf.find(i) for i in range(len(nodes))]
+        cells_of: dict[object, set[str]] = defaultdict(set)
+        for i, c in enumerate(comp):
+            cells_of[c].add(nodes[i]["cell"])
+        big = {c for c, cs in cells_of.items() if len(cs) >= BRIDGE_MIN_CELLS}
+        if big:
+            for a, b in _bridge_edges_sql(rows, res, comp, big):
+                uf.union(a, b)
 
     comps: dict[object, list[dict]] = defaultdict(list)
     for i, n in enumerate(nodes):
@@ -163,7 +231,7 @@ def cluster(
     if not polar:
         return _cluster_one(meteo, METEOSAT_RES) if meteo else {}
 
-    events = _cluster_one(polar, H3_RES)
+    events = _cluster_one(polar, H3_RES, bridge=True)
     if not meteo:
         return events
 
