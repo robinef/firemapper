@@ -85,7 +85,21 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # burned-area service. The live set is the same events, restricted to
     # those detected within WINDOW_DAYS; the window is on a fire's latest
     # detection (events.cluster), so an event is identical in both.
-    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    # Fixed heat sources (flares, refineries, oil fields, volcanoes) chain
+    # into months-long "fires" now that history is kept in full — filtered
+    # out of events/scars here, and reused below so the timeline and day
+    # slices exclude the same cells rather than each guessing separately.
+    cluster_report: dict = {}
+    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS, report=cluster_report)
+    static_events = cluster_report.get("static_events", {})
+    # By src_id, not by cell: a cell can host a real, kept event alongside a
+    # dropped static one (see timeline.build_timeline's docstring), so only
+    # the detections belonging to DROPPED events are excluded elsewhere.
+    static_src_ids = {m["src_id"] for ms in static_events.values() for m in ms}
+    if static_events:
+        n_cells = len(cluster_report.get("static_cells", set()))
+        print(f"[info] static heat sources: {len(static_events)} events, "
+              f"{n_cells} cells, {len(static_src_ids)} detections excluded")
     events = recent_events(scar_events, now, WINDOW_DAYS)
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
@@ -201,7 +215,8 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
 
     # Daily fire-activity timeline (polar detections) for the bottom histogram.
     timeline_result = attempt(
-        lambda: build_timeline(rows, now), label="timeline", now=now, default=[],
+        lambda: build_timeline(rows, now, exclude_ids=static_src_ids),
+        label="timeline", now=now, default=[],
         # A timeline of all-zero days is not data, whatever its length: report
         # the newest day that actually had a detection.
         observed=lambda days: newest_timestamp(
@@ -213,7 +228,9 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
 
     # Per-day Europe-wide detection slices — click a histogram day to paint it.
     day_slices = _safe(
-        lambda: build_day_slices(settings.data_dir / "raw" / "hotspots.parquet", now),
+        lambda: build_day_slices(
+            settings.data_dir / "raw" / "hotspots.parquet", now, exclude_ids=static_src_ids
+        ),
         default={}, label="day-slices",
     )
     print(f"[info] day slices: {len(day_slices)} days")

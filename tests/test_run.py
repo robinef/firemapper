@@ -28,6 +28,51 @@ def test_process_end_to_end(tmp_path, monkeypatch):
     assert (gen / "events.geojson").exists()
 
 
+def test_static_source_dropped_from_events_but_kept_in_the_live_frp_heatmap(tmp_path, monkeypatch):
+    """A static heat source disappears from events/timeline/day-slices but
+    the live FRP heatmap stays the raw sensor layer — a flare shows as a hot
+    pixel, not as a fire event (design spec, 2026-09-07)."""
+    from pipeline.config import STATIC_CELL_DAYS
+    import h3
+    import json
+
+    monkeypatch.setattr("pipeline.run.fetch_gdacs", lambda: [])
+    monkeypatch.setattr("pipeline.run.fetch_season_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr("pipeline.run.fetch_stats_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)
+    monkeypatch.setattr("pipeline.run.fetch_wind", lambda pts: [])
+    now = T(31, 23)
+    flare_lat, flare_lon = 45.0, 8.0
+    monkeypatch.setattr(
+        "pipeline.run.fetch_frp_points",
+        lambda bbox, now: [{"lat": flare_lat, "lon": flare_lon, "frp": 12.0, "time": now.isoformat()}],
+    )
+    s = load_settings(env={"DATA_DIR": str(tmp_path / "d"), "OUT_DIR": str(tmp_path / "o")})
+    real_lat, real_lon = 50.0, 10.0  # a genuine one-off detection, far from the flare
+    rows = [hs(flare_lat, flare_lon, T(d, 12)) for d in range(1, STATIC_CELL_DAYS + 1)]
+    rows.append(hs(real_lat, real_lon, T(31, 6)))
+    append_hotspots(rows, s.data_dir / "raw" / "hotspots.parquet")
+
+    gen = process(s, now=now)
+
+    events = json.loads((gen / "events.geojson").read_text())["features"]
+    static_cell = h3.latlng_to_cell(flare_lat, flare_lon, 8)
+    assert not any(
+        h3.latlng_to_cell(f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0], 8) == static_cell
+        for f in events
+    ), "static source must not appear as a live event"
+
+    frp = json.loads((gen / "frp.geojson").read_text())["features"]
+    assert len(frp) == 1, "the flare pixel must still render on the raw FRP heatmap"
+
+    manifest = json.loads((s.out_dir / "manifest.json").read_text())
+    by_date = {d["date"]: d["count"] for d in manifest["timeline"]}
+    assert by_date["2026-07-31"] == 1, "timeline must count the real detection, not the flare"
+    assert by_date["2026-07-10"] == 0, "the flare's own days must be excluded from the timeline"
+    assert not (gen / "days" / "2026-07-01.json").exists(), \
+        "the flare's day-slice must not be published at all (no other detections that day)"
+
+
 def test_full_refresh_without_key_raises(tmp_path):
     """A missing FIRMS key must stop the run. Degrading silently is what
     published a 30-day timeline of zeroes to production."""

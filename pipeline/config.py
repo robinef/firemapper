@@ -49,6 +49,14 @@ SCAR_WINDOW_DAYS = 45
 # runtime flat as the archive grows. A fire is complete, with a stable id, as
 # long as it started within this many days; one longer still erodes.
 MAX_FIRE_DAYS = 90
+# Static heat-source filter (events.static_cells / is_static). Measured on the
+# prod archive: every real fire, including 21-28 day ones, never detects the
+# SAME res-8 cell on more than 12 distinct days (a fire front moves; a cell
+# burns then is ash). Every known industrial source (steelworks, refinery
+# flares, oil fields) exceeds 25, with >=74% of its detections in such cells.
+# 20/0.5 sits with a wide margin on both sides of that gap.
+STATIC_CELL_DAYS = 20
+STATIC_EVENT_FRAC = 0.5
 
 
 @dataclass(frozen=True)

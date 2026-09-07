@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import h3
 
+from pipeline.config import STATIC_CELL_DAYS, STATIC_EVENT_FRAC
 from pipeline.events import (
     BRIDGE_K,
     BRIDGE_MIN_CELLS,
@@ -14,8 +15,10 @@ from pipeline.events import (
     cell_km2_for,
     cluster,
     event_id_for,
+    is_static,
     lifecycle,
     reactivation_links,
+    static_cells,
 )
 from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
@@ -348,16 +351,19 @@ def test_window_ignores_detections_from_the_future():
 def test_rows_older_than_max_fire_days_are_not_clustered():
     # The one bound left on history: a fire that has burned longer than
     # MAX_FIRE_DAYS loses its oldest rows (and so still erodes) — the price of
-    # a flat runtime. Pins the constant's effect, not just its value.
+    # a flat runtime. Pins the constant's effect, not just its value. A MOVING
+    # chain (never revisits a cell): a fixed point over this many days would
+    # itself be classified a static heat source, which is a different test.
     from datetime import datetime, timezone
 
     from pipeline.config import MAX_FIRE_DAYS
 
     now = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    rows, t = [], now - timedelta(days=MAX_FIRE_DAYS + 5)
-    while t <= now:
-        rows.append(hs(*A, t))
-        t += timedelta(hours=36)
+    n = (MAX_FIRE_DAYS + 5) * 24 // 36 + 1
+    c0 = h3.latlng_to_cell(*A, 8)
+    path = h3.grid_path_cells(c0, h3.grid_ring(c0, n)[0])[:n]
+    start = now - timedelta(days=MAX_FIRE_DAYS + 5)
+    rows = [hs(*h3.cell_to_latlng(c), start + timedelta(hours=36 * i)) for i, c in enumerate(path)]
     (members,) = cluster(rows, now).values()
     assert len(members) < len(rows)
     assert min(m["acq_time"] for m in members) >= now - timedelta(days=MAX_FIRE_DAYS)
@@ -386,6 +392,84 @@ def test_fresh_meteosat_fire_over_a_stale_polar_scar_is_kept():
     ev = cluster([stale, fresh], now)
     assert len(ev) == 1
     assert [m["tier"] for m in next(iter(ev.values()))] == ["meteosat"]
+
+
+def _daily(lat, lon, first_day, n_days, tier="viirs"):
+    """One detection a day, same cell, `n_days` distinct days from `first_day`."""
+    return [hs(lat, lon, T(first_day + i, 12), tier=tier) for i in range(n_days)]
+
+
+def test_static_source_is_dropped_from_events():
+    # A single cell detected STATIC_CELL_DAYS days running: a refinery flare,
+    # not a fire (a real fire's front moves; measured max 12 distinct days on
+    # one cell across every fire in the prod archive, including 21-28 day ones).
+    rows = _daily(*A, 1, STATIC_CELL_DAYS)
+    assert cluster(rows, now=T(STATIC_CELL_DAYS + 1, 0)) == {}
+
+
+def test_moving_fire_is_never_static_even_over_many_days():
+    # Same total span as the flare above, but the front moves to a fresh
+    # adjacent cell every day — no cell repeats, so nothing is static.
+    c0 = h3.latlng_to_cell(*A, 8)
+    far = h3.grid_ring(c0, STATIC_CELL_DAYS)[0]
+    path = h3.grid_path_cells(c0, far)[: STATIC_CELL_DAYS + 5]
+    rows = [hs(*h3.cell_to_latlng(c), T(1 + i, 12)) for i, c in enumerate(path)]
+    ev = cluster(rows, now=T(len(path) + 1, 0))
+    assert len(ev) == 1 and len(next(iter(ev.values()))) == len(rows)
+
+
+def test_static_cell_day_boundary():
+    assert cluster(_daily(*A, 1, STATIC_CELL_DAYS - 1), now=T(30, 0)) != {}
+    assert cluster(_daily(*A, 1, STATIC_CELL_DAYS), now=T(30, 0)) == {}
+
+
+def test_static_source_with_jitter_cells_is_dropped_as_one_event():
+    # A flare core (30 static days) plus a handful of detections on an
+    # adjacent cell (3 days, not static alone) that chain into the SAME event
+    # via 48h adjacency: the whole event is static (share of members in
+    # static cells >= STATIC_EVENT_FRAC), jitter cells included.
+    core = h3.latlng_to_cell(*A, 8)
+    jitter = h3.grid_disk(core, 1)[1]
+    rows = _daily(*A, 1, 30) + [hs(*h3.cell_to_latlng(jitter), T(d, 13)) for d in (5, 15, 25)]
+    ev = cluster(rows, now=T(31, 0))
+    assert ev == {}
+
+
+def _padded(lat, lon, first_day, n):
+    """`n` detections at (lat, lon) across at most 2 distinct days (hourly),
+    never enough days to be static on its own however large `n` is."""
+    return [hs(lat, lon, T(first_day + i // 24, i % 24)) for i in range(n)]
+
+
+def test_static_event_share_boundary():
+    # A fire that spreads INTO a flare stays real if the flare is a small
+    # enough share of its detections; becomes static once the flare crosses
+    # STATIC_EVENT_FRAC of the event's members. assert STATIC_EVENT_FRAC == 0.5.
+    assert STATIC_EVENT_FRAC == 0.5
+    core = h3.latlng_to_cell(*A, 8)
+    jitter = h3.cell_to_latlng(h3.grid_disk(core, 1)[1])
+    flare = _daily(*A, 1, 30)  # 30 static-cell members, latest on day 30
+    below = flare + _padded(*jitter, 1, 31)  # 61 total, 30/61 = 0.49
+    assert len(cluster(below, now=T(31, 0))) == 1
+    exactly = flare + _padded(*jitter, 1, 30)  # 60 total, 30/60 = 0.50 exactly -> dropped (>=)
+    assert cluster(exactly, now=T(31, 0)) == {}
+    above = flare + _padded(*jitter, 1, 28)  # 58 total, 30/58 = 0.52
+    assert cluster(above, now=T(31, 0)) == {}
+
+
+def test_fresh_meteosat_fire_over_a_static_polar_source_is_suppressed():
+    """A static source must still feed the Meteosat suppression mask (it is
+    dropped from EVENTS, not from existence) — otherwise an MTG pixel sitting
+    on a known flare becomes a "fresh fire" the moment the flare's own polar
+    event is filtered out. True whether the flare's latest detection is
+    inside the window or long past it (a paused flare is still a flare)."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    polar = _daily(*A, 1, STATIC_CELL_DAYS)  # July, latest day 20 — >14 days before `now`
+    fresh = hs(*A, now - timedelta(minutes=10), tier="meteosat")
+    ev = cluster(polar + [fresh], now)
+    assert ev == {}, "no polar event (dropped as static) and no MTG event (suppressed by it)"
 
 
 def test_reactivation_lineage():

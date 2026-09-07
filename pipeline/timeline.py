@@ -12,14 +12,26 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+def build_timeline(
+    rows: list[dict], now: datetime, days: int = 30, exclude_ids: set[str] | None = None
+) -> list[dict]:
+    """[{date, count, frp}] per UTC day for the last `days`, oldest first.
 
-def build_timeline(rows: list[dict], now: datetime, days: int = 30) -> list[dict]:
-    """[{date, count, frp}] per UTC day for the last `days`, oldest first."""
+    `exclude_ids` (src_id) drops the exact detections belonging to events
+    events.cluster() classified as static heat sources (flares, refineries,
+    oil fields), so the histogram reads the trend in wildfire activity, not a
+    constant industrial floor: measured on the prod archive, such detections
+    are 17.7% of the total (10-49% on any given day). By src_id, not by
+    cell: a cell can host a real, KEPT event alongside a dropped static one
+    (e.g. a fire that spread into a flare's cell but stayed under
+    STATIC_EVENT_FRAC) — excluding the whole cell would undercount that real
+    event's own detections here while the map still shows it in full."""
     start = (now - timedelta(days=days - 1)).date()
+    exclude = exclude_ids or set()
     counts: dict[str, int] = {}
     frp: dict[str, float] = {}
     for r in rows:
-        if r["tier"] == "meteosat":
+        if r["tier"] == "meteosat" or r["src_id"] in exclude:
             continue
         d = r["acq_time"].date()
         if d < start or r["acq_time"] > now:

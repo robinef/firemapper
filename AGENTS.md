@@ -37,6 +37,7 @@ npm test           # vitest
   (`h3_r4/6/7/8`). Query through `pipeline/store.py::connect()` — don't hand-roll
   parquet reads. `connect_h3()` adds the community `h3` extension for adjacency.
 - **Clustering** groups detections into events by H3 adjacency + a 48 h window; a second pass (polar tier only) lets fires of ≥20 cells bridge a one-cell gap (`BRIDGE_K`/`BRIDGE_MIN_CELLS` in `pipeline/events.py`).
+- **Static heat sources** (flares, refineries, oil fields, volcanoes) chain into fake months-long "fires" once history is bounded by `MAX_FIRE_DAYS` rather than the display window. A cell detected on ≥`STATIC_CELL_DAYS` distinct days is fixed, not a wildfire (a real fire's front moves); an event with ≥`STATIC_EVENT_FRAC` of its detections in such cells is dropped from events, scars, the timeline and the day-slice histogram (`pipeline/events.py::static_cells`/`is_static`, `pipeline/config.py`). The **live FRP heatmap is deliberately exempt** — it is the raw 10-min sensor layer; a flare renders as a hot pixel there, never as a fire event. Verify a filter change with `uv run python -m scripts.replay_static_sources <hotspots.parquet>` against a real archive.
   Both passes build their edges in SQL (`events._edges_sql`, `events._bridge_edges_sql`); a differential test
   guards that they match a pure-Python reference exactly.
 - **Sensor fusion:** VIIRS/MODIS own event geometry + ignition dates; live
