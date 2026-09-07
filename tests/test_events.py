@@ -305,6 +305,89 @@ def test_lifecycle_thresholds():
     assert lifecycle(members, T(22, 5), now=T(22, 6)) == "active"  # meteosat 1 h ago
 
 
+def _long_fire(first_day, last_day):
+    """One detection every 36 h from first_day to last_day — a single chained
+    event (each gap < CLOSE_AFTER_H)."""
+    rows, t = [], T(first_day, 0)
+    while t <= T(last_day, 0):
+        rows.append(hs(*A, t))
+        t += timedelta(hours=36)
+    return rows
+
+
+def test_window_is_on_the_latest_detection_so_ids_and_footprints_do_not_erode():
+    """A fire is in the window while its LATEST detection is; its earlier
+    detections stay part of it however old they are. Cutting ROWS at the
+    window instead made a long fire lose its first days one refresh at a
+    time: the id (seeded on the earliest member) changed daily, every shared
+    link died within a day, the archive gained a new track file per day for
+    the same fire, and the footprint shrank. Gironde 2026: 337bec… →
+    09336ed7… → 9a402540… between three refreshes."""
+    rows = _long_fire(1, 20)  # 20 days of detections
+    early = cluster(rows, now=T(21, 0))          # cutoff day 7: days 1-6 already "old"
+    late = cluster(rows, now=T(30, 0))           # cutoff day 16: first 15 days are "old"
+    assert len(early) == len(late) == 1
+    assert next(iter(late)) == next(iter(early)), "id must not change as the window slides"
+    assert len(next(iter(late.values()))) == len(rows), "footprint must stay complete"
+    # ...and the same fire is the same event whichever window asks for it.
+    assert cluster(rows, now=T(30, 0), window_days=45) == late
+
+
+def test_window_drops_a_fire_whose_latest_detection_is_too_old():
+    rows = _long_fire(1, 5)
+    assert len(cluster(rows, now=T(10, 0))) == 1
+    assert cluster(rows, now=T(25, 0)) == {}  # latest day 5, cutoff day 11
+
+
+def test_window_ignores_detections_from_the_future():
+    rows = [hs(*A, T(20, 0)), hs(*A, T(22, 0))]
+    ev = cluster(rows, now=T(21, 0))
+    assert [m["acq_time"] for ms in ev.values() for m in ms] == [T(20, 0)]
+
+
+def test_rows_older_than_max_fire_days_are_not_clustered():
+    # The one bound left on history: a fire that has burned longer than
+    # MAX_FIRE_DAYS loses its oldest rows (and so still erodes) — the price of
+    # a flat runtime. Pins the constant's effect, not just its value.
+    from datetime import datetime, timezone
+
+    from pipeline.config import MAX_FIRE_DAYS
+
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    rows, t = [], now - timedelta(days=MAX_FIRE_DAYS + 5)
+    while t <= now:
+        rows.append(hs(*A, t))
+        t += timedelta(hours=36)
+    (members,) = cluster(rows, now).values()
+    assert len(members) < len(rows)
+    assert min(m["acq_time"] for m in members) >= now - timedelta(days=MAX_FIRE_DAYS)
+
+
+def test_recent_events_is_the_live_subset_of_the_scar_set():
+    from pipeline.events import recent_events
+
+    ev = cluster(_long_fire(1, 5) + [hs(*A, T(20, 0)), hs(*A, T(21, 0))], now=T(22, 0), window_days=45)
+    assert len(ev) == 2
+    live = recent_events(ev, T(22, 0), 14)  # cutoff day 8: only the second fire
+    assert len(live) == 1
+    assert max(m["acq_time"] for m in next(iter(live.values()))) == T(21, 0)
+
+
+def test_fresh_meteosat_fire_over_a_stale_polar_scar_is_kept():
+    """The polar-under-MTG suppression must only consider polar events IN
+    the window. Over a season stale polar events cover most burnable land;
+    a fresh MTG-only fire on a 60-day-old scar was suppressed by the stale
+    event and then the stale event was dropped — the fire in neither set."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    stale = hs(*A, now - timedelta(days=60))
+    fresh = hs(*A, now - timedelta(minutes=10), tier="meteosat")
+    ev = cluster([stale, fresh], now)
+    assert len(ev) == 1
+    assert [m["tier"] for m in next(iter(ev.values()))] == ["meteosat"]
+
+
 def test_reactivation_lineage():
     old = [hs(*A, T(10, 0))]
     new = [hs(*A, T(14, 0))]  # 96 h later, same cell

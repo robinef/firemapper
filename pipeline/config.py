@@ -44,6 +44,11 @@ ARCHIVE_TRACKS_INDEX = "archive/tracks_index.json"  # {id: sha256 of its archive
 # uses it) so export.py's coverage.py can read it too without run.py <-> export.py
 # becoming a circular import.
 SCAR_WINDOW_DAYS = 45
+# Both windows above are on a fire's LATEST detection (events.cluster). Rows
+# older than this before `now` are not clustered at all — the bound that keeps
+# runtime flat as the archive grows. A fire is complete, with a stable id, as
+# long as it started within this many days; one longer still erodes.
+MAX_FIRE_DAYS = 90
 
 
 @dataclass(frozen=True)

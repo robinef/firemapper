@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import h3
 
-from .config import H3_RES
+from .config import H3_RES, MAX_FIRE_DAYS
 from .metrics import CELL_KM2
 from .store import cell_at
 
@@ -233,29 +233,46 @@ def cluster(
     clustered at METEOSAT_RES so ~2 km pixels join. With no polar data at all
     (no FIRMS key), every event comes from Meteosat.
     """
-    cutoff = now - timedelta(days=window_days)
-    in_window = [r for r in rows if cutoff <= r["acq_time"] <= now]
+    # The window is on a fire's LATEST detection, applied to events after
+    # clustering — not to rows before it. Cutting rows at the window made a
+    # long fire lose its first days one refresh at a time: its id (seeded on
+    # the earliest member) changed daily, shared links died within a day, the
+    # archive gained a track file per day for the same fire, and the footprint
+    # shrank (Gironde 2026: three ids across three refreshes). Rows are bounded
+    # at MAX_FIRE_DAYS before `now` — not before the cutoff — so what a fire
+    # contains, and hence its id, depends only on (rows, now), never on which
+    # window asked.
+    oldest = now - timedelta(days=MAX_FIRE_DAYS)
+    in_window = [r for r in rows if oldest <= r["acq_time"] <= now]
     polar = [r for r in in_window if r["tier"] != "meteosat"]
     meteo = [r for r in in_window if r["tier"] == "meteosat"]
 
-    if not polar:
-        return _cluster_one(meteo, METEOSAT_RES) if meteo else {}
+    events = recent_events(_cluster_one(polar, H3_RES, bridge=True), now, window_days)
+    if meteo:
+        # Res-7 footprint of every polar event IN THE WINDOW, for the overlap
+        # test. Stale polar events must not take part: over a season they
+        # cover most burnable land, and a fresh MTG-only fire over one would
+        # be suppressed here and then its suppressor dropped — in neither set.
+        polar_cells7: set[str] = set()
+        for members in events.values():
+            for c in {cell_at(m, METEOSAT_RES) for m in members}:
+                polar_cells7 |= set(h3.grid_disk(c, 1))
+        # Keep only Meteosat-only fires (no polar event under them).
+        for eid, members in _cluster_one(meteo, METEOSAT_RES).items():
+            if any(m["cell"] in polar_cells7 for m in members):
+                continue
+            events[eid] = members
+    return recent_events(events, now, window_days)
 
-    events = _cluster_one(polar, H3_RES, bridge=True)
-    if not meteo:
-        return events
 
-    # Res-7 footprint of every polar event, for the overlap test.
-    polar_cells7: set[str] = set()
-    for members in events.values():
-        for m in members:
-            polar_cells7 |= set(h3.grid_disk(cell_at(m, METEOSAT_RES), 1))
-    # Keep only Meteosat-only fires (no polar event under them).
-    for eid, members in _cluster_one(meteo, METEOSAT_RES).items():
-        if any(m["cell"] in polar_cells7 for m in members):
-            continue
-        events[eid] = members
-    return events
+def recent_events(
+    events: dict[str, list[dict]], now: datetime, window_days: int
+) -> dict[str, list[dict]]:
+    """The events whose latest detection falls within `window_days` of `now`.
+    The one definition of "in the window" — cluster() applies it, and run.py
+    derives the live set from the scar set with it."""
+    cutoff = now - timedelta(days=window_days)
+    return {eid: ms for eid, ms in events.items() if max(m["acq_time"] for m in ms) >= cutoff}
 
 
 def lifecycle(members: list[dict], meteosat_latest: datetime | None, now: datetime) -> str:
