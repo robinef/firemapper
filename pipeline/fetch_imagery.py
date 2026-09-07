@@ -146,9 +146,9 @@ def build_scars(
 
     A fire whose latest detection is within ACTIVE_MAX_H is "active"; one quiet
     longer than that is "past" (last month's fires). Specks below MIN_MEMBERS
-    are dropped, each section is capped at MAX_SCARS, and the two sections are
-    ranked differently on purpose — see the sort below. Tiles are the keyless
-    GIBS true-colour layer client-side, so no per-scar fetch here.
+    are dropped, each section is capped at MAX_SCARS and ranked by size — see
+    the sort below. Tiles are the keyless GIBS true-colour layer client-side,
+    so no per-scar fetch here.
 
     `archived_ids` names past fires that already have a permanent per-fire
     track (see archive_tracks.py) — those get `track_gen: "archive"` so the
