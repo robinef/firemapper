@@ -23,6 +23,17 @@ CLOSE_AFTER_H = 48
 # asymmetry — a 14 km² blob skipping a cell is one fire; two 1-cell specks
 # 1.7 km apart are two — and cuts that to 466 pairs. Only polar (VIIRS/MODIS)
 # events bridge; Meteosat already clusters at the coarser res 7.
+#
+# The gate is per PASS-1 component and the pass runs once: two 19-cell halves
+# never bridge each other, and a fragment absorbed this pass does not extend
+# the reach to its own ring-2 neighbours. Iterating to a fixpoint or gating on
+# the union's size would reopen the agricultural-cluster problem measured
+# above. Edges are unioned transitively, so one speck two rings from each of
+# two big fires welds them — 4 rings (~3.4 km) apart with a hot spot in
+# between is a fire complex, which is the right answer. Ids follow the
+# existing "earliest detection wins" rule (event_id_for): when the absorbed
+# fragment was detected first, the big fire takes the fragment's id — the
+# same thing a pass-1 merge has always done.
 BRIDGE_K = 2
 BRIDGE_MIN_CELLS = 20
 # Meteosat pixels sit ~2 km apart; at H3 res 8 (~0.46 km edge) k-ring-1 never
@@ -127,44 +138,48 @@ def _edges_sql(rows: list[dict], res: int) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in rel]
 
 
-def _bridge_edges_sql(
-    rows: list[dict], res: int, comp: list[int], big: set[int]
-) -> list[tuple[int, int]]:
+def _bridge_edges_sql(rows: list[dict], res: int, comp: list[int]) -> list[tuple[int, int]]:
     """Pass-2 edges, as (component, component) pairs: two pass-1 components
-    join when at least one is in `big` (≥ BRIDGE_MIN_CELLS cells) and any pair
-    of their members sits within BRIDGE_K rings and CLOSE_AFTER_H of each
-    other. Same DuckDB h3 machinery as _edges_sql; the size gate is applied in
-    SQL so the ring expansion only ever fans out from big components."""
+    join when at least one spans ≥ BRIDGE_MIN_CELLS distinct cells and any
+    pair of their members sits exactly BRIDGE_K rings and ≤ CLOSE_AFTER_H
+    apart. Same DuckDB h3 machinery as _edges_sql. The size gate lives HERE,
+    in SQL, as the single encoding of "big": the ring fan-out only ever starts
+    from big components, and there is no Python short-circuit that could mask
+    a broken gate. Ring BRIDGE_K only (not the full disk): any cross-component
+    pair closer than that and within the window would already have been
+    unioned by pass 1."""
     import pyarrow as pa
 
     from .store import _naive_utc, connect_h3
 
     tbl = pa.table(
         {
-            "rid": list(range(len(rows))),
             "lat": [float(r["lat"]) for r in rows],
             "lon": [float(r["lon"]) for r in rows],
             "acq_time": [_naive_utc(r["acq_time"]) for r in rows],
             "comp": comp,
-            "big": [c in big for c in comp],
         }
     )
     con = connect_h3()
     con.register("arrow_n", tbl)
     con.execute(
-        f"CREATE TEMP TABLE n AS SELECT rid, h3_latlng_to_cell(lat, lon, {int(res)}) AS cell, "
-        f"acq_time, comp, big FROM arrow_n"
+        f"CREATE TEMP TABLE n AS SELECT h3_latlng_to_cell(lat, lon, {int(res)}) AS cell, "
+        f"acq_time, comp FROM arrow_n"
     )
     rel = con.execute(
         f"""
-        WITH disk AS (  -- fan out from BIG components only
-            SELECT comp, acq_time, unnest(h3_grid_disk(cell, {int(BRIDGE_K)})) AS ncell
-            FROM n WHERE big
+        WITH big AS (
+            SELECT comp FROM n GROUP BY comp
+            HAVING count(DISTINCT cell) >= {int(BRIDGE_MIN_CELLS)}
+        ),
+        ring AS (  -- fan out from big components only, one row per (comp, cell, time)
+            SELECT n.comp, n.acq_time, unnest(h3_grid_ring_unsafe(n.cell, {int(BRIDGE_K)})) AS ncell
+            FROM (SELECT DISTINCT comp, cell, acq_time FROM n) n JOIN big USING (comp)
         )
-        SELECT DISTINCT d.comp, b.comp
-        FROM disk d JOIN n b ON b.cell = d.ncell
-        WHERE d.comp <> b.comp
-          AND abs(epoch(d.acq_time) - epoch(b.acq_time)) <= {int(CLOSE_AFTER_H)} * 3600
+        SELECT DISTINCT r.comp, b.comp
+        FROM ring r JOIN n b ON b.cell = r.ncell
+        WHERE r.comp <> b.comp
+          AND abs(epoch(r.acq_time) - epoch(b.acq_time)) <= {int(CLOSE_AFTER_H)} * 3600
         """
     ).fetchall()
     return [(int(a), int(b)) for a, b in rel]
@@ -192,13 +207,8 @@ def _cluster_one(rows: list[dict], res: int, bridge: bool = False) -> dict[str, 
 
     if bridge:
         comp = [uf.find(i) for i in range(len(nodes))]
-        cells_of: dict[object, set[str]] = defaultdict(set)
-        for i, c in enumerate(comp):
-            cells_of[c].add(nodes[i]["cell"])
-        big = {c for c, cs in cells_of.items() if len(cs) >= BRIDGE_MIN_CELLS}
-        if big:
-            for a, b in _bridge_edges_sql(rows, res, comp, big):
-                uf.union(a, b)
+        for a, b in _bridge_edges_sql(rows, res, comp):
+            uf.union(a, b)
 
     comps: dict[object, list[dict]] = defaultdict(list)
     for i, n in enumerate(nodes):

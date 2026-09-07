@@ -112,10 +112,45 @@ def test_big_fire_bridges_a_one_cell_gap():
 def test_small_fires_do_not_bridge_a_one_cell_gap():
     # Neither side reaches BRIDGE_MIN_CELLS: two agricultural burns 1.7 km
     # apart on the same afternoon stay two fires (pass-1 behaviour).
-    a = [hs(*A, T(20, 0)) for _ in range(3)]
+    a = [hs(*A, T(20, h)) for h in range(3)]
     far = _cell_at_distance({h3.latlng_to_cell(*A, 8)}, BRIDGE_K)
-    b = [hs(*h3.cell_to_latlng(far), T(20, 1)) for _ in range(3)]
+    b = [hs(*h3.cell_to_latlng(far), T(20, h)) for h in range(3)]
     assert len(cluster(a + b, now=T(21, 0))) == 2
+
+
+def _blob(n_cells, t):
+    """A contiguous fire of exactly `n_cells` cells (one detection each)."""
+    cells = list(h3.grid_disk(CENTER, 2))  # 19 cells
+    for c in h3.grid_ring(CENTER, 3):
+        if len(cells) >= n_cells:
+            break
+        cells.append(c)
+    cells = cells[:n_cells]
+    assert len(cells) == n_cells
+    return [hs(*h3.cell_to_latlng(c), t) for c in cells]
+
+
+def test_bridge_size_gate_boundary():
+    # Exactly BRIDGE_MIN_CELLS bridges; one fewer does not.
+    assert BRIDGE_MIN_CELLS == 20
+    for n, expected in ((19, 2), (20, 1)):
+        blob = _blob(n, T(20, 0))
+        blob_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in blob}
+        assert len(blob_cells) == n
+        far = _cell_at_distance(blob_cells, BRIDGE_K)
+        speck = [hs(*h3.cell_to_latlng(far), T(20, 0))]
+        assert len(cluster(blob + speck, now=T(21, 0))) == expected, n
+
+
+def test_bridge_window_boundary():
+    # Exactly CLOSE_AFTER_H apart bridges; one minute more does not.
+    big = _disk_fire(CENTER, 3, T(20, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    edge = T(20, 0) + timedelta(hours=CLOSE_AFTER_H)
+    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), edge)], now=T(23, 0))) == 1
+    over = edge + timedelta(minutes=1)
+    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), over)], now=T(23, 0))) == 2
 
 
 def test_bridge_never_reaches_past_two_rings():
