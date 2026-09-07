@@ -36,6 +36,21 @@ CLOSE_AFTER_H = 48
 # same thing a pass-1 merge has always done.
 BRIDGE_K = 2
 BRIDGE_MIN_CELLS = 20
+# Bridging's OWN time reach, wider than CLOSE_AFTER_H. Live 2026-07-21..08-02 a
+# real ~80 km² Var fire (542 detections, peak 480 MW) split into two ~40 km²
+# fragments, each too small to crack the past-scars size ranking the merged
+# fire easily would. The two halves' nearest members sit 143 h apart (a real
+# multi-day lull/rekindle, not a single cloudy overpass) — CLOSE_AFTER_H
+# (tuned for "when is a fire done", not "how long can it stay cold and still
+# be the same fire") is far too tight to catch it. Measured on the prod
+# archive same as BRIDGE_K above: 48h→472 pairs, 96h→770, 120h→878, 168h→1102
+# — gradual throughout, no cliff like the spatial k=1→2 jump (466→8556) that
+# justified gating bridging on size in the first place; BRIDGE_MIN_CELLS≥20
+# is what keeps this safe at any of these values, not the time number itself.
+# 168h (7 days) covers the 143h case with a day of headroom. Only
+# lifecycle()'s closed/stale status keeps CLOSE_AFTER_H — a fire can be
+# reported "closed" well before its own fragments are done bridging.
+BRIDGE_TIME_H = 168
 # Meteosat pixels sit ~2 km apart; at H3 res 8 (~0.46 km edge) k-ring-1 never
 # connects them and every pixel becomes its own "fire". Res 7 cells (~5.2 km²)
 # make adjacent MTG pixels neighbours.
@@ -141,7 +156,7 @@ def _edges_sql(rows: list[dict], res: int) -> list[tuple[int, int]]:
 def _bridge_edges_sql(rows: list[dict], res: int, comp: list[int]) -> list[tuple[int, int]]:
     """Pass-2 edges, as (component, component) pairs: two pass-1 components
     join when at least one spans ≥ BRIDGE_MIN_CELLS distinct cells and any
-    pair of their members sits exactly BRIDGE_K rings and ≤ CLOSE_AFTER_H
+    pair of their members sits exactly BRIDGE_K rings and ≤ BRIDGE_TIME_H
     apart. Same DuckDB h3 machinery as _edges_sql. The size gate lives HERE,
     in SQL, as the single encoding of "big": the ring fan-out only ever starts
     from big components, and there is no Python short-circuit that could mask
@@ -179,7 +194,7 @@ def _bridge_edges_sql(rows: list[dict], res: int, comp: list[int]) -> list[tuple
         SELECT DISTINCT r.comp, b.comp
         FROM ring r JOIN n b ON b.cell = r.ncell
         WHERE r.comp <> b.comp
-          AND abs(epoch(r.acq_time) - epoch(b.acq_time)) <= {int(CLOSE_AFTER_H)} * 3600
+          AND abs(epoch(r.acq_time) - epoch(b.acq_time)) <= {int(BRIDGE_TIME_H)} * 3600
         """
     ).fetchall()
     return [(int(a), int(b)) for a, b in rel]

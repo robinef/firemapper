@@ -7,6 +7,7 @@ from pipeline.metrics import CELL_KM2, area_km2
 from pipeline.fetch_imagery import (
     BASELINE_LEAD_DAYS,
     MAX_SCARS,
+    PAST_MAX_SCARS,
     HD_PROXY_PATH,
     build_imagery,
     hd_config,
@@ -161,6 +162,14 @@ def test_baseline_lead_reasonable():
     assert 3 <= BASELINE_LEAD_DAYS <= 14
 
 
+def test_past_cap_gives_headroom_beyond_the_active_cap():
+    """Live 2026-09-07 a real ~80 km² Var fire barely cracked a past cap of
+    25 (rank 24, cutoff ~77 km²) — one bigger EU fire the next day would have
+    bumped it right back out. Past must stay wider than active: it competes
+    against a whole season of fires, not just today's."""
+    assert PAST_MAX_SCARS > MAX_SCARS
+
+
 def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
     """A significant fire must survive a flurry of small fresh ones.
 
@@ -171,12 +180,12 @@ def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
     the docstring always claimed this did.
     """
     events = {"big": _fire(-0.6, 44.8, 20, "Bordeaux", n=40, start_day=18)}
-    for i in range(MAX_SCARS + 5):  # newer, but each tiny
+    for i in range(PAST_MAX_SCARS + 5):  # newer, but each tiny
         events[f"small{i}"] = _fire(10.0 + i, 40.0, 24, f"Small{i}", n=5, start_day=24)
 
     past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
 
-    assert len(past) <= MAX_SCARS
+    assert len(past) <= PAST_MAX_SCARS
     assert past[0]["place"] == "Bordeaux", "biggest past scar must rank first"
     assert any(s["place"] == "Bordeaux" for s in past), "big fire must not be crowded out"
 
@@ -221,7 +230,7 @@ def test_past_scars_rank_by_footprint_not_by_detection_count():
     assert len(chatty) > len(wide)
 
     events = {"chatty": chatty, "wide": wide}
-    for i in range(MAX_SCARS):  # fill the cap with mid-sized single-cell chatty sources
+    for i in range(PAST_MAX_SCARS):  # fill the cap with mid-sized single-cell chatty sources
         events[f"mid{i}"] = _fire(20.0 + i, 40.0, 10, f"Mid{i}", n=100, start_day=8, step=0)
 
     past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]

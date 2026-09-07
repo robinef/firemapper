@@ -25,3 +25,4 @@ web/dist/
 
 # wrangler local state (dev server cache, asset manifests)
 .wrangler/
+.firecrawl/
