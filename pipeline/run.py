@@ -7,21 +7,16 @@ from pathlib import Path
 
 from .archive_tracks import archive_past_tracks, previous_archive_index
 from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
-from .store import read_hotspots, write_points
-from .enrich import MIN_PLACES, fetch_gdacs, load_places
+from .day_slices import build_day_slices
+from .enrich import MIN_PLACES, Places, fetch_gdacs, load_places
 from .events import cluster
 from .export import export
-from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_effis import fetch_effis_ba
 from .fetch_effis_season import fetch_season_snapshot
-from .fetch_effis_stats import fetch_stats_snapshot, snapshot_path as stats_snapshot_path
+from .fetch_effis_stats import fetch_stats_snapshot
+from .fetch_effis_stats import snapshot_path as stats_snapshot_path
+from .fetch_firms import fetch_firms, fetch_firms_history
 from .fetch_imagery import build_imagery
-from .fetch_result import FetchResult, attempt, newest_timestamp
-from .scale import pick_unit
-from .season import season_totals
-from .timeline import build_timeline
-from .day_slices import build_day_slices
-from .fetch_wind import fetch_wind, wind_sample_points
 from .fetch_meteosat import (
     EUMETVIEW_WMS,
     MTG_FRP_LAYER,
@@ -30,6 +25,12 @@ from .fetch_meteosat import (
     liveness_for_events,
     mtg_frp_extent,
 )
+from .fetch_result import FetchResult, attempt, newest_timestamp
+from .fetch_wind import fetch_wind, wind_sample_points
+from .scale import pick_unit
+from .season import season_totals
+from .store import read_hotspots, write_points
+from .timeline import build_timeline
 
 
 def _load_rows(settings: Settings) -> list[dict]:
@@ -81,8 +82,8 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     events = cluster(rows, now)
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
-    places_file = settings.data_dir / "places" / "cities15000.txt"
-    places = load_places(places_file, min_places=MIN_PLACES) if places_file.exists() else []
+    places_file = settings.data_dir / "places" / "cities5000.txt"
+    places = load_places(places_file, min_places=MIN_PLACES) if places_file.exists() else Places([])
     # Say so. A missing gazetteer degrades silently — every fire and scar just
     # loses its place name and gets called "Burn scar · <date>" — which is how
     # the refresh workflows ran without it for a long time unnoticed.

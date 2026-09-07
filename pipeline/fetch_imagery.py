@@ -26,9 +26,13 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .events import cell_km2_for
 from .metrics import area_km2
+
+if TYPE_CHECKING:
+    from .enrich import Places
 
 # GIBS true-colour layers (keyless). MODIS Terra is the daily default; VIIRS is
 # an alternative. Corrected-reflectance = natural colour.
@@ -96,19 +100,18 @@ def _label_for(place: str | None, start: date, past: bool) -> str:
 
 
 def _scar_from_fire(eid: str, members: list, today: date, past: bool,
-                    places: list | None = None, track_gen: str | None = None) -> dict:
-    from .enrich import nearest_place
+                    places: Places | None = None, track_gen: str | None = None) -> dict:
+    from .enrich import place_for
+    from .metrics import centroid
 
-    lons = [m["lon"] for m in members]
-    lats = [m["lat"] for m in members]
-    lat = sum(lats) / len(lats)
-    lon = sum(lons) / len(lons)
+    lat, lon = centroid(members)
     start = min(m["acq_time"] for m in members).date()
     before, after = _scar_dates(start, today, past=past)
-    # A stored place name wins; otherwise reverse-geocode the centroid.
+    # A stored place name wins; otherwise the town nearest a burnt cell (same
+    # rule as the live fire card — enrich.place_for).
     name = members[0].get("name")
     if not name and places:
-        p = nearest_place(lat, lon, places)
+        p = place_for(members, places)
         name = p["name"] if p else None
     # Same sensor-aware cell size the live fire card uses (events.py).
     cell_km2 = cell_km2_for(members)
@@ -139,7 +142,7 @@ def quiet_hours(members: list, now: datetime) -> float:
 
 
 def build_scars(
-    events: dict, now: datetime, places: list | None = None,
+    events: dict, now: datetime, places: Places | None = None,
     archived_ids: set[str] | None = None,
 ) -> list[dict]:
     """Compare-able burn scars from our own fire detections, split by lifecycle.
@@ -228,7 +231,7 @@ def _dedup_scars(scars: list[dict]) -> list[dict]:
 
 
 def build_imagery(
-    settings, events: dict, now: datetime, places: list | None = None,
+    settings, events: dict, now: datetime, places: Places | None = None,
     extra_scars: list[dict] | None = None, archived_ids: set[str] | None = None,
 ) -> dict | None:
     """Imagery config for the manifest: keyless GIBS layer + per-scar dates,

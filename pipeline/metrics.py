@@ -15,6 +15,13 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def centroid(members: list[dict]) -> tuple[float, float]:
+    """Mean (lat, lon) of a fire's detections — the marker position and the
+    anchor for place lookups. One definition so those two never drift."""
+    n = len(members)
+    return sum(m["lat"] for m in members) / n, sum(m["lon"] for m in members) / n
+
+
 def bearing_deg(lat1, lon1, lat2, lon2) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dl = math.radians(lon2 - lon1)

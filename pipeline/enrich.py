@@ -1,26 +1,64 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections import defaultdict
+from collections.abc import Callable, Iterator
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Callable
+
+import h3
 
 from .config import EUROPE_BBOX
-from .metrics import haversine_m
+from .metrics import centroid, haversine_m
+
+# The gazetteer index: H3 res 4 (~22 km edge, metric-uniform unlike a lat/lon
+# grid) and a 5-ring disk (91 cells) around a query point. The disk reaches
+# ≥ 135 km in every direction, past the 100 km labelling cutoff, so a lookup
+# never needs a fallback scan and never misses a nearer town just outside
+# its block.
+_INDEX_RES = 4
+_INDEX_K = 5
+MAX_PLACE_KM = 100.0
+
+
+class Places:
+    """The gazetteer, list-like plus a spatial index.
+
+    cities5000 has ~22k European places. nearest_place() as a brute-force
+    min() over them cost ~6 ms a call, ~55 s per run for the live events
+    alone; the index brings a lookup to a few dozen candidates.
+    """
+
+    def __init__(self, places: list[dict]):
+        self._all = list(places)
+        self._idx: dict[str, list[dict]] = defaultdict(list)
+        for p in self._all:
+            self._idx[h3.latlng_to_cell(p["lat"], p["lon"], _INDEX_RES)].append(p)
+
+    def __len__(self) -> int:
+        return len(self._all)
+
+    def __iter__(self) -> Iterator[dict]:
+        return iter(self._all)
+
+    def around(self, lat: float, lon: float) -> list[dict]:
+        """Every place within MAX_PLACE_KM of the point (and some beyond)."""
+        origin = h3.latlng_to_cell(lat, lon, _INDEX_RES)
+        return [p for c in h3.grid_disk(origin, _INDEX_K) for p in self._idx.get(c, ())]
 
 _NS = {"gdacs": "http://www.gdacs.org", "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#"}
 
 
-# Europe alone has thousands of settlements over 15k people in the GeoNames
-# extract. A parse yielding fewer than this is a truncated, swapped or
-# half-downloaded file, not a real gazetteer. The download is unpinned by
-# necessity — GeoNames regenerates the archive daily, so a fixed checksum would
-# take the refresh down within a day — which makes a plausibility floor the
-# integrity check that actually holds.
-MIN_PLACES = 500
+# The GeoNames cities5000 extract holds ~22k European settlements. A parse
+# yielding fewer than this is a truncated, swapped or half-downloaded file,
+# not a real gazetteer. The download is unpinned by necessity — GeoNames
+# regenerates the archive daily, so a fixed checksum would take the refresh
+# down within a day — which makes a plausibility floor the integrity check
+# that actually holds.
+MIN_PLACES = 2000
 
 
-def load_places(path: Path, min_places: int = 0) -> list[dict]:
+def load_places(path: Path, min_places: int = 0) -> Places:
     """European settlements from a GeoNames cities extract.
 
     Malformed rows are skipped rather than fatal: this is a multi-megabyte
@@ -47,10 +85,27 @@ def load_places(path: Path, min_places: int = 0) -> list[dict]:
             f"implausible gazetteer: {len(out)} European places parsed from {path} "
             f"(expected at least {min_places}) — truncated or wrong file"
         )
-    return out
+    return Places(out)
 
 
-def nearest_place(lat: float, lon: float, places: list[dict], max_km: float = 100.0) -> dict | None:
+def _pick(
+    origin: tuple[float, float], points: list[tuple[float, float]], places: Places, max_km: float
+) -> dict | None:
+    """The place nearest to any of `points` among those around `origin`;
+    None beyond `max_km`. distance_km is to the nearest point."""
+    if not places or not points:
+        return None
+    best, best_m = None, float("inf")
+    for p in places.around(*origin):
+        d = min(haversine_m(p["lat"], p["lon"], la, lo) for la, lo in points)
+        if d < best_m:
+            best, best_m = p, d
+    if best is None or best_m / 1000 > max_km:
+        return None
+    return {"name": best["name"], "distance_km": round(best_m / 1000, 1)}
+
+
+def nearest_place(lat: float, lon: float, places: Places, max_km: float = MAX_PLACE_KM) -> dict | None:
     """Nearest settlement in the gazetteer, or None beyond `max_km`.
 
     EUROPE_BBOX reaches deep into the Atlantic to cover the western coast, so a
@@ -59,13 +114,25 @@ def nearest_place(lat: float, lon: float, places: list[dict], max_km: float = 10
     fire's display name regardless, which is how an offshore glint ends up
     labelled with a real town it isn't anywhere near.
     """
-    if not places:
+    return _pick((lat, lon), [(lat, lon)], places, max_km)
+
+
+def place_for(members: list[dict], places: Places, max_km: float = MAX_PLACE_KM) -> dict | None:
+    """The town a fire should be named after: the one nearest to ANY of its
+    detections (one per burnt cell), searched around the centroid; None if
+    even that is beyond `max_km`. `distance_km` is the distance from the town
+    to the nearest detection — ~0 when the town sits inside the burn.
+
+    A big fire's centroid alone is a poor anchor. The 300 km² Gironde fire of
+    July 2026 got labelled Gujan-Mestras — across the Bassin d'Arcachon —
+    because its centroid happened to be nearer that town than to Arès, where
+    the front actually stopped. One rule, no modes: for a one-cell fire this
+    is exactly nearest_place(centroid).
+    """
+    if not members or not places:
         return None
-    best = min(places, key=lambda p: haversine_m(lat, lon, p["lat"], p["lon"]))
-    distance_km = round(haversine_m(lat, lon, best["lat"], best["lon"]) / 1000, 1)
-    if distance_km > max_km:
-        return None
-    return {"name": best["name"], "distance_km": distance_km}
+    by_cell = {m.get("cell", i): (m["lat"], m["lon"]) for i, m in enumerate(members)}
+    return _pick(centroid(members), list(by_cell.values()), places, max_km)
 
 
 def fetch_gdacs(http_get: Callable[[str], str] | None = None) -> list[dict]:
