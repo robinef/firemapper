@@ -545,3 +545,11 @@ body.compare-mode #timeline { display: none; }
 }
 .layer-filter input { accent-color: #ff6b00; flex: 0 0 auto; }
 .layer-filter:hover { color: var(--fg); }
+
+/* maplibre's own scale control defaults to bottom:0/left:0, which #timeline
+   (full-width, true bottom edge) would sit on top of — lift it clear using
+   the same --timebar offset #rail already uses. */
+.maplibregl-ctrl-bottom-left { bottom: calc(var(--timebar) + 12px); }
+.maplibregl-ctrl-scale {
+  background: var(--panel); border-color: var(--fg); color: var(--fg);
+}

@@ -41,6 +41,7 @@ export function createMap(container: string): maplibregl.Map {
     new ResizeObserver(() => map.resize()).observe(el);
   }
   window.addEventListener("resize", () => map.resize());
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: "metric" }), "bottom-left");
   return map;
 }
 
