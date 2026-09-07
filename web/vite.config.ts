@@ -84,6 +84,7 @@ export default defineConfig({
       input: {
         index: entry("./index.html"),
         scale: entry("./scale.html"),
+        sources: entry("./sources.html"),
       },
       // Not bundled. `output.paths` rewrites the bare specifier to the copied
       // file, so the browser fetches maplibre itself and resolves `shared` and

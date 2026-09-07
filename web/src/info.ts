@@ -35,6 +35,8 @@ export function infoHtml(m: Manifest, now: Date = new Date()): string {
     `<div class="fc-sub">Every layer records how old it is.</div>` +
     `<div class="fc-stats">${rows}</div>` +
     coverageHtml(m) +
+    `<p class="legend-note"><a href="/sources" target="_blank" rel="noopener">` +
+    `Full source list, with details and links →</a></p>` +
     SAFETY
   );
 }
