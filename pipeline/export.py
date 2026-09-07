@@ -16,12 +16,12 @@ from .config import (
     Settings,
 )
 from .coverage import build_coverage
-from .fetch_result import FetchResult
-from .freshness import carried_entry, layer_entry, should_carry
 from .enrich import gdacs_for_event, place_for
 from .events import cell_km2_for, lifecycle, reactivation_links
+from .fetch_result import FetchResult
+from .freshness import carried_entry, layer_entry, should_carry
 from .isochrones import FootprintIndex, isochrone_features, open_band_geometry
-from .metrics import area_km2, bins_series, local_spread_vectors, movement, status
+from .metrics import area_km2, bins_series, centroid, local_spread_vectors, movement, status
 
 RECENT_DAYS = 7
 
@@ -108,10 +108,7 @@ def _events_features(events, liveness, places, alerts, now):
         # Marker sits at the centroid of the WHOLE fire, not just the newest
         # bin — the latter drifts to the active edge and lands the dot off the
         # burn. cell size follows the clustering resolution (Meteosat res 7).
-        cen = [
-            sum(m["lat"] for m in members) / len(members),
-            sum(m["lon"] for m in members) / len(members),
-        ]
+        cen = centroid(members)
         cell_km2 = cell_km2_for(members)
         feats.append(
             {
