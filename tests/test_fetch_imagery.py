@@ -22,12 +22,14 @@ class _Settings:
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
 
 
-def _fire(lon, lat, latest_day, name=None, n=6, start_day=None, res=8):
+def _fire(lon, lat, latest_day, name=None, n=6, start_day=None, res=8, step=0.001):
     """A fire with `n` members; latest detection on `latest_day`. `res` is the
-    H3 clustering resolution (8 = VIIRS default, 7 = Meteosat)."""
+    H3 clustering resolution (8 = VIIRS default, 7 = Meteosat). `step` is the
+    lon spacing between members: 0 keeps them all in one cell, 0.02° (~1.6 km)
+    gives each its own res-8 cell."""
     start = start_day or latest_day
     ms = [
-        {"lon": lon + 0.001 * i, "lat": lat, "name": name,
+        {"lon": lon + step * i, "lat": lat, "name": name,
          "acq_time": datetime(2026, 7, start, tzinfo=timezone.utc)}
         for i in range(n - 1)
     ]
@@ -168,9 +170,37 @@ def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
     assert any(s["place"] == "Bordeaux" for s in past), "big fire must not be crowded out"
 
 
+def test_past_scars_rank_by_footprint_not_by_detection_count():
+    """"Size" is the burned footprint (deduped H3 cells), NOT how many times
+    the satellites re-detected the same pixel.
+
+    Live on 2026-09-07 the Andernos-les-Bains burn (572 detections over 122
+    cells, 85 km²) was missing from the past shortlist while Burglesum (627
+    detections over 12 cells, 8.4 km²) — an industrial heat source re-fired on
+    every pass — sat in it. The cap sorted on the raw member count, so chatty
+    static sources crowded out a real fire with a footprint ten times larger.
+    """
+    # A static source: 200 detections, all in ONE cell.
+    chatty = _fire(10.0, 50.0, 10, "Refinery", n=200, start_day=8, step=0)
+    # A real fire: 30 detections spread one cell apart (the fixture's final
+    # "latest" member revisits the base cell, hence 29 distinct cells).
+    wide = _fire(-1.0, 44.8, 9, "Andernos", n=30, start_day=9, step=0.02)
+    assert len({m["cell"] for m in chatty}) == 1
+    assert len({m["cell"] for m in wide}) == 29
+    assert len(chatty) > len(wide)
+
+    events = {"chatty": chatty, "wide": wide}
+    for i in range(MAX_SCARS):  # fill the cap with mid-sized single-cell chatty sources
+        events[f"mid{i}"] = _fire(20.0 + i, 40.0, 10, f"Mid{i}", n=100, start_day=8, step=0)
+
+    past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
+    assert any(s["place"] == "Andernos" for s in past), "real fire must not be crowded out"
+    assert past[0]["place"] == "Andernos", "widest footprint must rank first"
+
+
 def test_scars_carry_their_size():
-    """The cell count is what the ranking sorts on, and what a fire list needs
-    to show how big a burn was."""
+    """`cells` is the raw detection count — distinct from the `cum_cells`
+    footprint and the `area_km2` the ranking sorts on."""
     events = {"e1": _fire(-1.0, 44.8, 20, "Gironde", n=9, start_day=18)}
     assert build_scars(events, NOW)[0]["cells"] == 9
 
@@ -202,11 +232,13 @@ def test_meteosat_scar_uses_the_wider_cell_size():
 
 
 def test_equal_size_past_scars_fall_back_to_recency():
+    # Same footprint (one cell each, hence equal area) → recency decides.
     events = {
-        "older": _fire(-1.0, 44.8, 18, "Older", n=8, start_day=17),
-        "newer": _fire(5.0, 44.8, 22, "Newer", n=8, start_day=21),
+        "older": _fire(-1.0, 44.8, 18, "Older", n=8, start_day=17, step=0),
+        "newer": _fire(5.0, 44.8, 22, "Newer", n=8, start_day=21, step=0),
     }
     past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
+    assert past[0]["area_km2"] == past[1]["area_km2"], "fixtures must tie on size"
     assert [s["place"] for s in past] == ["Newer", "Older"]
 
 
