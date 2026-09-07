@@ -78,7 +78,7 @@ Rules that fall out of it:
 | Open-Meteo | wind direction and speed | none |
 | NASA GIBS | before/after true-colour imagery (~250 m) | none |
 | Copernicus Sentinel-2 (CDSE) | optional HD before/after imagery (10 m) | optional |
-| GeoNames `cities15000` | nearest-town labels | none |
+| GeoNames `cities5000` | nearest-town labels | none |
 
 Every source is wrapped so a failure degrades instead of breaking the run: a
 dead endpoint yields an empty layer, and the rest of the map still publishes.

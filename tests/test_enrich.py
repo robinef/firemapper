@@ -26,7 +26,7 @@ GDACS_RSS = """<?xml version="1.0"?><rss><channel>
 
 
 def test_load_places_filters_and_parses(tmp_path):
-    f = tmp_path / "cities15000.txt"
+    f = tmp_path / "cities5000.txt"
     f.write_text(GEONAMES_TSV)
     places = load_places(f)
     assert {p["name"] for p in places} == {"Testville", "FarCity"}
@@ -66,7 +66,7 @@ def _row(name, lat, lon):
 
 
 def _gazetteer(tmp_path, rows):
-    f = tmp_path / "cities15000.txt"
+    f = tmp_path / "cities5000.txt"
     f.write_text("\n".join(rows), encoding="utf-8")
     return f
 

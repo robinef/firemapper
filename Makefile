@@ -3,7 +3,7 @@
 setup:
 	uv sync
 	cd web && npm install
-	test -f data/places/cities15000.txt || (mkdir -p data/places && curl -L https://download.geonames.org/export/dump/cities15000.zip -o /tmp/c.zip && unzip -o /tmp/c.zip -d data/places)
+	test -f data/places/cities5000.txt || (mkdir -p data/places && curl -L https://download.geonames.org/export/dump/cities5000.zip -o /tmp/c.zip && unzip -o /tmp/c.zip -d data/places)
 
 test:
 	uv run --with pytest pytest -q

@@ -81,7 +81,7 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     events = cluster(rows, now)
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
-    places_file = settings.data_dir / "places" / "cities15000.txt"
+    places_file = settings.data_dir / "places" / "cities5000.txt"
     places = load_places(places_file, min_places=MIN_PLACES) if places_file.exists() else []
     # Say so. A missing gazetteer degrades silently — every fire and scar just
     # loses its place name and gets called "Burn scar · <date>" — which is how
