@@ -32,6 +32,13 @@ EFFIS_TYPENAME = "ercc.ba"
 
 BASELINE_LEAD_DAYS = 6   # "before" image this many days pre-fire
 SCAR_SETTLE_DAYS = 14    # "after" this long post-ignition (settled black scar)
+# `ercc.ba` is EFFIS's current-SEASON layer (resets each fire year), so this is
+# already year-scoped — no separate year filter needed. 12 was a placeholder
+# from when this was a bonus handful of megafires; our own sensors only see
+# 45 days back (SCAR_WINDOW_DAYS), so EFFIS is the only path to a real fire
+# older than that, and a modest French/Iberian burn was getting crowded out
+# by nothing at all — the cap was just too tight to matter.
+DEFAULT_BA_LIMIT = 200
 
 
 def _first(props: dict, keys) -> object | None:
@@ -147,7 +154,8 @@ def _parse_gml_coords(text: str, swap: bool) -> list[list[float]]:
 
 
 def fetch_effis_ba(
-    settings, http_get: Callable[[str], str] | None = None, limit: int = 12,
+    settings, http_get: Callable[[str], str] | None = None,
+    limit: int = DEFAULT_BA_LIMIT,
 ) -> list[dict]:
     """The largest `limit` burned-area scars, read from the stored perimeter
     archive rather than the network.

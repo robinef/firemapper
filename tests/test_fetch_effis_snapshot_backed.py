@@ -37,6 +37,15 @@ def test_returns_the_largest_scars_first(tmp_path):
     assert [s["id"] for s in got] == ["b", "c"]
 
 
+def test_default_limit_covers_far_more_than_a_dozen_fires(tmp_path):
+    """Live 2026-09-07: our own sensors only see 45 days back, so EFFIS (whole
+    season) is the only path to an older real fire — but the old default of 12
+    meant only the dozen largest fires IN ALL OF EUROPE made it in, silently
+    dropping a real French/Iberian fire outranked by bigger foreign ones."""
+    settings = seed(tmp_path, [row(str(i), float(i)) for i in range(50)])
+    assert len(fetch_effis_ba(settings)) == 50
+
+
 def test_shape_matches_what_build_imagery_consumes(tmp_path):
     settings = seed(tmp_path, [row("a", 900.0, place="Aragon")])
     scar = fetch_effis_ba(settings)[0]
