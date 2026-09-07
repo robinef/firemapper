@@ -174,8 +174,14 @@ def build_scars(
     # question there is "which burns are worth comparing" — and because a cap
     # filled by recency quietly deletes the only route to a notable fire's card
     # as soon as a couple of quiet days produce enough small ones.
+    #
+    # Size means the burned FOOTPRINT (`cum_cells`, deduped H3 cells — what
+    # area_km2 is priced on), not the raw detection count in `cells`. A static
+    # industrial heat source re-fires on every satellite pass and racks up
+    # hundreds of detections over one or two cells; ranked on detections it
+    # crowds a real 100-cell burn out of the shortlist (Andernos, 2026-09-07).
     active.sort(key=lambda s: s["started"], reverse=True)
-    past.sort(key=lambda s: (s["cells"], s["started"]), reverse=True)
+    past.sort(key=lambda s: (s["cum_cells"], s["started"]), reverse=True)
     return active[:MAX_SCARS] + past[:MAX_SCARS]
 
 

@@ -168,6 +168,38 @@ def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
     assert any(s["place"] == "Bordeaux" for s in past), "big fire must not be crowded out"
 
 
+def test_past_scars_rank_by_footprint_not_by_detection_count():
+    """"Size" is the burned footprint (deduped H3 cells), NOT how many times
+    the satellites re-detected the same pixel.
+
+    Live on 2026-09-07 the Andernos-les-Bains burn (572 detections over 122
+    cells, 85 km²) was missing from the past shortlist while Burglesum (627
+    detections over 12 cells, 8.4 km²) — an industrial heat source re-fired on
+    every pass — sat in it. The cap sorted on the raw member count, so chatty
+    static sources crowded out a real fire with a footprint ten times larger.
+    """
+    # A static source: many detections, all in one or two cells.
+    chatty = _fire(10.0, 50.0, 10, "Refinery", n=200, start_day=8)
+    # A real fire: fewer detections, each in its own cell (0.02° ≈ 1.6 km apart).
+    wide = [
+        {"lon": -1.0 + 0.02 * i, "lat": 44.8, "name": "Andernos",
+         "acq_time": datetime(2026, 7, 9, tzinfo=timezone.utc)}
+        for i in range(30)
+    ]
+    for m in wide:
+        m["cell"] = h3.latlng_to_cell(m["lat"], m["lon"], 8)
+    assert len({m["cell"] for m in chatty}) < len({m["cell"] for m in wide})
+    assert len(chatty) > len(wide)
+
+    events = {"chatty": chatty, "wide": wide}
+    for i in range(MAX_SCARS):  # fill the cap with mid-sized chatty sources
+        events[f"mid{i}"] = _fire(20.0 + i, 40.0, 10, f"Mid{i}", n=100, start_day=8)
+
+    past = [s for s in build_scars(events, NOW) if s["kind"] == "past"]
+    assert past[0]["place"] == "Andernos", "widest footprint must rank first"
+    assert any(s["place"] == "Andernos" for s in past), "real fire must not be crowded out"
+
+
 def test_scars_carry_their_size():
     """The cell count is what the ranking sorts on, and what a fire list needs
     to show how big a burn was."""
