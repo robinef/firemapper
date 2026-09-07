@@ -9,7 +9,7 @@ from .archive_tracks import archive_past_tracks, previous_archive_index
 from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
 from .day_slices import build_day_slices
 from .enrich import MIN_PLACES, Places, fetch_gdacs, load_places
-from .events import cluster
+from .events import WINDOW_DAYS, cluster
 from .export import export
 from .fetch_effis import fetch_effis_ba
 from .fetch_effis_season import fetch_season_snapshot
@@ -79,7 +79,18 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     rows = [r for r in rows if r["tier"] != "meteosat"]
     if frp_points:
         rows = rows + _frp_as_rows(frp_points, now)
-    events = cluster(rows, now)
+    # One clustering pass over the archive. Historical scars come from our OWN
+    # fire detections (FIRMS/VIIRS/MTG) over the longer SCAR_WINDOW_DAYS so
+    # fires that have gone quiet persist as "past" scars — no external
+    # burned-area service. The live set is the same events, restricted to
+    # those detected within WINDOW_DAYS; the window is on a fire's latest
+    # detection (events.cluster), so an event is identical in both.
+    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
+    live_cutoff = now - timedelta(days=WINDOW_DAYS)
+    events = {
+        eid: ms for eid, ms in scar_events.items()
+        if max(m["acq_time"] for m in ms) >= live_cutoff
+    }
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
     places_file = settings.data_dir / "places" / "cities5000.txt"
@@ -124,10 +135,6 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     _safe(lambda: write_points(frp_points, raw / "frp.parquet"), default=0, label="store-frp")
     _safe(lambda: write_points(wind, raw / "wind.parquet"), default=0, label="store-wind")
 
-    # Historical scars come from our OWN fire detections (FIRMS/VIIRS/MTG),
-    # clustered over a longer window so fires that have gone quiet persist as
-    # "past" scars — no external burned-area service.
-    scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
     # A past scar's own H3 arrival-footprint detail: written once per fire,
     # the run it first goes quiet enough to have left the live track window
     # (see archive_tracks.py for why that window is too short to cover the

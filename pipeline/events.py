@@ -42,6 +42,9 @@ BRIDGE_MIN_CELLS = 20
 METEOSAT_RES = 7
 METEOSAT_CELL_KM2 = 5.2
 WINDOW_DAYS = 14
+# How far back before a window's cutoff rows are still clustered, so a fire
+# whose latest detection is in the window keeps ALL its history (see cluster).
+MAX_FIRE_DAYS = 90
 ACTIVE_H_VIIRS = 24
 ACTIVE_H_METEOSAT = 2
 
@@ -233,17 +236,29 @@ def cluster(
     clustered at METEOSAT_RES so ~2 km pixels join. With no polar data at all
     (no FIRMS key), every event comes from Meteosat.
     """
+    # The window is on a fire's LATEST detection, applied to events after
+    # clustering — not to rows before it. Cutting rows at the window made a
+    # long fire lose its first days one refresh at a time: its id (seeded on
+    # the earliest member) changed daily, shared links died within a day, the
+    # archive gained a track file per day for the same fire, and the footprint
+    # shrank (Gironde 2026: three ids across three refreshes). Rows are still
+    # bounded, at MAX_FIRE_DAYS before the cutoff, so runtime stays flat as the
+    # archive grows; a fire longer than that is the one case that still erodes.
     cutoff = now - timedelta(days=window_days)
-    in_window = [r for r in rows if cutoff <= r["acq_time"] <= now]
+    oldest = cutoff - timedelta(days=MAX_FIRE_DAYS)
+    in_window = [r for r in rows if oldest <= r["acq_time"] <= now]
     polar = [r for r in in_window if r["tier"] != "meteosat"]
     meteo = [r for r in in_window if r["tier"] == "meteosat"]
 
+    def recent(events: dict[str, list[dict]]) -> dict[str, list[dict]]:
+        return {eid: ms for eid, ms in events.items() if max(m["acq_time"] for m in ms) >= cutoff}
+
     if not polar:
-        return _cluster_one(meteo, METEOSAT_RES) if meteo else {}
+        return recent(_cluster_one(meteo, METEOSAT_RES)) if meteo else {}
 
     events = _cluster_one(polar, H3_RES, bridge=True)
     if not meteo:
-        return events
+        return recent(events)
 
     # Res-7 footprint of every polar event, for the overlap test.
     polar_cells7: set[str] = set()
@@ -255,7 +270,7 @@ def cluster(
         if any(m["cell"] in polar_cells7 for m in members):
             continue
         events[eid] = members
-    return events
+    return recent(events)
 
 
 def lifecycle(members: list[dict], meteosat_latest: datetime | None, now: datetime) -> str:
