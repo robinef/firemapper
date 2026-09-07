@@ -67,4 +67,11 @@ describe("info view", () => {
   it("links to the full sources page for readers who want details and provider links", () => {
     expect(infoHtml(manifest, now)).toContain('href="/sources"');
   });
+
+  it("navigates to the sources page in the same tab, since it's part of this app", () => {
+    // Unlike the GDACS/provider links (genuinely external, third-party sites),
+    // /sources is this app's own page — target="_blank" here would just leave
+    // a stray extra tab behind for no reason.
+    expect(infoHtml(manifest, now)).not.toContain("target=\"_blank\"");
+  });
 });
