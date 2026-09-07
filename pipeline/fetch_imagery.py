@@ -40,7 +40,15 @@ GIBS_LAYER = "MODIS_Terra_CorrectedReflectance_TrueColor"
 BASELINE_LEAD_DAYS = 6  # "before" image this many days pre-fire (pre-scar)
 SCAR_SETTLE_DAYS = 14   # for a past fire, "after" this long post-ignition
 MIN_MEMBERS = 4         # ignore specks — a scar worth comparing has a few cells
-MAX_SCARS = 25          # a pickable shortlist per section (active / past)
+MAX_SCARS = 25          # a pickable shortlist of currently-active fires
+# Past scars compete against a whole season's worth of EU fires, not just
+# today's. Live 2026-09-07 a real ~80 km² Var fire (bridged from two ~40 km²
+# clustering fragments, see events.py's BRIDGE_TIME_H) barely cracked a cap of
+# 25 (rank 24 of 25, cutoff ~77 km²) — one bigger fire anywhere in Europe
+# tomorrow would have bumped it right back out. 50 gives real headroom
+# (cutoff ~45.5 km² on the same live data) without the active section's
+# tighter cap, which only ever competes against fires still burning today.
+PAST_MAX_SCARS = 50
 ACTIVE_MAX_H = 48       # a fire quiet longer than this counts as a past scar
 
 WMS_BASE = "https://sh.dataspace.copernicus.eu/ogc/wms"
@@ -155,9 +163,10 @@ def build_scars(
 
     A fire whose latest detection is within ACTIVE_MAX_H is "active"; one quiet
     longer than that is "past" (last month's fires). Specks below MIN_MEMBERS
-    are dropped, each section is capped at MAX_SCARS and ranked by size — see
-    the sort below. Tiles are the keyless GIBS true-colour layer client-side,
-    so no per-scar fetch here.
+    are dropped, active is capped at MAX_SCARS and past at PAST_MAX_SCARS (a
+    wider net — past scars compete against a whole season, not just today),
+    both ranked by size — see the sort below. Tiles are the keyless GIBS
+    true-colour layer client-side, so no per-scar fetch here.
 
     `archived_ids` names past fires that already have a permanent per-fire
     track (see archive_tracks.py) — those get `track_gen: "archive"` so the
@@ -191,7 +200,7 @@ def build_scars(
     # re-fires on every pass and out-counts a far larger real burn.
     active.sort(key=lambda s: (s["area_km2"], s["started"]), reverse=True)
     past.sort(key=lambda s: (s["area_km2"], s["started"]), reverse=True)
-    return active[:MAX_SCARS] + past[:MAX_SCARS]
+    return active[:MAX_SCARS] + past[:PAST_MAX_SCARS]
 
 
 # The browser asks the Worker for HD tiles, never Sentinel Hub directly. The

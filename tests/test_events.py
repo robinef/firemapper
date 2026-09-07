@@ -8,6 +8,7 @@ from pipeline.config import STATIC_CELL_DAYS, STATIC_EVENT_FRAC
 from pipeline.events import (
     BRIDGE_K,
     BRIDGE_MIN_CELLS,
+    BRIDGE_TIME_H,
     CLOSE_AFTER_H,
     METEOSAT_CELL_KM2,
     METEOSAT_RES,
@@ -31,7 +32,7 @@ def _reference_partition(rows, res=8):
     Pass 1: same cell time-consecutive, or k-ring-1 neighbours, within
     CLOSE_AFTER_H. Pass 2 (bridging): two pass-1 components join when at
     least one spans BRIDGE_MIN_CELLS cells and any member pair sits within
-    BRIDGE_K rings and CLOSE_AFTER_H of each other."""
+    BRIDGE_K rings and BRIDGE_TIME_H of each other."""
     nodes = [dict(r) for r in rows]
     for n in nodes:
         n["cell"] = h3.latlng_to_cell(n["lat"], n["lon"], res)
@@ -42,8 +43,11 @@ def _reference_partition(rows, res=8):
     for i in range(len(nodes)):
         uf.find(i)
     md = timedelta(hours=CLOSE_AFTER_H)
+    md_bridge = timedelta(hours=BRIDGE_TIME_H)
     def within(a, b):
         return abs((nodes[a]["acq_time"] - nodes[b]["acq_time"]).total_seconds()) <= md.total_seconds()
+    def within_bridge(a, b):
+        return abs((nodes[a]["acq_time"] - nodes[b]["acq_time"]).total_seconds()) <= md_bridge.total_seconds()
     for cell, idx in by_cell.items():
         idx.sort(key=lambda i: nodes[i]["acq_time"])
         for a, b in zip(idx, idx[1:]):
@@ -70,7 +74,7 @@ def _reference_partition(rows, res=8):
                 for b in by_cell[nb]:
                     if comp1[a] == comp1[b] or (comp1[a] not in big and comp1[b] not in big):
                         continue
-                    if within(a, b):
+                    if within_bridge(a, b):
                         uf.union(a, b)
     comps = defaultdict(set)
     for i in range(len(nodes)):
@@ -146,14 +150,14 @@ def test_bridge_size_gate_boundary():
 
 
 def test_bridge_window_boundary():
-    # Exactly CLOSE_AFTER_H apart bridges; one minute more does not.
+    # Exactly BRIDGE_TIME_H apart bridges; one minute more does not.
     big = _disk_fire(CENTER, 3, T(20, 0))
     big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
     far = _cell_at_distance(big_cells, BRIDGE_K)
-    edge = T(20, 0) + timedelta(hours=CLOSE_AFTER_H)
-    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), edge)], now=T(23, 0))) == 1
+    edge = T(20, 0) + timedelta(hours=BRIDGE_TIME_H)
+    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), edge)], now=T(30, 0))) == 1
     over = edge + timedelta(minutes=1)
-    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), over)], now=T(23, 0))) == 2
+    assert len(cluster(big + [hs(*h3.cell_to_latlng(far), over)], now=T(30, 0))) == 2
 
 
 def test_bridge_never_reaches_past_two_rings():
@@ -167,12 +171,36 @@ def test_bridge_never_reaches_past_two_rings():
     assert len(cluster(big + other, now=T(21, 0))) == 2
 
 
-def test_bridge_respects_the_48h_window():
+def test_bridge_reaches_a_58h_cloud_gap():
+    """Live 2026-07-21..08-02 a real ~80 km² Var fire (542 detections, peak
+    480 MW) went 58 h quiet — a cloud-masked overpass, not the fire going
+    out — and split into two ~40 km² fragments, each too small to crack the
+    past-scars size ranking the merged fire easily would. BRIDGE_TIME_H (96h)
+    exists so a gap like this bridges; CLOSE_AFTER_H (48h) alone would not."""
     big = _disk_fire(CENTER, 3, T(20, 0))
     big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
     far = _cell_at_distance(big_cells, BRIDGE_K)
-    late = [hs(*h3.cell_to_latlng(far), T(23, 0))]  # 72 h later
-    assert len(cluster(big + late, now=T(24, 0))) == 2
+    late = [hs(*h3.cell_to_latlng(far), T(22, 10))]  # 58 h later
+    assert len(cluster(big + late, now=T(30, 0))) == 1
+
+
+def test_bridge_reaches_a_143h_rekindle_gap():
+    """The real Var fire's two halves sat 143 h apart at their closest
+    (a multi-day lull, not one cloudy overpass) — BRIDGE_TIME_H (168h) exists
+    so a gap like this bridges."""
+    big = _disk_fire(CENTER, 3, T(10, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    late = [hs(*h3.cell_to_latlng(far), T(15, 23))]  # 143 h later
+    assert len(cluster(big + late, now=T(20, 0))) == 1
+
+
+def test_bridge_respects_the_168h_window():
+    big = _disk_fire(CENTER, 3, T(10, 0))
+    big_cells = {h3.latlng_to_cell(m["lat"], m["lon"], 8) for m in big}
+    far = _cell_at_distance(big_cells, BRIDGE_K)
+    late = [hs(*h3.cell_to_latlng(far), T(17, 1))]  # 169 h later
+    assert len(cluster(big + late, now=T(22, 0))) == 2
 
 
 def test_bridged_event_keeps_the_earliest_id():
