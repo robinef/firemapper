@@ -111,6 +111,19 @@ describe("renderSources", () => {
     expect(el.textContent).toContain("112");
   });
 
+  it("falls back to 'unknown', not a blank name, for a layer with no source field at all", () => {
+    // A real manifest layer (e.g. "season") can carry no source field — the
+    // info panel already defaults that case to "unknown" (info.ts); this page
+    // used to print an empty name instead, via escapeHtml(undefined) => "".
+    const el = root();
+    const layers = { ...MANIFEST.layers, season: { ...layer("viirs+mtg"), source: undefined as unknown as string } };
+    renderSources(el, { ...MANIFEST, layers } as unknown as Manifest, now);
+    const seasonRow = Array.from(el.querySelectorAll(".src-row")).find((r) =>
+      r.querySelector(".src-row-head")?.textContent?.includes("season"),
+    );
+    expect(seasonRow?.querySelector(".src-row-name")?.textContent).toBe("unknown");
+  });
+
   it("escapes a raw source string it does not recognise, rather than trusting it into innerHTML", () => {
     const el = root();
     renderSources(el, { ...MANIFEST, layers: { events: layer("<img src=x onerror=alert(1)>") } }, now);

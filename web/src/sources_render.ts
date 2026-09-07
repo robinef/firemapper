@@ -61,8 +61,11 @@ function row(m: Manifest, key: string, now: Date): string {
   const age = state.reason
     ? `<span class="info-warn">${escapeHtml(state.reason)}</span>`
     : escapeHtml(state.ageText || "up to date");
-  const cat = CATALOG[layer.source];
-  const name = cat ? escapeHtml(cat.name) : escapeHtml(layer.source);
+  // Same fallback info.ts uses: a layer with no source field at all (e.g.
+  // "season") must still print something, not the empty string escapeHtml(undefined) gives.
+  const source = layer.source ?? "unknown";
+  const cat = CATALOG[source];
+  const name = cat ? escapeHtml(cat.name) : escapeHtml(source);
   const link = cat?.url
     ? ` <a href="${safeHttpUrl(cat.url)}" target="_blank" rel="noopener">Official site →</a>`
     : "";
