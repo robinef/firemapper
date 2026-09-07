@@ -100,6 +100,11 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     const title = document.querySelector(".tl-title")?.textContent;
     expect(title).toBe("This fire · new burned cells / 6 h");
     expect(mountOverview).not.toHaveBeenCalled();
+
+    // Same arrival-gradient legend fireCardHtml shows for a live fire's
+    // painted footprint — an archived scar paints identical hexes, so it
+    // should explain the same colours instead of leaving them uncaptioned.
+    expect(document.querySelector(".fc-arrival")).not.toBeNull();
   });
 
   it("hides the timeline, rather than showing the continental overview, for a scar with no archived track", async () => {
@@ -123,6 +128,9 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     expect(mountOverview).not.toHaveBeenCalled();
     expect(document.getElementById("timeline")!.style.display).toBe("none");
     expect(document.getElementById("panel")!.innerHTML).toContain("scar-curated");
+    // No archived track means no cell_bins to explain — the legend would be
+    // pointing at a footprint the card never painted.
+    expect(document.querySelector(".fc-arrival")).toBeNull();
   });
 
   it("never fetches a track for a scar with no track_gen at all", async () => {
