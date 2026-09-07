@@ -13,12 +13,14 @@ import { statRow } from "./stat_row";
 import { emitUi } from "./ui_events";
 import {
   eventPosition,
+  footprintWind,
   readoutModel,
   renderReadoutFull,
   renderReadoutPeek,
   type Readout,
 } from "./fire_readout";
 import { clearReadout, mountReadout } from "./fire_readout_mount";
+import { addFireWind, clearFireWind } from "./layer_wind";
 
 /**
  * Level 2 — the fire card. Clicking a fire (active dot, footprint, or past-scar
@@ -205,6 +207,29 @@ export interface FireCard {
   readonly isOpen: boolean;
 }
 
+/** This fire's per-H3-cell wind arrows, built ONLY by openFire (never
+ *  openScar — see fire_readout.ts's footprintWind doc). Adapts the plain
+ *  array into the GeoJSON layer_wind.ts's addFireWind expects: one Point
+ *  feature per cell, `from_deg`/`kmh` matching its icon-rotate/icon-size
+ *  expressions. null when there is nothing to show, so open() knows to
+ *  skip addFireWind entirely rather than paint an empty layer visible. */
+function fireWindFC(
+  track: Track | null,
+  windPoints: GeoJSON.FeatureCollection | null,
+): GeoJSON.FeatureCollection | null {
+  if (!track?.cells?.length || !windPoints) return null;
+  const hits = footprintWind(track.cells, windPoints, new Date());
+  if (!hits.length) return null;
+  return {
+    type: "FeatureCollection",
+    features: hits.map((h) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [h.lon, h.lat] },
+      properties: { from_deg: h.bearingDeg, kmh: h.kmh },
+    })),
+  };
+}
+
 /** A loaded track (or lack of one) reshaped for open()'s footprint/timeline
  *  params — shared by openFire and openScar so the mapping can't drift
  *  between the two. */
@@ -306,6 +331,7 @@ export function setupFireCard(
     rerenderCard = null;
     clearReadout(document.body);
     clearBin();
+    clearFireWind(map);
     undim();
     mountOverview(); // restore the Level-1 histogram (with day-click)
     compare?.exit();
@@ -430,6 +456,9 @@ export function setupFireCard(
     fireSeries: TimelineDay[] | null,
     centroids: [number, number][] | null,
     cellBins: [string, string[]][] | null,
+    /** This fire's per-cell wind arrows (fireWindFC output), or null.
+     *  openScar always passes null — see fireWindFC's doc comment. */
+    fireWind: GeoJSON.FeatureCollection | null,
     /** A settled past scar or a closed live fire has no current-moment data
      *  of its own — force-hides the liveOnly sublayers (Fire intensity/
      *  spread/wind/VIIRS) at level 2, which would otherwise show nothing
@@ -454,6 +483,17 @@ export function setupFireCard(
     rerenderCard = null;
     clearReadout(document.body);
     clearBin();
+    // Unconditional, same reason as clearBin() above: a direct fire-A →
+    // fire-B click never calls close(), so A's arrows must come down here
+    // even when B turns out to have none of its own to replace them with.
+    // The ADD half is below, after the fireSeries block: that block's
+    // ensureFootprint() (inside setFootprint) lazily creates
+    // fire-bin-fill/fire-bin-line the first time any card with cell_bins
+    // opens, and maplibre appends new layers on top of whatever exists —
+    // adding the arrows here, before that can happen, would let a
+    // same-call footprint creation re-bury them even though addFireWind
+    // itself moves them to the top when IT runs.
+    clearFireWind(map);
     onEnter(); // clear any overview state (e.g. a painted day slice)
     paintCard(html, onBeforeAfter, id);
     panel.classList.remove("hidden");
@@ -507,6 +547,8 @@ export function setupFireCard(
       // under, say, a 2022 fire's card: real, but not this fire's.
       mountTimeline(timelineEl, null);
     }
+    // After the branch above — see the comment by clearFireWind() for why.
+    if (fireWind) addFireWind(map, fireWind);
   };
 
   // The fire/scar's OWN position first (`eventPosition`, Point geometry) — a
@@ -553,7 +595,7 @@ export function setupFireCard(
     // Exactly one mount is populated: the card is handed the readout only when
     // the overlay will not be.
     open(fireCardHtml(p, track, desktop ? null : readout), lon, lat, p.id,
-      series, centroids, cellBins,
+      series, centroids, cellBins, fireWindFC(track, windPoints),
       p.status === "closed", onBeforeAfter);
     // AFTER open(), never before: open() resets both of these on the way in,
     // to clear whatever card came before. Setting them first would hand the
@@ -601,8 +643,11 @@ export function setupFireCard(
     }
     if (mine !== openToken) return; // superseded by a newer fire/scar click
     const { series, centroids, cellBins } = trackTimeline(track);
+    // Scars never get fire-wind arrows — see fireWindFC's doc comment: a
+    // current forecast sample near an OLD footprint is not this fire's
+    // wind, and openScar has never fed windPoints into a readout either.
     open(scarCardHtml(s, track), lon, lat, scarId,
-      series, centroids, cellBins,
+      series, centroids, cellBins, null,
       s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
   };

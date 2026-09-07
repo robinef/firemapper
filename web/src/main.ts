@@ -25,7 +25,7 @@ import {
 import { dispatchMapClick } from "./main_click";
 import { INTENSITY_LAYER_IDS, INTENSITY_LEGEND, addIntensity } from "./layer_intensity";
 import { SPREAD_LAYER_IDS, SPREAD_LEGEND, addSpread } from "./layer_spread";
-import { WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
+import { FIRE_WIND_LAYER_IDS, WIND_LAYER_IDS, WIND_LEGEND, addWind } from "./layer_wind";
 import { VIIRS_LAYER_IDS, VIIRS_LEGEND, addViirs } from "./layer_viirs";
 import { SCAR_LAYER_IDS, SCAR_LEGEND, addScars } from "./layer_scars";
 import {
@@ -545,7 +545,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
   const OVERLAY_LAYERS = [
     ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
-    ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS,
+    ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS, ...FIRE_WIND_LAYER_IDS,
     ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS,
   ];
   // Not Record<string, string>: maplibre 6 types `visibility` as a union, and

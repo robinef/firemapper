@@ -22,6 +22,9 @@ import type * as maplibregl from "maplibre-gl";
  */
 
 export const WIND_LAYER_IDS = ["wind-arrows"];
+export const FIRE_WIND_LAYER_IDS = ["fire-wind-arrows"];
+
+const FIRE_WIND_ICON_SIZE_BY_ZOOM = ["interpolate", ["linear"], ["zoom"], 7, 0.4, 10, 0.7, 14, 1.05];
 
 const WIND_ICON = "wind-streamline";
 
@@ -88,6 +91,56 @@ export function addWind(map: maplibregl.Map, wind: GeoJSON.FeatureCollection) {
       "text-halo-width": 1.2,
     },
   });
+}
+
+/**
+ * Fire-scoped wind arrows — one per H3 cell of the OPEN fire's footprint
+ * (see fire_readout.ts's footprintWind), not the coarse global grid above.
+ * Card-lifecycle content, not a switcher module: no toggle, no legend of
+ * its own, same treatment as firecard.ts's fire-bin footprint layer. Must
+ * re-show visibility on every add, since clearFireWind hides rather than
+ * removes the layer between cards.
+ */
+export function addFireWind(map: maplibregl.Map, wind: GeoJSON.FeatureCollection) {
+  const src = map.getSource("fire-wind") as maplibregl.GeoJSONSource | undefined;
+  if (!map.hasImage(WIND_ICON)) map.addImage(WIND_ICON, streamlineImage(), { pixelRatio: 2 });
+  if (src) {
+    src.setData(wind);
+  } else {
+    map.addSource("fire-wind", { type: "geojson", data: wind });
+  }
+  if (!map.getLayer("fire-wind-arrows")) {
+    map.addLayer({
+      id: "fire-wind-arrows",
+      type: "symbol",
+      source: "fire-wind",
+      minzoom: 7,
+      layout: {
+        "icon-image": WIND_ICON,
+        "icon-rotate": ["+", ["coalesce", ["get", "from_deg"], 0], 180],
+        "icon-rotation-alignment": "map",
+        "icon-size": FIRE_WIND_ICON_SIZE_BY_ZOOM as never,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+      paint: { "icon-opacity": 0.95 },
+    });
+  }
+  map.setLayoutProperty("fire-wind-arrows", "visibility", "visible");
+  // firecard.ts's fire-bin-fill/fire-bin-line (the arrival-footprint hexes)
+  // are created lazily, on whichever fire's card happens to have cell_bins
+  // first — which can be BEFORE or AFTER this layer's own first creation.
+  // moveLayer with no beforeId sends this layer to the very top on every
+  // call, so the arrows always sit above the footprint fill/stroke
+  // regardless of which layer was created first.
+  map.moveLayer("fire-wind-arrows");
+}
+
+/** Hides (not removes) the fire-scoped layer — mirrors firecard.ts's clearBin(). */
+export function clearFireWind(map: maplibregl.Map) {
+  if (map.getLayer("fire-wind-arrows")) {
+    map.setLayoutProperty("fire-wind-arrows", "visibility", "none");
+  }
 }
 
 export const WIND_LEGEND = {
