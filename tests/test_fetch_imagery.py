@@ -170,6 +170,26 @@ def test_past_scars_rank_by_size_so_a_big_fire_is_not_crowded_out():
     assert any(s["place"] == "Bordeaux" for s in past), "big fire must not be crowded out"
 
 
+def test_active_scars_rank_by_size_so_a_long_running_fire_is_not_crowded_out():
+    """The same crowding bug fixed for past scars also hit active ones.
+
+    Live on 2026-09-07 a Var fire (ignited 24 Aug, still burning, 9.1 km²) was
+    absent from the active section: with hundreds of qualifying active events
+    EU-wide, ranking by ignition recency alone filled the cap with the newest
+    tiny blips, and a long-running, still-active fire could never outrank a
+    fresh flood of brand-new small ones.
+    """
+    events = {"big": _fire(6.05, 43.45, 27, "Var", n=40, start_day=1)}
+    for i in range(MAX_SCARS + 5):  # newer ignitions, but each tiny
+        events[f"small{i}"] = _fire(10.0 + i, 40.0, 27, f"Small{i}", n=5, start_day=26)
+
+    active = [s for s in build_scars(events, NOW) if s["kind"] == "active"]
+
+    assert len(active) <= MAX_SCARS
+    assert active[0]["place"] == "Var", "biggest active scar must rank first"
+    assert any(s["place"] == "Var" for s in active), "long-running fire must not be crowded out"
+
+
 def test_past_scars_rank_by_footprint_not_by_detection_count():
     """"Size" is the burned footprint (deduped H3 cells), NOT how many times
     the satellites re-detected the same pixel.

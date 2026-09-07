@@ -169,16 +169,18 @@ def build_scars(
             _scar_from_fire(eid, members, today, is_past, places, track_gen)
         )
 
-    # Active fires are ranked by recency: they are still burning, so "what is
-    # happening now" is the question. PAST scars are ranked by SIZE, because the
-    # question there is "which burns are worth comparing" — and because a cap
-    # filled by recency quietly deletes the only route to a notable fire's card
-    # as soon as a couple of quiet days produce enough small ones.
+    # Both sections rank by SIZE, tie-broken by recency — the same fix applied
+    # to PAST scars now applies to ACTIVE ones. Live 2026-09-07 the Var fire
+    # (ignited 24 Aug, still burning, 9.1 km²) was absent from the active
+    # section: with 774 qualifying active events EU-wide and a recency sort,
+    # the top 25 were entirely fresh ignitions from the last ~18h, each a
+    # 1-6 km² blip — a long-running, still-active fire can never outrank a
+    # flood of brand-new small ones under pure "most recently started" order.
     #
     # Size is the burned area (`area_km2`: deduped cells × the sensor's cell
     # size), NOT the raw detection count in `cells` — a static heat source
     # re-fires on every pass and out-counts a far larger real burn.
-    active.sort(key=lambda s: s["started"], reverse=True)
+    active.sort(key=lambda s: (s["area_km2"], s["started"]), reverse=True)
     past.sort(key=lambda s: (s["area_km2"], s["started"]), reverse=True)
     return active[:MAX_SCARS] + past[:MAX_SCARS]
 
