@@ -143,11 +143,20 @@ export function fireCardHtml(p: EventProps, track: Track | null, readout?: Reado
   );
 }
 
-export function scarCardHtml(s: Scar): string {
+export function scarCardHtml(s: Scar, track: Track | null = null): string {
   const peek =
     `<div class="fc-peek"><b>${esc(s.place || s.label)}</b>` +
     `<span>${s.kind === "past" ? "Past fire" : "Active fire"}</span>` +
     `<i aria-hidden="true">›</i></div>`;
+  // Same ramp legend as fireCardHtml, and the same gate: only an archived
+  // track (s.track_gen) carries per-bin cells, so most scars — curated
+  // megafires, EFFIS imports — render with no arrival footprint to explain.
+  const arrival = track && track.cell_bins && track.cell_bins.length
+    ? `<div class="fc-arrival"><span>Footprint colour · when it burned</span>` +
+      `<div class="fc-ramp"></div>` +
+      `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
+      `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
+    : "";
   return (
     peek +
     `<button class="fc-close" aria-label="Close">✕</button>` +
@@ -160,6 +169,7 @@ export function scarCardHtml(s: Scar): string {
     statRow("Before (pre-fire)", s.before) +
     statRow("After (scar)", s.after) +
     `</div>` +
+    arrival +
     `<button class="fc-ba">Before / after imagery →</button>`
   );
 }
@@ -591,7 +601,7 @@ export function setupFireCard(
     }
     if (mine !== openToken) return; // superseded by a newer fire/scar click
     const { series, centroids, cellBins } = trackTimeline(track);
-    open(scarCardHtml(s), lon, lat, scarId,
+    open(scarCardHtml(s, track), lon, lat, scarId,
       series, centroids, cellBins,
       s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
