@@ -531,6 +531,8 @@ body.compare-mode #timeline { display: none; }
 
 #info .fc-stat span { text-transform: capitalize; }
 .info-warn { color: #ffcf8f; }
+.info-more { color: #ff9a4d; text-decoration: none; font-weight: 600; }
+.info-more:hover { text-decoration: underline; }
 
 #view-chip { display: none; position: absolute; top: 56px; left: 12px;
   z-index: 9; min-height: 44px; padding: 0 14px; border-radius: 999px;
