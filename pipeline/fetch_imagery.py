@@ -78,13 +78,18 @@ def _iso(d: date) -> str:
     return d.isoformat()
 
 
-def _scar_dates(fire_start: date, now: date, past: bool) -> tuple[str, str]:
+def _scar_dates(fire_start: date, now: date, past: bool, fire_end: date | None = None) -> tuple[str, str]:
     """(before, after) capture dates. Before = pre-fire baseline; after = the
-    settled scar for a past fire, else the latest usable day (yesterday)."""
+    settled scar for a past fire, else the latest usable day (yesterday).
+
+    A past fire's "after" is SCAR_SETTLE_DAYS past ignition, but never before
+    its last detection: with a fire's full history kept (events.cluster), a
+    two-month burn would otherwise get its "after" image mid-burn, green next
+    to an area figure describing the whole footprint."""
     yesterday = now - timedelta(days=1)
     before = fire_start - timedelta(days=BASELINE_LEAD_DAYS)
     if past:
-        after = min(fire_start + timedelta(days=SCAR_SETTLE_DAYS), yesterday)
+        after = min(max(fire_start + timedelta(days=SCAR_SETTLE_DAYS), fire_end or fire_start), yesterday)
     else:
         after = yesterday
     return _iso(before), _iso(max(after, fire_start))
@@ -106,7 +111,8 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
 
     lat, lon = centroid(members)
     start = min(m["acq_time"] for m in members).date()
-    before, after = _scar_dates(start, today, past=past)
+    end = max(m["acq_time"] for m in members).date()
+    before, after = _scar_dates(start, today, past=past, fire_end=end)
     # A stored place name wins; otherwise the town nearest a burnt cell (same
     # rule as the live fire card — enrich.place_for).
     name = members[0].get("name")

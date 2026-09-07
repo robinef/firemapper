@@ -9,7 +9,7 @@ from .archive_tracks import archive_past_tracks, previous_archive_index
 from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
 from .day_slices import build_day_slices
 from .enrich import MIN_PLACES, Places, fetch_gdacs, load_places
-from .events import WINDOW_DAYS, cluster
+from .events import WINDOW_DAYS, cluster, recent_events
 from .export import export
 from .fetch_effis import fetch_effis_ba
 from .fetch_effis_season import fetch_season_snapshot
@@ -86,11 +86,7 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # those detected within WINDOW_DAYS; the window is on a fire's latest
     # detection (events.cluster), so an event is identical in both.
     scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS)
-    live_cutoff = now - timedelta(days=WINDOW_DAYS)
-    events = {
-        eid: ms for eid, ms in scar_events.items()
-        if max(m["acq_time"] for m in ms) >= live_cutoff
-    }
+    events = recent_events(scar_events, now, WINDOW_DAYS)
     met_rows = [r for r in rows if r["tier"] == "meteosat"]
     liveness = liveness_for_events(events, met_rows)
     places_file = settings.data_dir / "places" / "cities5000.txt"

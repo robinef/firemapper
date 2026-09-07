@@ -94,6 +94,17 @@ def test_quiet_fire_becomes_a_past_scar():
     assert scars[0]["after"] == "2026-07-22"  # start 07-08 + 14 settle
 
 
+def test_long_past_fire_after_image_is_not_taken_mid_burn():
+    """With a fire's full history kept (events.cluster), a burn that ran for
+    weeks has its "after" capture no earlier than its LAST detection — the
+    start + SCAR_SETTLE_DAYS rule alone would show green forest next to an
+    area figure describing the whole footprint."""
+    events = {"e1": _fire(-1.0, 44.8, 24, "Gironde", start_day=1)}  # burned 07-01 → 07-24
+    s = build_scars(events, NOW)[0]
+    assert s["kind"] == "past"
+    assert s["after"] == "2026-07-24"  # last detection, not 07-01 + 14 = 07-15
+
+
 def test_specks_below_min_members_skipped():
     tiny = {"t": _fire(1.0, 45.0, 27, n=2)}
     assert build_scars(tiny, NOW) == []
