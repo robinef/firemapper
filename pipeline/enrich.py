@@ -1,12 +1,61 @@
 from __future__ import annotations
 
+import math
 import xml.etree.ElementTree as ET
+from collections import defaultdict
+from collections.abc import Iterator
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
 
+import h3
+
 from .config import EUROPE_BBOX
 from .metrics import haversine_m
+
+# Footprint labelling (place_for) looks for towns whose res-6 H3 cell is
+# within one ring of the burn's res-6 parents: ~3.2 km cell edge, so "within
+# roughly 5 km of a burnt cell". Coarse on purpose — it is a candidate filter,
+# the pick itself is by exact distance to the nearest burnt cell.
+_PLACE_RES = 6
+
+
+class Places:
+    """A gazetteer with two indexes, list-like for callers and tests.
+
+    cities5000 has ~22k European places. nearest_place() as a brute-force
+    min() over them cost ~6 ms a call, ~55 s per run for the live events
+    alone; a 1° grid brings that to a handful of candidates. The res-6 index
+    serves place_for()'s "towns near the footprint" lookup.
+    """
+
+    def __init__(self, places: list[dict]):
+        self._all = list(places)
+        self._grid: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        self._by_r6: dict[str, list[dict]] = defaultdict(list)
+        for p in self._all:
+            self._grid[(math.floor(p["lat"]), math.floor(p["lon"]))].append(p)
+            self._by_r6[h3.latlng_to_cell(p["lat"], p["lon"], _PLACE_RES)].append(p)
+
+    def __len__(self) -> int:
+        return len(self._all)
+
+    def __iter__(self) -> Iterator[dict]:
+        return iter(self._all)
+
+    def __getitem__(self, i):
+        return self._all[i]
+
+    def near(self, lat: float, lon: float) -> list[dict]:
+        """Places in the 3×3 block of 1° cells around the point — every town
+        within ~100 km at European latitudes bar the far corners — or the whole
+        gazetteer when that block is empty, so a lone town is never missed."""
+        la, lo = math.floor(lat), math.floor(lon)
+        out = [p for dy in (-1, 0, 1) for dx in (-1, 0, 1) for p in self._grid.get((la + dy, lo + dx), ())]
+        return out or self._all
+
+    def in_cells(self, cells6: set[str]) -> list[dict]:
+        return [p for c in cells6 for p in self._by_r6.get(c, ())]
 
 _NS = {"gdacs": "http://www.gdacs.org", "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#"}
 
@@ -47,10 +96,12 @@ def load_places(path: Path, min_places: int = 0) -> list[dict]:
             f"implausible gazetteer: {len(out)} European places parsed from {path} "
             f"(expected at least {min_places}) — truncated or wrong file"
         )
-    return out
+    return Places(out)
 
 
-def nearest_place(lat: float, lon: float, places: list[dict], max_km: float = 100.0) -> dict | None:
+def nearest_place(
+    lat: float, lon: float, places: Places | list[dict], max_km: float = 100.0
+) -> dict | None:
     """Nearest settlement in the gazetteer, or None beyond `max_km`.
 
     EUROPE_BBOX reaches deep into the Atlantic to cover the western coast, so a
@@ -61,11 +112,48 @@ def nearest_place(lat: float, lon: float, places: list[dict], max_km: float = 10
     """
     if not places:
         return None
-    best = min(places, key=lambda p: haversine_m(lat, lon, p["lat"], p["lon"]))
+    cand = places.near(lat, lon) if isinstance(places, Places) else places
+    best = min(cand, key=lambda p: haversine_m(lat, lon, p["lat"], p["lon"]))
     distance_km = round(haversine_m(lat, lon, best["lat"], best["lon"]) / 1000, 1)
     if distance_km > max_km:
         return None
     return {"name": best["name"], "distance_km": distance_km}
+
+
+def place_for(members: list[dict], places: Places | list[dict], max_km: float = 100.0) -> dict | None:
+    """The town a fire should be named after: the one nearest to ANY burnt
+    cell, among towns within ~5 km of the footprint; `distance_km` is that
+    distance (0-ish when the town sits inside the burn).
+
+    A big fire's centroid is a poor anchor. The 300 km² Gironde fire of July
+    2026 got labelled Gujan-Mestras — across the Bassin d'Arcachon — because
+    its centroid happened to be nearer that town than to Andernos-les-Bains,
+    where the front actually stopped. With no town near the footprint at all
+    (a remote burn) this falls back to the centroid rule, same cutoff.
+    """
+    if not places:
+        return None
+    cells = {m["cell"] for m in members if m.get("cell")}
+    if cells:
+        parents = {h3.cell_to_parent(c, _PLACE_RES) for c in cells}
+        near6: set[str] = set()
+        for p in parents:
+            near6.update(h3.grid_disk(p, 1))
+        if isinstance(places, Places):
+            cand = places.in_cells(near6)
+        else:
+            cand = [p for p in places if h3.latlng_to_cell(p["lat"], p["lon"], _PLACE_RES) in near6]
+        if cand:
+            centres = [h3.cell_to_latlng(c) for c in cells]
+            best, best_m = None, math.inf
+            for p in cand:
+                d = min(haversine_m(p["lat"], p["lon"], la, lo) for la, lo in centres)
+                if d < best_m:
+                    best, best_m = p, d
+            return {"name": best["name"], "distance_km": round(best_m / 1000, 1)}
+    lat = sum(m["lat"] for m in members) / len(members)
+    lon = sum(m["lon"] for m in members) / len(members)
+    return nearest_place(lat, lon, places, max_km)
 
 
 def fetch_gdacs(http_get: Callable[[str], str] | None = None) -> list[dict]:

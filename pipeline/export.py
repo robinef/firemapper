@@ -18,7 +18,7 @@ from .config import (
 from .coverage import build_coverage
 from .fetch_result import FetchResult
 from .freshness import carried_entry, layer_entry, should_carry
-from .enrich import gdacs_for_event, nearest_place
+from .enrich import gdacs_for_event, place_for
 from .events import cell_km2_for, lifecycle, reactivation_links
 from .isochrones import FootprintIndex, isochrone_features, open_band_geometry
 from .metrics import area_km2, bins_series, local_spread_vectors, movement, status
@@ -130,7 +130,9 @@ def _events_features(events, liveness, places, alerts, now):
                     "cum_cells": series[-1]["cum_cells"],
                     "movement": movement(series, now), "state": status(series, now),
                     "freshness": {"viirs": newest.isoformat(), "meteosat": met["latest"] if met else None},
-                    "place": (place := nearest_place(cen[0], cen[1], places)),
+                    # Named after the town nearest a BURNT cell, not the
+                    # centroid — see enrich.place_for for the Gironde case.
+                    "place": (place := place_for(members, places)),
                     # Flat copy for map labels: MapLibre stringifies nested
                     # objects, so ["get", "name"] needs a top-level key.
                     "name": place["name"] if place else None,

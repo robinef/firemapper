@@ -97,7 +97,7 @@ def _label_for(place: str | None, start: date, past: bool) -> str:
 
 def _scar_from_fire(eid: str, members: list, today: date, past: bool,
                     places: list | None = None, track_gen: str | None = None) -> dict:
-    from .enrich import nearest_place
+    from .enrich import place_for
 
     lons = [m["lon"] for m in members]
     lats = [m["lat"] for m in members]
@@ -105,10 +105,11 @@ def _scar_from_fire(eid: str, members: list, today: date, past: bool,
     lon = sum(lons) / len(lons)
     start = min(m["acq_time"] for m in members).date()
     before, after = _scar_dates(start, today, past=past)
-    # A stored place name wins; otherwise reverse-geocode the centroid.
+    # A stored place name wins; otherwise the town nearest a burnt cell (same
+    # rule as the live fire card — enrich.place_for).
     name = members[0].get("name")
     if not name and places:
-        p = nearest_place(lat, lon, places)
+        p = place_for(members, places)
         name = p["name"] if p else None
     # Same sensor-aware cell size the live fire card uses (events.py).
     cell_km2 = cell_km2_for(members)
