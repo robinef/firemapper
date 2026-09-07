@@ -7,6 +7,7 @@
  * or distance rule leaks into a renderer it would drift between them silently.
  */
 
+import { cellToLatLng } from "h3-js";
 import { escapeHtml } from "./escape";
 import { compass } from "./panel";
 
@@ -100,7 +101,7 @@ function newestIntensity(
   return newest === null ? null : { mw: sum, ageMinutes: reportedAge };
 }
 
-function nearestWind(
+export function nearestWind(
   position: [number, number] | null,
   windPoints: GeoJSON.FeatureCollection | null,
   now: Date,
@@ -127,6 +128,36 @@ function nearestWind(
     }
   }
   return best;
+}
+
+export type FootprintWind = {
+  cell: string;
+  lon: number;
+  lat: number;
+  bearingDeg: number;
+  kmh: number;
+};
+
+/**
+ * Same nearest-fresh-sample rule as the card's single-point reading
+ * (`nearestWind`, same `WIND_MAX_KM`/`WIND_MAX_AGE_MIN` cutoffs), applied
+ * once per H3 cell of a fire's footprint — so a cell too far from any wind
+ * sample, or with only a stale one, is silently omitted rather than
+ * inventing a reading. That is what makes this "one arrow per cell WHEN
+ * POSSIBLE" rather than "always one arrow per cell."
+ */
+export function footprintWind(
+  cells: string[],
+  windPoints: GeoJSON.FeatureCollection | null,
+  now: Date,
+): FootprintWind[] {
+  const out: FootprintWind[] = [];
+  for (const cell of cells) {
+    const [lat, lon] = cellToLatLng(cell);
+    const wind = nearestWind([lon, lat], windPoints, now);
+    if (wind) out.push({ cell, lon, lat, bearingDeg: wind.bearingDeg, kmh: wind.kmh });
+  }
+  return out;
 }
 
 export function readoutModel(
