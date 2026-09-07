@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Data &amp; sources — FireMapper</title>
+    <meta
+      name="description"
+      content="Every feed FireMapper draws from: what it is, who publishes it, and how far its history reaches."
+    />
+    <link rel="stylesheet" href="/src/sources.css" />
+  </head>
+  <body class="src-body">
+    <header class="src-top">
+      <!-- Same build-time hazard as /scale: a page that fails to build is
+           served as index.html (the map) with a 200. Guarded by
+           tests/sources_render.test.ts, not by URL spelling. -->
+      <a class="src-back" href="/">← Live fire map</a>
+    </header>
+    <main id="sources">
+      <!-- Filled by src/sources.ts once the manifest loads. -->
+    </main>
+    <script type="module" src="/src/sources.ts"></script>
+  </body>
+</html>

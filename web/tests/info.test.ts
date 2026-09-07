@@ -63,4 +63,8 @@ describe("info view", () => {
     const bare = { generated_at: "2026-08-04T11:50:00Z" } as unknown as Manifest;
     expect(infoHtml(bare, now)).toContain("No layer information");
   });
+
+  it("links to the full sources page for readers who want details and provider links", () => {
+    expect(infoHtml(manifest, now)).toContain('href="/sources"');
+  });
 });

@@ -1,0 +1,92 @@
+/* The sources page. Same dark + fire-orange palette as the map and /scale,
+   but its own class prefix — a reading page, not a shared stylesheet, since
+   the two pages' layouts never overlap. */
+
+:root {
+  --bg: #0a0a0f;
+  --fg: #f2f2f2;
+  --muted: #9a9a9a;
+  --fire: #ff6b00;
+  --ember: rgba(255, 107, 0, 0.16);
+  --rule: rgba(255, 255, 255, 0.1);
+}
+
+* { box-sizing: border-box; }
+
+.src-body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 -apple-system, system-ui, sans-serif;
+}
+
+.src-top { padding: 18px 24px 0; }
+
+.src-back {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+.src-back:hover { color: var(--fire); }
+
+#sources {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+}
+
+.src-intro { color: var(--muted); margin: 0 0 20px; }
+
+.src-rows { display: flex; flex-direction: column; gap: 14px; }
+
+.src-row {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.src-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.src-age { font-variant-numeric: tabular-nums; text-transform: none; }
+
+.src-row-name { margin-top: 4px; font-weight: 600; font-size: 16px; }
+
+.src-blurb { margin: 6px 0 0; color: var(--muted); }
+.src-blurb a { color: var(--fire); text-decoration: none; }
+.src-blurb a:hover { text-decoration: underline; }
+
+.src-empty { color: var(--muted); }
+
+.src-coverage { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.src-coverage h2 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+
+.src-stats { display: flex; flex-direction: column; gap: 4px; }
+.src-stat {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 14px;
+}
+.src-stat b { font-variant-numeric: tabular-nums; }
+
+.src-note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+
+.safety {
+  margin-top: 28px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.safety b { color: var(--fg); }
