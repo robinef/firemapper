@@ -201,6 +201,31 @@ def test_an_unparseable_body_falls_back_rather_than_raising(tmp_path, capsys):
     assert "502" in capsys.readouterr().err
 
 
+def test_a_200_with_an_unparseable_body_is_named_as_such(tmp_path, capsys):
+    """The exact failure mode that killed the old WFS backend: a 200 OK
+    whose body is garbage, not a raised HTTP error."""
+    assert fetch_season_snapshot(
+        FakeSettings(tmp_path), NOW, lambda u: "<html>not json</html>"
+    ) == "stale"
+    warned = capsys.readouterr().err
+    assert "effis-season" in warned
+    assert "not valid JSON" in warned
+
+
+def test_a_truncated_response_is_named_as_truncated_not_empty(tmp_path, capsys):
+    """The silent-freeze case: if EFFIS ever caps limit below FETCH_LIMIT,
+    every fetch truncates forever and the snapshot never moves again. That
+    must read as truncation in the log, not as the empty result set it is
+    not — otherwise the one signal distinguishing "EFFIS has no fires" from
+    "we can never fetch again" is gone."""
+    assert fetch_season_snapshot(
+        FakeSettings(tmp_path), NOW, lambda u: response([rec("ba.1")], count=9000)
+    ) == "stale"
+    warned = capsys.readouterr().err
+    assert "truncated" in warned
+    assert "empty result set" not in warned
+
+
 def test_a_full_page_of_a_much_larger_season_is_accepted_as_complete(tmp_path):
     """The truncation guard must accept a full FETCH_LIMIT page when the server
     reports a much larger count. This is the production-shape case: EFFIS has

@@ -10,8 +10,9 @@ from tests.synth import T, hs
 def test_process_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr("pipeline.run.fetch_gdacs", lambda: [])
     # No snapshot under a fresh tmp_path means should_fetch() says yes and the
-    # real EFFIS WFS/stats requests fire. Stub both: this test must not depend
-    # on the network, and offline it would hang for minutes.
+    # real EFFIS requests fire — the burned-area REST API for perimeters, api2
+    # for season stats. Stub both: this test must not depend on the network,
+    # and offline it would hang for minutes.
     monkeypatch.setattr("pipeline.run.fetch_season_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr("pipeline.run.fetch_stats_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)

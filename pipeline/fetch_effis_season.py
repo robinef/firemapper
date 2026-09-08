@@ -157,26 +157,36 @@ def _fetch_url(now: datetime) -> str:
     )
 
 
-def _fetch_season(http_get: Callable[[str], str], now: datetime) -> list[dict] | None:
-    """The FETCH_LIMIT largest-by-area current-season records, or None if the
-    response is unusable — malformed, or truncated. A truncated response is
-    worse than a slightly old one, so anything we cannot prove complete is
-    rejected. Network/HTTP-status failures raise out of here; the caller
-    (fetch_season_snapshot) catches them and derives a reason via _fault."""
+def _fetch_season(http_get: Callable[[str], str], now: datetime) -> list[dict]:
+    """The FETCH_LIMIT largest-by-area current-season records. Raises on
+    anything that makes the response untrustworthy — malformed JSON, an
+    unexpected shape, or a truncated page — so fetch_season_snapshot's
+    existing exception handling (and _fault) reports the specific cause
+    instead of a generic failure. A genuinely empty (but valid) result set
+    is NOT an error: it returns [] normally.
+
+    Distinguishing these matters most for truncation: if EFFIS ever imposes a
+    server-side max_limit below FETCH_LIMIT, every fetch would truncate
+    forever, freezing the snapshot permanently while the log said only
+    "empty result set" — a silent, self-perpetuating failure the old WFS
+    (which at least errored identifiably every time) did not have."""
     text = http_get(_fetch_url(now))
     try:
         payload = json.loads(text)
     except ValueError:
-        return None
+        raise ValueError(f"EFFIS response was not valid JSON: {text[:200]!r}") from None
     if not isinstance(payload, dict):
-        return None
+        raise ValueError(f"EFFIS response was not a JSON object (got {type(payload).__name__})")
     results = payload.get("results")
     if not isinstance(results, list):
-        return None
+        raise ValueError(f"EFFIS response 'results' was not a list (got {type(results).__name__})")
     count = payload.get("count")
     expected = min(count, FETCH_LIMIT) if isinstance(count, int) else len(results)
     if len(results) != expected:
-        return None
+        raise ValueError(
+            f"EFFIS response looked truncated: got {len(results)} records, "
+            f"expected {expected} (count={count}, FETCH_LIMIT={FETCH_LIMIT})"
+        )
     return _rows_from_records(results)
 
 
