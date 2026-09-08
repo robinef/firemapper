@@ -25,6 +25,12 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
+# REST burned-area endpoint (DRF-style JSON, keyless, CORS-enabled). This is
+# the replacement for the WFS below — see fetch_effis_season.py, which is
+# migrating to it in this same change. EFFIS_WFS/EFFIS_TYPENAME are removed
+# in a follow-up task once nothing references them.
+EFFIS_BA_REST = "https://api.effis.emergency.copernicus.eu/rest/2/burntareas/current/"
+
 # WFS GetFeature against the EFFIS burned-area layer. GeoJSON is requested when
 # the server offers it; older GML is parsed defensively as a fallback.
 EFFIS_WFS = "https://ies-ows.jrc.ec.europa.eu/effis"
