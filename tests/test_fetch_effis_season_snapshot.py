@@ -201,6 +201,24 @@ def test_an_unparseable_body_falls_back_rather_than_raising(tmp_path, capsys):
     assert "502" in capsys.readouterr().err
 
 
+def test_a_full_page_of_a_much_larger_season_is_accepted_as_complete(tmp_path):
+    """The truncation guard must accept a full FETCH_LIMIT page when the server
+    reports a much larger count. This is the production-shape case: EFFIS has
+    16815+ records this season, but we only ask for (and correctly receive) the
+    largest 250 by area. The guard's `expected = min(count, FETCH_LIMIT)` clamps
+    the expected count to the page size we requested, so a full page is
+    accepted as complete even though the server has many more records."""
+    settings = FakeSettings(tmp_path)
+    # Build a response with exactly FETCH_LIMIT (250) records and a very large count
+    records = [rec(f"ba.{i}") for i in range(250)]
+
+    def http_get(url):
+        return response(records, count=16815)
+
+    assert fetch_season_snapshot(settings, NOW, http_get) == "fresh"
+    assert snapshot_path(settings).exists()
+
+
 def _snapshot_ids(settings) -> list[str]:
     from pipeline.store import _sql_path, connect
 
