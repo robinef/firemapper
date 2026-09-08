@@ -548,7 +548,15 @@ export function setupFireCard(
       mountTimeline(timelineEl, null);
     }
     // After the branch above — see the comment by clearFireWind() for why.
-    if (fireWind) addFireWind(map, fireWind);
+    if (fireWind) {
+      addFireWind(map, fireWind);
+      // addFireWind always forces itself visible (its own comment explains
+      // why re: clearFireWind's hide-not-remove). setLevel(2) above already
+      // applied the Wind toggle's state to this same layer (registry.ts's
+      // wind module now owns fire-wind-arrows too) — but that ran BEFORE
+      // this layer existed to apply it to, so it must be redone here.
+      if (!switcher.isOn("wind")) clearFireWind(map);
+    }
   };
 
   // The fire/scar's OWN position first (`eventPosition`, Point geometry) — a
