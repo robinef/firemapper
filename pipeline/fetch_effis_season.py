@@ -70,6 +70,39 @@ def _polygon_wkt(geometry) -> str | None:
     return None
 
 
+def _rows_from_records(records: list[dict]) -> list[dict]:
+    """Normalise raw REST burned-area records into snapshot rows, dropping
+    anything that cannot be trusted in a quoted total: a missing id,
+    non-polygon geometry, absent or non-positive area."""
+    rows: list[dict] = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        rid = rec.get("id")
+        if rid in (None, ""):
+            continue
+        wkt = _polygon_wkt(rec.get("shape"))
+        if wkt is None:
+            continue
+        try:
+            area_ha = float(rec.get("area_ha"))
+        except (TypeError, ValueError):
+            continue
+        if area_ha <= 0:
+            continue
+        country = rec.get("country")
+        place = _first(rec, ("province", "commune"))
+        rows.append({
+            "id": str(rid),
+            "geometry_wkt": wkt,
+            "area_ha": area_ha,
+            "firedate": _parse_date(rec.get("firedate")),
+            "country": str(country) if country is not None else None,
+            "place": str(place) if place is not None else None,
+        })
+    return rows
+
+
 def _feature_id(feat: dict, props: dict, wkt: str) -> str:
     """The server's feature id when it gives one; otherwise a deterministic
     hash of the geometry, so the same perimeter keeps its identity across
