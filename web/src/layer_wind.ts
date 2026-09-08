@@ -96,10 +96,12 @@ export function addWind(map: maplibregl.Map, wind: GeoJSON.FeatureCollection) {
 /**
  * Fire-scoped wind arrows — one per H3 cell of the OPEN fire's footprint
  * (see fire_readout.ts's footprintWind), not the coarse global grid above.
- * Card-lifecycle content, not a switcher module: no toggle, no legend of
- * its own, same treatment as firecard.ts's fire-bin footprint layer. Must
- * re-show visibility on every add, since clearFireWind hides rather than
- * removes the layer between cards.
+ * Card-lifecycle content, not a switcher module of its own — no legend here —
+ * but its layer id lives in the Wind module's layerIds (main.ts) so the same
+ * "Wind" checkbox that hides the overview grid also hides this. This function
+ * always forces itself visible regardless of that toggle (clearFireWind hides
+ * rather than removes the layer between cards, so re-showing on every add is
+ * required); firecard.ts calls clearFireWind right after if the toggle is off.
  */
 export function addFireWind(map: maplibregl.Map, wind: GeoJSON.FeatureCollection) {
   const src = map.getSource("fire-wind") as maplibregl.GeoJSONSource | undefined;

@@ -146,9 +146,10 @@ function scarClick(id: string): maplibregl.MapLayerMouseEvent {
   } as unknown as maplibregl.MapLayerMouseEvent;
 }
 
-async function buildCard(map: maplibregl.Map) {
+async function buildCard(map: maplibregl.Map, opts?: { windOn?: boolean }) {
   document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
-  const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+  const windOn = opts?.windOn ?? true;
+  const switcher: Switcher = { isOn: (k) => (k === "wind" ? windOn : true), setLevel: () => {}, refresh: () => {} };
   const { setupFireCard } = await import("../src/firecard");
   return setupFireCard(
     map, { generation: "gen-1", layers: {} } as never, null,
@@ -163,6 +164,18 @@ describe("fire card footprint wind arrows", () => {
     await (await buildCard(map)).openFire(fireClick("fire-with-wind"));
 
     expect(fireWindVisibility()).toBe("visible");
+    expect(fireWindFeatureCount()).toBe(1);
+  });
+
+  it("stays hidden on open when the Wind toggle is off", async () => {
+    // Live 2026-09: the "Wind" checkbox unchecked still showed these arrows —
+    // addFireWind forces itself visible on every open regardless of the
+    // toggle, and nothing corrected that afterward. firecard.ts must.
+    const { map, fireWindVisibility, fireWindFeatureCount } = stubMap();
+    await (await buildCard(map, { windOn: false })).openFire(fireClick("fire-with-wind"));
+
+    expect(fireWindVisibility()).toBe("none");
+    // The data is still there — a later toggle-on needs no re-fetch/re-open.
     expect(fireWindFeatureCount()).toBe(1);
   });
 

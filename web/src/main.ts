@@ -226,7 +226,12 @@ async function boot() {
         levels: (FORCE_WIND ? [1, 2] : [2]) as (1|2)[],
         label: "Wind",
         question: "Which way is the wind pushing it?",
-        layerIds: WIND_LAYER_IDS,
+        // Both the coarse overview grid AND the per-fire arrows on a fire's
+        // own H3 footprint (firecard.ts's addFireWind) — one checkbox, one
+        // question, both answers. addFireWind still forces its layer visible
+        // on every open (see its own comment); firecard.ts corrects that
+        // against this same toggle right after calling it.
+        layerIds: [...WIND_LAYER_IDS, ...FIRE_WIND_LAYER_IDS],
         defaultOn: FORCE_WIND,
         legend: WIND_LEGEND,
         liveOnly: true,
