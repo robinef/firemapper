@@ -1,32 +1,37 @@
-"""Pure functions for normalizing EFFIS WFS GeoJSON features into snapshot rows.
+"""Fetch and normalise EFFIS's current-season burned-area REST API into
+snapshot rows.
 
-rows_from_features: convert raw features to rows with validated geometry and area.
-completeness: extract WFS 2.0 response counters (numberMatched, numberReturned).
+fetch_season_snapshot fetches at most once per gate window (see
+should_fetch) and stores the perimeters as a GeoParquet snapshot via
+write_polygons; fetch_effis_ba (pipeline/fetch_effis.py) reads that snapshot
+and never touches the network itself — one fragile backend, one request.
+
+The REST API (EFFIS_BA_REST, in pipeline/fetch_effis.py) supports
+server-side ordering + limiting, so one request for the FETCH_LIMIT
+largest-by-area current-season records replaces what used to be a full WFS
+pagination loop. A full-season fetch was measured infeasible (16,815+
+records this season, ~34MB/43s for 200 records with full geometry) — see
+docs/superpowers/specs/2026-09-08-effis-rest-api-migration-design.md for the
+measurement and for why FETCH_BUFFER exists (headroom so records dropped by
+_rows_from_records's own validation don't starve the final count below
+DEFAULT_BA_LIMIT).
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .fetch_effis import EFFIS_TYPENAME, EFFIS_WFS, _features_from_text, _first, _parse_date
+from .fetch_effis import DEFAULT_BA_LIMIT, EFFIS_BA_REST, _first, _parse_date
 from .store import _naive_utc, _sql_path, connect, write_polygons
 
-PAGE_SIZE = 1000
+FETCH_BUFFER = 50  # headroom above DEFAULT_BA_LIMIT: invalid rows dropped by
+                    # _rows_from_records inside the fetch window must not
+                    # starve the final count below what fetch_effis_ba wants.
+FETCH_LIMIT = DEFAULT_BA_LIMIT + FETCH_BUFFER
 MIN_AGE_HOURS = 6.0
-MAX_PAGES = 200  # hard stop: a server that never advances must not loop forever
-
-_AREA_KEYS = ("area_ha", "AREA_HA", "area", "AREA")
-_DATE_KEYS = ("firedate", "FIREDATE", "lastupdate", "LASTUPDATE",
-              "initialdate", "INITIALDATE")
-_COUNTRY_KEYS = ("country", "COUNTRY", "em_ctr_code", "EM_CTR_CODE",
-                 "iso2", "ISO2", "iso3", "ISO3")
-_PLACE_KEYS = ("place_name", "PLACE_NAME", "province", "PROVINCE",
-               "commune", "COMMUNE")
 
 
 def _ring_wkt(ring) -> str | None:
@@ -40,7 +45,6 @@ def _ring_wkt(ring) -> str | None:
         pts.append(f"{lon} {lat}")
     if len(pts) < 4:
         return None
-    # Check ring closure: first and last coordinate must be equal
     if ring[0] != ring[-1]:
         return None
     return f"({', '.join(pts)})"
@@ -70,110 +74,48 @@ def _polygon_wkt(geometry) -> str | None:
     return None
 
 
-def _feature_id(feat: dict, props: dict, wkt: str) -> str:
-    """The server's feature id when it gives one; otherwise a deterministic
-    hash of the geometry, so the same perimeter keeps its identity across
-    fetches and dedup works."""
-    for candidate in (feat.get("id"), _first(props, ("id", "ID", "fid", "FID"))):
-        if candidate not in (None, ""):
-            return str(candidate)
-    return "effis-" + hashlib.sha1(wkt.encode()).hexdigest()[:16]
-
-
-def rows_from_features(features: list[dict]) -> list[dict]:
-    """Normalise raw features into snapshot rows, dropping anything that cannot
-    be trusted in a quoted total: non-polygon geometry, absent or non-positive
-    area."""
+def _rows_from_records(records: list[dict]) -> list[dict]:
+    """Normalise raw REST burned-area records into snapshot rows, dropping
+    anything that cannot be trusted in a quoted total: a missing id,
+    non-polygon geometry, absent or non-positive area."""
     rows: list[dict] = []
-    for feat in features or []:
-        if not isinstance(feat, dict):
+    for rec in records or []:
+        if not isinstance(rec, dict):
             continue
-        props = feat.get("properties") or {}
-        if not isinstance(props, dict):
+        rid = rec.get("id")
+        if rid in (None, ""):
             continue
-        wkt = _polygon_wkt(feat.get("geometry"))
+        wkt = _polygon_wkt(rec.get("shape"))
         if wkt is None:
             continue
-        raw_area = _first(props, _AREA_KEYS)
         try:
-            area_ha = float(raw_area)
+            area_ha = float(rec.get("area_ha"))
         except (TypeError, ValueError):
             continue
         if area_ha <= 0:
             continue
-        country = _first(props, _COUNTRY_KEYS)
-        place = _first(props, _PLACE_KEYS)
+        country = rec.get("country")
+        place = _first(rec, ("province", "commune"))
         rows.append({
-            "id": _feature_id(feat, props, wkt),
+            "id": str(rid),
             "geometry_wkt": wkt,
             "area_ha": area_ha,
-            "firedate": _parse_date(_first(props, _DATE_KEYS)),
+            "firedate": _parse_date(rec.get("firedate")),
             "country": str(country) if country is not None else None,
             "place": str(place) if place is not None else None,
         })
     return rows
 
 
-def completeness(payload: dict) -> tuple[int | None, int | None]:
-    """(numberMatched, numberReturned) from a WFS 2.0 GeoJSON res, or
-    (None, None) when the server omits them."""
-    def as_int(val):
-        try:
-            return int(val)
-        except (TypeError, ValueError):
-            return None
-    if not isinstance(payload, dict):
-        return (None, None)
-    return (as_int(payload.get("numberMatched")), as_int(payload.get("numberReturned")))
-
-
 def snapshot_path(settings) -> Path:
     return settings.data_dir / "raw" / "effis_ba.parquet"
 
 
-def _is_feature_collection(text: str) -> bool:
-    """True when the body IS a feature collection, however empty it is.
-
-    `_features_from_text` yields [] for a genuinely empty FeatureCollection and
-    for an OWS ExceptionReport alike, which makes end-of-data indistinguishable
-    from the backend falling over mid-pagination. That difference decides
-    whether an empty page completes a season or truncates one, so it has to be
-    read off the body itself.
-
-    Deliberately strict: anything we cannot positively identify as a collection
-    is a failure. Over-rejecting costs one skipped refresh; over-accepting
-    publishes a partial season as the authoritative total.
-    """
-    text = (text or "").strip()
-    if not text:
-        return False
-    if text[0] in "{[":
-        try:
-            doc = json.loads(text)
-        except ValueError:
-            return False
-        return isinstance(doc, dict) and isinstance(doc.get("features"), list)
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
-        return False
-    # An ExceptionReport parses perfectly well; only the tag tells them apart.
-    return "featurecollection" in root.tag.rsplit("}", 1)[-1].lower()
-
-
-def _page_url(start_index: int) -> str:
-    return (
-        f"{EFFIS_WFS}?service=WFS&version=2.0.0&request=GetFeature"
-        f"&typename={EFFIS_TYPENAME}&outputformat=geojson&srsname=EPSG:4326"
-        f"&count={PAGE_SIZE}&startIndex={start_index}"
-    )
-
-
 def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS) -> bool:
     """False while the stored snapshot is younger than the gate. EFFIS
-    republishes burned areas roughly daily and its backend is fragile; the
-    pipeline runs every 15 minutes, so without this we would hit it ~96x/day
-    for a number that moves once.
+    republishes burned areas roughly daily; the pipeline runs every 15
+    minutes, so without this we would hit it ~96x/day for a number that
+    moves once.
 
     Age comes from the snapshot's own `fetched_at` column, NOT the file mtime:
     the file is rewritten by an R2 hydrate on every CI run, so its mtime says
@@ -207,88 +149,63 @@ def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS
         return True
 
 
-def _collect(http_get: Callable[[str], str]) -> list[dict] | None:
-    """Every feature of the current season, or None if the response is unusable
-    — down, malformed, or INCOMPLETE. A truncated season is worse than a
-    slightly old one, so anything we cannot prove complete is rejected.
+def _fetch_url(now: datetime) -> str:
+    season_start = f"{now.year}-01-01T00:00:00"
+    return (
+        f"{EFFIS_BA_REST}?firedate__gte={season_start}"
+        f"&ordering=-area_ha&limit={FETCH_LIMIT}"
+    )
 
-    Completeness is judged on features actually RECEIVED, not on the server's
-    own numberReturned (which may overstate what it sent) and not on rows KEPT
-    (rows_from_features legitimately drops untrusted geometry)."""
-    rows: list[dict] = []
-    seen = 0
-    start = 0
-    expected: int | None = None
-    for _ in range(MAX_PAGES):
-        text = http_get(_page_url(start))
-        features = _features_from_text(text)
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            payload = {}
-        matched, _returned = completeness(payload)
-        if matched is not None:
-            # MONOTONIC, not last-wins: a later page reporting a SMALLER
-            # numberMatched than one already seen would otherwise satisfy the
-            # completion check below early and publish a truncated season as
-            # authoritative. The largest figure the server ever claimed is the
-            # one it has to make good on.
-            expected = matched if expected is None else max(expected, matched)
 
-        if not features:
-            if not _is_feature_collection(text):
-                # No features AND not a collection: an exception report or
-                # garbage, not the end of the data. Without this an error page
-                # closes the pagination and whatever we happened to have
-                # collected so far is published as the complete season.
-                return None
-            if start == 0:
-                return None  # down, exception report, or genuinely nothing
-            if expected is not None and seen < expected:
-                return None  # server promised more and then stopped: truncated
-            return rows  # nothing left to page, and nothing outstanding
+def _fetch_season(http_get: Callable[[str], str], now: datetime) -> list[dict]:
+    """The FETCH_LIMIT largest-by-area current-season records. Raises on
+    anything that makes the response untrustworthy — malformed JSON, an
+    unexpected shape, or a truncated page — so fetch_season_snapshot's
+    existing exception handling (and _fault) reports the specific cause
+    instead of a generic failure. A genuinely empty (but valid) result set
+    is NOT an error: it returns [] normally.
 
-        seen += len(features)
-        rows.extend(rows_from_features(features))
-        start += len(features)  # advance by what ARRIVED, never by numberReturned
-
-        if expected is not None and seen >= expected:
-            return rows
-        if expected is None and len(features) < PAGE_SIZE:
-            return rows  # no counters to verify, but a short page ends the set
-    return None  # MAX_PAGES exhausted: the server never finished
+    Distinguishing these matters most for truncation: if EFFIS ever imposes a
+    server-side max_limit below FETCH_LIMIT, every fetch would truncate
+    forever, freezing the snapshot permanently while the log said only
+    "empty result set" — a silent, self-perpetuating failure the old WFS
+    (which at least errored identifiably every time) did not have."""
+    text = http_get(_fetch_url(now))
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        raise ValueError(f"EFFIS response was not valid JSON: {text[:200]!r}") from None
+    if not isinstance(payload, dict):
+        raise ValueError(f"EFFIS response was not a JSON object (got {type(payload).__name__})")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError(f"EFFIS response 'results' was not a list (got {type(results).__name__})")
+    count = payload.get("count")
+    expected = min(count, FETCH_LIMIT) if isinstance(count, int) else len(results)
+    if len(results) != expected:
+        raise ValueError(
+            f"EFFIS response looked truncated: got {len(results)} records, "
+            f"expected {expected} (count={count}, FETCH_LIMIT={FETCH_LIMIT})"
+        )
+    return _rows_from_records(results)
 
 
 def _fault(exc: Exception) -> str:
-    """A one-line reason, with the detail OWS hides in the response body.
-
-    `raise_for_status()` gives "400 Client Error: Internal Server Error for url:
-    ..." and stops there, but a WFS puts the actual cause in an
-    `ows:ExceptionText` inside the body it just returned. The difference is the
-    whole diagnosis: the useless version says the request failed, the useful one
-    says `msOracleSpatialLayerOpen(): OracleSpatial error. Cannot create OCI
-    Handlers` — EFFIS's backing database is down, nothing here is wrong, and no
-    amount of retrying will help.
-
-    The URL is dropped rather than echoed. It carries no credential (EFFIS is
-    keyless) but it is long, and the status plus the exception text are what a
-    reader acts on.
-    """
+    """One-line reason. The REST API errors as plain HTTP + a body (JSON
+    `detail` when the backend is up but complaining, HTML/plain text on a
+    gateway failure) — unlike the old WFS's OWS ExceptionReport XML embedded
+    in a 200 body, so no XML parsing here."""
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     body = getattr(response, "text", "") or ""
     detail = ""
     if body:
         try:
-            root = ET.fromstring(body)
-            texts = [
-                (el.text or "").strip()
-                for el in root.iter()
-                if el.tag.endswith("ExceptionText")
-            ]
-            detail = next((t for t in texts if t), "")
-        except ET.ParseError:
-            detail = ""
+            doc = json.loads(body)
+            if isinstance(doc, dict):
+                detail = doc.get("detail") or doc.get("message") or doc.get("error") or ""
+        except ValueError:
+            detail = body
     if not detail:
         detail = str(exc)
     return f"HTTP {status}: {detail}" if status else detail
@@ -323,23 +240,14 @@ def fetch_season_snapshot(
 
     reason: str | None = None
     try:
-        rows = _collect(http_get)
+        rows = _fetch_season(http_get, now)
     except Exception as exc:  # noqa: BLE001 - EFFIS is best-effort, never fatal
         rows = None
         reason = _fault(exc)
     if not rows:
-        # Say WHY, because "stale" alone cannot. It is returned when the service
-        # refuses us, when it answers with an empty feature set, and when paging
-        # never terminates — three different situations with three different
-        # responses, previously indistinguishable in the log and in the
-        # manifest. Finding out which took reproducing the request by hand.
-        #
-        # Not an error line: a dark EFFIS is expected and must not fail a run
-        # that is publishing live fire data perfectly well. This is the sentence
-        # that answers "is it them or us?" without anyone leaving the log.
         print(
             f"[warn] effis-season: no rows, keeping the previous snapshot — "
-            f"{reason or 'EFFIS returned an empty feature set'}",
+            f"{reason or 'EFFIS returned an empty result set'}",
             file=sys.stderr,
         )
         return "stale"

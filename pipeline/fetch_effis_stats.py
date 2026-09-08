@@ -1,20 +1,27 @@
 """Season-to-date burned area from api2.effis.emergency.copernicus.eu.
 
 A separate source from `pipeline/fetch_effis_season.py`. That module polls
-the ies-ows.jrc.ec.europa.eu WFS (Oracle-backed) for individual burned-area
+the burned-areas REST API (api.effis.emergency.copernicus.eu, see
+EFFIS_BA_REST in pipeline/fetch_effis.py) for individual burned-area
 POLYGONS, and `fetch_effis_ba` (pipeline/fetch_effis.py) reads its snapshot
 to draw before/after scar imagery on the live map — that dependency is real
 and this module must never touch it. api2 is EFFIS's own "Seasonal Trend"
 app's data source (confirmed via browser network capture), a different
-backend (gunicorn, not the Oracle WFS, and not affected by the WFS's
-`msOracleSpatialLayerOpen(): ... Connection failure` outage that has run
-since this repo's season feature launched). It has no per-fire polygons at
-all, only pre-aggregated weekly + cumulative burnt-area stats per year,
-EU-wide and per EU country — exactly the "how much burned this season"
-question `/scale` asks and nothing `fetch_effis_ba` needs.
+backend again (gunicorn) and independent of the perimeter API. It has no
+per-fire polygons at all, only pre-aggregated weekly + cumulative burnt-area
+stats per year, EU-wide and per EU country — exactly the "how much burned
+this season" question `/scale` asks and nothing `fetch_effis_ba` needs.
+
+Historical note, since it explains why this module exists at all: the
+perimeter source used to be the Oracle-backed ies-ows.jrc.ec.europa.eu WFS,
+which went down with `msOracleSpatialLayerOpen(): ... Connection failure`
+for this repo's whole season-feature life. api2 was picked precisely because
+it was a different backend and stayed up. That WFS has since been
+decommissioned and replaced by the REST API above (2026-09); api2 remains
+independent of both, so nothing here changed.
 
 One HTTP request per country (27, hardcoded — EU membership is static) plus
-one EU-wide request; no pagination, unlike the WFS.
+one EU-wide request; no pagination.
 """
 from __future__ import annotations
 
@@ -75,8 +82,8 @@ def _latest_cumulative(payload: dict) -> dict | None:
 def _fault(exc: Exception) -> str:
     """One-line reason. api2 errors as plain HTTP + a body (JSON `detail`
     when the backend is up but complaining, HTML/plain text on a gateway
-    failure) — unlike the WFS's OWS ExceptionReport XML, so no XML parsing
-    here."""
+    failure) — unlike the old WFS's OWS ExceptionReport XML, so no XML
+    parsing here."""
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     body = getattr(response, "text", "") or ""

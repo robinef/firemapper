@@ -199,3 +199,65 @@ def test_no_network_call_is_made(tmp_path):
         raise AssertionError("fetch_effis_ba must not hit the network")
 
     assert fetch_effis_ba(settings, http_get=boom)
+
+
+# Every test above hand-writes its snapshot rows with `row()`, which merely
+# happens to use the same keys _rows_from_records emits. Nothing links the two,
+# so renaming a key inside the normalizer (say `place` -> `province`) would keep
+# this whole file green while write_polygons wrote the wrong column,
+# fetch_effis_ba's SELECT hit its broad `except Exception: return []`, and the
+# live map silently lost every EFFIS scar — the exact failure class the REST
+# migration exists to end. The test below closes that gap by running a real
+# REST-shaped record through the actual normalizer.
+
+LIVE_SHAPED_RECORD = {
+    "id": 683014,
+    "centroid": {"type": "Point", "coordinates": [-0.8, 40.2]},
+    "bbox": [-1.0, 40.0, -0.6, 40.4],
+    "shape": {
+        "type": "MultiPolygon",
+        "coordinates": [[[[-1.0, 40.0], [-0.6, 40.0], [-0.6, 40.4], [-1.0, 40.4], [-1.0, 40.0]]]],
+    },
+    "country": "ES",
+    "countryful": "Spain",
+    "province": "Aragon",
+    "commune": "Zaragoza",
+    "firedate": "2026-07-22T11:55:00+02:00",
+    "area_ha": 900.0,
+    "broadlea": 10.0, "conifer": 20.0, "mixed": 5.0, "scleroph": 0.0,
+    "transit": 0.0, "othernatlc": 0.0, "agriareas": 60.0, "artifsurf": 5.0,
+    "otherlc": 0.0, "percna2k": 0.0,
+    "lastupdate": "2026-07-23T09:00:00+02:00",
+    "lastfiredate": "2026-07-22T11:55:00+02:00",
+    "noneu": False,
+}
+
+
+def test_a_live_shaped_rest_record_round_trips_to_a_valid_scar(tmp_path):
+    """End-to-end over the real seam: a record shaped like a live EFFIS REST
+    response -> _rows_from_records -> write_polygons -> fetch_effis_ba. The
+    normalized row is produced by the module under test, never hand-written, so
+    a renamed/dropped key breaks this test instead of only the live map."""
+    from pipeline.fetch_effis_season import _rows_from_records
+
+    rows = _rows_from_records([LIVE_SHAPED_RECORD])
+    assert len(rows) == 1, "the normalizer dropped a valid live-shaped record"
+
+    scars = fetch_effis_ba(seed(tmp_path, rows))
+    assert len(scars) == 1, (
+        "the normalizer's own row did not survive write_polygons + fetch_effis_ba"
+    )
+    scar = scars[0]
+    assert set(scar) == {
+        "id", "label", "kind", "lon", "lat", "area_km2",
+        "started", "before", "after", "place",
+    }
+    assert scar["id"] == "683014"
+    assert scar["kind"] == "past"
+    assert scar["place"] == "Aragon"          # province wins over commune
+    assert scar["label"] == "Aragon · 2026"
+    assert scar["area_km2"] == 9.0            # 900 ha
+    assert (scar["lon"], scar["lat"]) == (-0.8, 40.2)
+    assert scar["started"] == "2026-07-22"
+    assert scar["before"] == "2026-07-16"     # firedate - BASELINE_LEAD_DAYS
+    assert scar["after"] == "2026-08-05"      # firedate + SCAR_SETTLE_DAYS
