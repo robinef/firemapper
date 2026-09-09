@@ -7,11 +7,17 @@ was built from, so a crash at any boundary leaves the previous pair live.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from pipeline.config import ARCHIVE_TRACKS_INDEX, load_settings
+from pipeline.config import (
+    ARCHIVE_TRACKS_INDEX,
+    SCALE_BLOB_STATE_KEY,
+    load_settings,
+    scale_blob_key,
+)
 from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
 
 
@@ -493,6 +499,33 @@ def test_hydrate_tolerates_no_archive_index_yet(tmp_path):
 
     assert hydrate(settings, client) == gen
     assert not (settings.out_dir / ARCHIVE_TRACKS_INDEX).exists()
+
+
+def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
+    """The scale-comparison year blob and its incremental export state
+    (pipeline/export_scale_blob.py) need the same explicit-restore hydrate
+    already does for the permanent archive index above — publish()'s generic
+    archive/ walk uploads them, but only a named fetch here brings them back
+    on a fresh runner with an empty out_dir."""
+    gen = "gen-20260805T000000Z"
+    year = datetime.now(timezone.utc).year
+    state_body = json.dumps({"fire-1": {"digest": "abc", "year": year}}).encode()
+    blob_body = json.dumps(
+        [{"fire_id": "fire-1", "cell_id": "x", "res": 8, "vertices_m": []}]
+    ).encode()
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{SCALE_BLOB_STATE_KEY}": state_body,
+        f"data/{scale_blob_key(year)}": blob_body,
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    hydrate(settings, client)
+
+    assert (settings.out_dir / SCALE_BLOB_STATE_KEY).read_bytes() == state_body
+    assert (settings.out_dir / scale_blob_key(year)).read_bytes() == blob_body
 
 
 def test_publish_uploads_the_permanent_archive(tmp_path):

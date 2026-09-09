@@ -15,9 +15,17 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ARCHIVE_TRACKS_INDEX, GENERATIONS_KEPT, TRACK_INDEX, Settings
+from .config import (
+    ARCHIVE_TRACKS_INDEX,
+    GENERATIONS_KEPT,
+    SCALE_BLOB_STATE_KEY,
+    TRACK_INDEX,
+    Settings,
+    scale_blob_key,
+)
 
 ARCHIVE_PREFIX = "archive/"
 DATA_PREFIX = "data/"
@@ -163,6 +171,18 @@ def hydrate(settings: Settings, client) -> str | None:
         index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_bytes(archive_index_body)
+
+    # The scale-comparison year blob and its incremental export state
+    # (pipeline/export_scale_blob.py). Same explicit-restore pattern as the
+    # archive index above — publish() already uploads these generically via
+    # its archive/ walk, so only hydrate() needs a named addition.
+    current_year = datetime.now(timezone.utc).year
+    for extra_key in (SCALE_BLOB_STATE_KEY, scale_blob_key(current_year)):
+        body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{extra_key}")
+        if body is not None:
+            path = settings.out_dir / extra_key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
     return generation
 
 
