@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.config import Settings, load_settings
+from pipeline.export_scale_blob import run_export
 from pipeline.remote import hydrate, make_client, publish
 from pipeline.run import refresh
 
@@ -52,6 +54,12 @@ def main(argv: list[str], client=None) -> int:
 
     _timed("hydrate", lambda: hydrate(settings, client))
     _timed(f"refresh({tier})", lambda: refresh(settings, tier=tier))
+    _timed(
+        "export_scale_blob",
+        lambda: run_export(
+            settings, target_year=datetime.now(timezone.utc).year, client=client, r2_bucket=settings.r2_bucket
+        ),
+    )
     _timed("publish", lambda: publish(settings, _latest_generation(settings), client))
     return 0
 
