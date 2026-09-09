@@ -34,6 +34,7 @@ const LAYER_ID = "scale-blob-fill";
 const DATA_BASE = "/data";
 
 let active = false;
+let activating = false;
 let cells: ScaleBlobCell[] = [];
 let dropLat = 0;
 let dropLon = 0;
@@ -175,38 +176,52 @@ export function isScaleBlobActive(): boolean {
  * while already active is a no-op, matching the trigger button's toggle
  * behavior) and render it centered on the current viewport, then wire up
  * drag.
+ *
+ * Re-entrancy: `active` only flips true once the fetch resolves and the
+ * source/layer are added, so it cannot guard a second call issued while the
+ * first is still in flight (hung fetch, double-click on an undebounced
+ * trigger, etc). `activating` closes that gap — set synchronously before the
+ * first `await`, so a second overlapping call sees it immediately and is a
+ * safe no-op, matching the already-active behavior. It's reset on every exit
+ * path (the not-ok early return, success, and — via `finally` — any thrown
+ * error) so a failed activation can be retried.
  */
 export async function activateScaleBlob(
   map: maplibregl.Map,
   year: number,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  if (active) return;
-  const response = await fetchImpl(`${DATA_BASE}/archive/blob_${year}.json`);
-  if (!response.ok) return;
-  cells = (await response.json()) as ScaleBlobCell[];
+  if (active || activating) return;
+  activating = true;
+  try {
+    const response = await fetchImpl(`${DATA_BASE}/archive/blob_${year}.json`);
+    if (!response.ok) return;
+    cells = (await response.json()) as ScaleBlobCell[];
 
-  const center = map.getCenter();
-  dropLat = center.lat;
-  dropLon = center.lng;
+    const center = map.getCenter();
+    dropLat = center.lat;
+    dropLon = center.lng;
 
-  map.addSource(SOURCE_ID, { type: "geojson", data: toGeoJSON() });
-  map.addLayer({
-    id: LAYER_ID,
-    type: "fill",
-    source: SOURCE_ID,
-    paint: { "fill-color": ["get", "color"], "fill-opacity": 0.6 },
-  });
+    map.addSource(SOURCE_ID, { type: "geojson", data: toGeoJSON() });
+    map.addLayer({
+      id: LAYER_ID,
+      type: "fill",
+      source: SOURCE_ID,
+      paint: { "fill-color": ["get", "color"], "fill-opacity": 0.6 },
+    });
 
-  const canvas = map.getCanvas();
-  currentMap = map;
-  currentCanvas = canvas;
-  canvas.addEventListener("pointerdown", onPointerDown);
-  canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener("pointerup", onPointerUp);
-  canvas.addEventListener("pointercancel", onPointerUp);
-  canvas.style.cursor = "grab";
-  active = true;
+    const canvas = map.getCanvas();
+    currentMap = map;
+    currentCanvas = canvas;
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.style.cursor = "grab";
+    active = true;
+  } finally {
+    activating = false;
+  }
 }
 
 /** Hide the shape and fully restore normal map interaction — no lingering

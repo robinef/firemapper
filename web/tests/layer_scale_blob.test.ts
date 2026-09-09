@@ -126,6 +126,38 @@ describe("activateScaleBlob", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("does not double-fetch or double-add-source when two calls overlap before either resolves", async () => {
+    const map = stubMap();
+    // A controllable fetch: doesn't resolve until we say so, so both
+    // activateScaleBlob calls are genuinely in flight at once (not merely
+    // sequential microtasks) — this is what a hung fetch or a double-click on
+    // a not-yet-debounced trigger button looks like.
+    let resolveFetch!: (value: { ok: boolean; json: () => Promise<ScaleBlobCell[]> }) => void;
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+
+    const addSourceSpy = vi.spyOn(map, "addSource");
+
+    const first = activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
+    const second = activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
+
+    resolveFetch({ ok: true, json: async () => sampleBlob });
+    // The second, guarded call must resolve to a safe no-op rather than
+    // rejecting — a real maplibre map throws from addSource if a source
+    // with that id already exists, and an unguarded second call reaching
+    // addSource would surface that rejection here.
+    await expect(Promise.all([first, second])).resolves.toBeDefined();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(addSourceSpy).toHaveBeenCalledTimes(1);
+    expect(isScaleBlobActive()).toBe(true);
+    expect(blobSource(map)).toBeDefined();
+  });
+
   it("does nothing and leaves isScaleBlobActive false when the fetch response is not ok", async () => {
     const map = stubMap();
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, json: async () => sampleBlob });
