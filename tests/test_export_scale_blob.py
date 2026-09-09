@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pipeline.config import ARCHIVE_TRACKS_INDEX, SCALE_BLOB_STATE_KEY, Settings, scale_blob_key
 from pipeline.export_scale_blob import run_export, year_of_track
 
@@ -138,3 +140,65 @@ def test_run_export_second_new_fire_does_not_overlap_first(tmp_path):
     box_a = bounding_box(by_fire["fire-a"])
     box_b = bounding_box(by_fire["fire-b"])
     assert not boxes_overlap(box_a, box_b)
+
+
+def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, monkeypatch):
+    """Simulates a crash between the blob_{year}.json write and the
+    scale_blob_state.json write (export_scale_blob.py:107-108). The blob
+    write must survive, the state write must not have happened, and a
+    subsequent run must safely reprocess the affected track without
+    duplicating or corrupting its cells."""
+    import h3
+
+    settings = _settings(tmp_path)
+    cells_a = [h3.latlng_to_cell(45.0, 5.0, 8)]
+    tracks_a = {"fire-a": _track_body("fire-a", cells_a, "2026-01-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks_a)
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    state_path = settings.out_dir / SCALE_BLOB_STATE_KEY
+    blob_path = settings.out_dir / scale_blob_key(2026)
+    state_before_crash = json.loads(state_path.read_text())
+    assert "fire-a" in state_before_crash
+
+    cells_b = [h3.latlng_to_cell(46.0, 6.0, 8)]  # far from fire-a; packing is position-independent
+    tracks_b = {**tracks_a, "fire-b": _track_body("fire-b", cells_b, "2026-02-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks_b)
+
+    import pipeline.export_scale_blob as mod
+
+    original_save_json = mod._save_json
+
+    def crash_on_state_write(path, data):
+        if path == state_path:
+            raise RuntimeError("simulated crash before state write completes")
+        original_save_json(path, data)
+
+    monkeypatch.setattr(mod, "_save_json", crash_on_state_write)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    # Blob write succeeded and now contains fire-b's cells...
+    blob_after_crash = json.loads(blob_path.read_text())
+    fire_ids_after_crash = {cell["fire_id"] for cell in blob_after_crash}
+    assert "fire-b" in fire_ids_after_crash
+
+    # ...but the state write never completed, so fire-b is NOT marked processed.
+    state_after_crash = json.loads(state_path.read_text())
+    assert "fire-b" not in state_after_crash
+    assert state_after_crash == state_before_crash  # untouched by the aborted write
+
+    monkeypatch.setattr(mod, "_save_json", original_save_json)
+
+    # Next run (state file unmutated from before the crash) must safely reprocess fire-b.
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    blob_final = json.loads(blob_path.read_text())
+    fire_b_cells = [cell for cell in blob_final if cell["fire_id"] == "fire-b"]
+    assert len(fire_b_cells) == len(cells_b)  # no duplication from the crashed attempt
+    assert len({cell["cell_id"] for cell in fire_b_cells}) == len(fire_b_cells)  # no corrupted repeats
+
+    state_final = json.loads(state_path.read_text())
+    assert "fire-b" in state_final
+    assert state_final["fire-b"]["year"] == 2026
