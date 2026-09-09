@@ -50,6 +50,7 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
+import { activateScaleBlob, deactivateScaleBlob, isScaleBlobActive } from "./layer_scale_blob";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
 import { infoHtml } from "./info";
@@ -265,6 +266,37 @@ async function boot() {
       map,
       manifest,
     );
+    // layer_scale_blob.ts is deliberately not a registry.ts LayerModule (see
+    // that file's own header comment), so its trigger is wired directly here
+    // rather than joining `modules` above. activateScaleBlob resolves
+    // normally (without throwing) on a 404 — no archive/blob_<year>.json for
+    // this year yet — so success is read back from isScaleBlobActive() after
+    // the await, not assumed from the promise settling; otherwise a missing
+    // archive would silently flip the button into a bogus "active" state.
+    const scaleBlobButton = document.getElementById("scale-blob-toggle") as HTMLButtonElement;
+    scaleBlobButton.addEventListener("click", () => void (async () => {
+      if (isScaleBlobActive()) {
+        deactivateScaleBlob(map);
+        scaleBlobButton.setAttribute("aria-pressed", "false");
+        scaleBlobButton.textContent = "Compare fire scale";
+        return;
+      }
+      scaleBlobButton.disabled = true;
+      scaleBlobButton.textContent = "Loading…";
+      try {
+        await activateScaleBlob(map, new Date().getFullYear());
+        if (isScaleBlobActive()) {
+          scaleBlobButton.setAttribute("aria-pressed", "true");
+          scaleBlobButton.textContent = "Exit fire-scale compare";
+        } else {
+          scaleBlobButton.textContent = "Compare fire scale (unavailable)";
+        }
+      } catch {
+        scaleBlobButton.textContent = "Compare fire scale (unavailable)";
+      } finally {
+        scaleBlobButton.disabled = false;
+      }
+    })());
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
     // and the whole event window is 14 days. Built from the events already

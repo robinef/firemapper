@@ -28,6 +28,14 @@
            open the gear menu and scroll to find it. -->
       <a id="rail-scale" href="/scale" aria-label="How much has burned this year?">📊</a>
     </nav>
+    <!-- Distinct feature from #rail-scale/#rail above: this is an on-map H3
+         "scale comparison" blob (layer_scale_blob.ts), not the /scale page's
+         EFFIS burned-area stats. Top-level like #compare-bar/#view-chip, not
+         inside #rail (a fixed icon strip) or #sidebar (registry.ts's layer
+         switcher) — main.ts wires its click handler directly. -->
+    <button id="scale-blob-toggle" type="button" aria-pressed="false" title="Compare fire scale">
+      Compare fire scale
+    </button>
     <!-- One container for every non-map view. data-view picks which child
          shows; data-size is the fire card's peek/full state on mobile. -->
     <div id="view" data-view="map">

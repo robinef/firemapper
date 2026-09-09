@@ -469,12 +469,26 @@ body.compare-mode #fire-readout { display: none; }
 }
 #rail button:hover, #rail a:hover { border-color: #ff6b00; }
 
+/* Top-right corner, clear of #rail/#view-chip/#compare-bar (all left-anchored):
+   the on-map trigger for layer_scale_blob.ts's draggable H3 shape. Not a
+   registry.ts module — no fixed geographic footprint to toggle — so it isn't
+   in #sidebar/#legend, and it isn't #rail-scale's /scale page either. */
+#scale-blob-toggle { position: absolute; top: 12px; right: 12px; z-index: 9;
+  min-height: 44px; padding: 0 14px; border-radius: 999px;
+  background: var(--panel); color: var(--fg); font: inherit; font-weight: 600;
+  border: 1px solid rgba(255,255,255,.14); cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+#scale-blob-toggle:hover { border-color: #ff6b00; }
+#scale-blob-toggle:disabled { opacity: .6; cursor: default; }
+
 /* Compare owns the whole map surface: no rail at any width (nothing may
    compete with the divider drag, and on desktop the rail sits at the left
-   edge where a drag can begin), and no histogram (there is nothing to
-   scrub while two dated images are being compared). */
+   edge where a drag can begin), no histogram (there is nothing to scrub
+   while two dated images are being compared), and no scale-blob trigger
+   (dragging the shape would fight the swipe divider for the same gesture). */
 body.compare-mode #rail,
-body.compare-mode #timeline { display: none; }
+body.compare-mode #timeline,
+body.compare-mode #scale-blob-toggle { display: none; }
 
 /* Compare's own chrome, outside #view because #view is hidden for it.
    Starts BELOW #header (top 12px, z-index 5), not over it: this bar is opaque
