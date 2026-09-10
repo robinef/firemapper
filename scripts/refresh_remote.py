@@ -17,7 +17,7 @@ from pathlib import Path
 from pipeline.config import Settings, load_settings
 from pipeline.export_scale_blob import run_export
 from pipeline.remote import hydrate, make_client, publish
-from pipeline.run import refresh
+from pipeline.run import _safe, refresh
 
 
 def _latest_generation(settings: Settings) -> Path:
@@ -54,10 +54,25 @@ def main(argv: list[str], client=None) -> int:
 
     _timed("hydrate", lambda: hydrate(settings, client))
     _timed(f"refresh({tier})", lambda: refresh(settings, tier=tier))
+    # Wrapped in pipeline.run's own _safe, the same idiom for the same reason it
+    # already guards archive_past_tracks — the very producer of the data this
+    # consumes. The scale blob is a bonus tier layered on top of the archive, and
+    # every input it reads can be malformed: an empty/missing `series` (year_of_track
+    # raises), a body with no "cells", a track whose cells all vanished
+    # (centroid_of_cells divides by zero), a bad H3 id (h3 raises), a truncated
+    # local body (json.loads raises). Unguarded, any of those propagates out of
+    # main() BEFORE publish() runs, and the live map then serves the previous
+    # generation for as long as the fault persists — a stale map is a far worse
+    # outcome than a stale blob. So a failure here falls back to "no new scale
+    # blob this run" and the refresh publishes regardless.
     _timed(
         "export_scale_blob",
-        lambda: run_export(
-            settings, target_year=datetime.now(timezone.utc).year, client=client, r2_bucket=settings.r2_bucket
+        lambda: _safe(
+            lambda: run_export(
+                settings, target_year=datetime.now(timezone.utc).year, client=client, r2_bucket=settings.r2_bucket
+            ),
+            default=None,
+            label="export-scale-blob",
         ),
     )
     _timed("publish", lambda: publish(settings, _latest_generation(settings), client))
