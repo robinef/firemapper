@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.config import ARCHIVE_TRACKS_INDEX, SCALE_BLOB_STATE_KEY, Settings, scale_blob_key
+from pipeline.config import (
+    ARCHIVE_TRACKS_INDEX,
+    SCALE_BLOB_STATE_KEY,
+    Settings,
+    scale_blob_fires_key,
+    scale_blob_key,
+)
 from pipeline.export_scale_blob import run_export, year_of_track
 
 
@@ -252,3 +258,88 @@ def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, m
     state_final = json.loads(state_path.read_text())
     assert "fire-b" in state_final
     assert state_final["fire-b"]["year"] == 2026
+
+
+def _write_places(settings: Settings, rows: list[tuple[str, float, float, str]]) -> None:
+    places_dir = settings.data_dir / "places"
+    places_dir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for name, lat, lon, country in rows:
+        lines.append(f"1\t{name}\t{name}\t\t{lat}\t{lon}\tP\tPPL\t{country}\t\t\t\t\t\t1000\t\t\t")
+    (places_dir / "cities5000.txt").write_text("\n".join(lines) + "\n")
+
+
+def test_run_export_attributes_country_from_the_gazetteer(tmp_path):
+    import h3
+
+    settings = _settings(tmp_path)
+    _write_places(settings, [("Nearby", 45.001, 5.001, "FR")])
+    cells = [h3.latlng_to_cell(45.0, 5.0, 8), h3.latlng_to_cell(45.001, 5.001, 8)]
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert fires["fire-2026"]["country"] == "FR"
+    assert fires["fire-2026"]["area_km2"] > 0
+
+
+def test_run_export_leaves_country_none_when_no_place_is_within_range(tmp_path):
+    import h3
+
+    settings = _settings(tmp_path)
+    _write_places(settings, [("FarAway", 10.0, 10.0, "XX")])  # thousands of km away
+    cells = [h3.latlng_to_cell(45.0, 5.0, 8)]
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert fires["fire-2026"]["country"] is None
+
+
+def test_run_export_area_km2_matches_the_sum_of_real_cell_areas(tmp_path):
+    import h3
+
+    settings = _settings(tmp_path)
+    cells = [h3.latlng_to_cell(45.0, 5.0, 8), h3.latlng_to_cell(45.001, 5.001, 8)]
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    expected = round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
+    assert fires["fire-2026"]["area_km2"] == expected
+
+
+def test_run_export_fires_summary_reconciles_like_the_blob(tmp_path):
+    """A partial publish could land scale_blob_state.json with a track marked
+    processed while blob_{year}_fires.json never made it (same R2-boundary risk
+    the cell blob already self-heals from). A state entry with no corresponding
+    fires-summary entry must also be treated as unprocessed."""
+    import h3
+
+    settings = _settings(tmp_path)
+    cells = [h3.latlng_to_cell(45.0, 5.0, 8)]
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+    index = json.loads((settings.out_dir / ARCHIVE_TRACKS_INDEX).read_text())
+
+    # Simulate: blob + state already written for this track, but the fires
+    # summary never landed (a partial publish).
+    (settings.out_dir / scale_blob_key(2026)).parent.mkdir(parents=True, exist_ok=True)
+    (settings.out_dir / scale_blob_key(2026)).write_text(json.dumps(
+        [{"fire_id": "fire-2026", "cell_id": cells[0], "res": 8, "vertices_m": [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 1.5]]}]
+    ))
+    (settings.out_dir / SCALE_BLOB_STATE_KEY).parent.mkdir(parents=True, exist_ok=True)
+    (settings.out_dir / SCALE_BLOB_STATE_KEY).write_text(json.dumps(
+        {"fire-2026": {"digest": index["fire-2026"], "year": 2026}}
+    ))
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert "fire-2026" in fires  # reprocessed, not left permanently missing

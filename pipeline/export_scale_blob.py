@@ -8,7 +8,14 @@ from pathlib import Path
 
 import h3
 
-from .config import ARCHIVE_TRACKS_INDEX, SCALE_BLOB_STATE_KEY, Settings, scale_blob_key
+from .config import (
+    ARCHIVE_TRACKS_INDEX,
+    SCALE_BLOB_STATE_KEY,
+    Settings,
+    scale_blob_fires_key,
+    scale_blob_key,
+)
+from .enrich import Places, load_places, nearest_place
 from .geo_local import cell_boundary_local_m, centroid_of_cells
 from .pack_blob import bounding_box, pack_fires
 
@@ -30,6 +37,27 @@ def _state_path(out_dir: Path) -> Path:
 
 def _blob_path(out_dir: Path, year: int) -> Path:
     return out_dir / scale_blob_key(year)
+
+
+def _fires_summary_path(out_dir: Path, year: int) -> Path:
+    return out_dir / scale_blob_fires_key(year)
+
+
+def _load_places(settings: Settings) -> Places:
+    """Same tolerant-of-absence pattern pipeline/run.py already uses: a
+    missing or implausibly small gazetteer means every fire's country comes
+    back None, not a crash — this is a display nicety, not something worth
+    blocking the export over. Deliberately does not enforce MIN_PLACES as a
+    hard failure: run.py needs that to catch a truncated real download loudly,
+    but a small/fixture gazetteer here should just mean fewer matches, not an
+    aborted export."""
+    places_file = settings.data_dir / "places" / "cities5000.txt"
+    if not places_file.exists():
+        return Places([])
+    try:
+        return load_places(places_file, min_places=0)
+    except ValueError:
+        return Places([])
 
 
 def _load_json(path: Path, default):
@@ -66,6 +94,7 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
     index: dict[str, str] = json.loads(index_path.read_text())
     state: dict[str, dict] = _load_json(_state_path(settings.out_dir), {})
     blob: list[dict] = _load_json(_blob_path(settings.out_dir, target_year), [])
+    fires_summary: dict[str, dict] = _load_json(_fires_summary_path(settings.out_dir, target_year), {})
 
     blob_by_fire: dict[str, list[dict]] = {}
     for cell in blob:
@@ -77,25 +106,29 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
     # redoes the work. The R2 boundary has no such ordering: publish() uploads
     # everything under archive/ through an unordered ThreadPoolExecutor, so a
     # publish that dies partway can land scale_blob_state.json in the bucket
-    # while blob_{year}.json never makes it. The next hydrate() then restores a
-    # state claiming tracks are processed whose geometry is nowhere in the blob,
-    # and because ONLY a digest change ever puts a track back into `to_process`,
-    # those fires would be missing from the blob permanently. So: any state entry
-    # for THIS year with no cells in the blob we just loaded is forgotten, which
-    # feeds it straight back into `to_process` below. Other years are left alone
-    # — their absence from this year's blob is the normal case, and dropping them
-    # would mean re-fetching every past year's track bodies on every run.
+    # while blob_{year}.json (or blob_{year}_fires.json) never makes it. The
+    # next hydrate() then restores a state claiming tracks are processed whose
+    # geometry (or country/area summary) is nowhere to be found, and because
+    # ONLY a digest change ever puts a track back into `to_process`, that fire
+    # would be missing permanently. So: any state entry for THIS year missing
+    # EITHER its cells or its summary is forgotten, which feeds it straight
+    # back into `to_process` below. Other years are left alone — their absence
+    # from this year's blob is the normal case, and dropping them would mean
+    # re-fetching every past year's track body on every run.
     for track_id in [
         tid
         for tid, entry in state.items()
-        if entry.get("year") == target_year and tid not in blob_by_fire
+        if entry.get("year") == target_year and (tid not in blob_by_fire or tid not in fires_summary)
     ]:
         del state[track_id]
+        blob_by_fire.pop(track_id, None)
+        fires_summary.pop(track_id, None)
 
     to_process = {tid: digest for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest}
 
     new_fire_polys: dict[str, list[list[tuple[float, float]]]] = {}
     new_fire_cells: dict[str, list[str]] = {}
+    places: Places | None = None
 
     for track_id, digest in to_process.items():
         body = _load_track_body(settings.out_dir, track_id, client, r2_bucket)
@@ -105,6 +138,7 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
         year = year_of_track(body)
         state[track_id] = {"digest": digest, "year": year}
         blob_by_fire.pop(track_id, None)  # drop stale entries if this id's year changed
+        fires_summary.pop(track_id, None)
 
         if year != target_year:
             continue
@@ -113,6 +147,14 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
         origin_lat, origin_lon = centroid_of_cells(cells)
         new_fire_polys[track_id] = [cell_boundary_local_m(c, origin_lat, origin_lon) for c in cells]
         new_fire_cells[track_id] = cells
+
+        if places is None:  # lazy, once per run, only if there's actually work to do
+            places = _load_places(settings)
+        place = nearest_place(origin_lat, origin_lon, places)
+        fires_summary[track_id] = {
+            "country": place["country"] if place else None,
+            "area_km2": round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1),
+        }
 
     if new_fire_polys:
         existing_boxes = [bounding_box([c["vertices_m"] for c in cells]) for cells in blob_by_fire.values()]
@@ -126,4 +168,5 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
 
     new_blob = [cell for cells in blob_by_fire.values() for cell in cells]
     _save_json(_blob_path(settings.out_dir, target_year), new_blob)  # write blob first
+    _save_json(_fires_summary_path(settings.out_dir, target_year), fires_summary)  # ...then the summary...
     _save_json(_state_path(settings.out_dir), state)  # ...then commit state — the recovery contract

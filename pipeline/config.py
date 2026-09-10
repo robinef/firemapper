@@ -46,6 +46,10 @@ def scale_blob_key(year: int) -> str:
     return f"archive/blob_{year}.json"
 
 
+def scale_blob_fires_key(year: int) -> str:
+    return f"archive/blob_{year}_fires.json"
+
+
 # Cluster over a longer window than the live layer so fires that have gone quiet
 # still surface as historical ("past") scars. Lives here (not run.py, which
 # uses it) so export.py's coverage.py can read it too without run.py <-> export.py

@@ -16,6 +16,7 @@ from pipeline.config import (
     ARCHIVE_TRACKS_INDEX,
     SCALE_BLOB_STATE_KEY,
     load_settings,
+    scale_blob_fires_key,
     scale_blob_key,
 )
 from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
@@ -513,11 +514,13 @@ def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
     blob_body = json.dumps(
         [{"fire_id": "fire-1", "cell_id": "x", "res": 8, "vertices_m": []}]
     ).encode()
+    fires_body = json.dumps({"fire-1": {"country": "FR", "area_km2": 1.4}}).encode()
     objects = {
         MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
         f"data/{gen}/events.geojson": b"{}",
         f"data/{SCALE_BLOB_STATE_KEY}": state_body,
         f"data/{scale_blob_key(year)}": blob_body,
+        f"data/{scale_blob_fires_key(year)}": fires_body,
     }
     client = FakeS3(objects)
     settings = _settings(tmp_path)
@@ -526,6 +529,7 @@ def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
 
     assert (settings.out_dir / SCALE_BLOB_STATE_KEY).read_bytes() == state_body
     assert (settings.out_dir / scale_blob_key(year)).read_bytes() == blob_body
+    assert (settings.out_dir / scale_blob_fires_key(year)).read_bytes() == fires_body
 
 
 def test_publish_uploads_the_permanent_archive(tmp_path):

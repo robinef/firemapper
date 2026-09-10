@@ -24,6 +24,7 @@ from .config import (
     SCALE_BLOB_STATE_KEY,
     TRACK_INDEX,
     Settings,
+    scale_blob_fires_key,
     scale_blob_key,
 )
 
@@ -177,7 +178,7 @@ def hydrate(settings: Settings, client) -> str | None:
     # archive index above — publish() already uploads these generically via
     # its archive/ walk, so only hydrate() needs a named addition.
     current_year = datetime.now(timezone.utc).year
-    for extra_key in (SCALE_BLOB_STATE_KEY, scale_blob_key(current_year)):
+    for extra_key in (SCALE_BLOB_STATE_KEY, scale_blob_key(current_year), scale_blob_fires_key(current_year)):
         body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{extra_key}")
         if body is not None:
             path = settings.out_dir / extra_key
