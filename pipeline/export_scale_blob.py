@@ -71,6 +71,27 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
     for cell in blob:
         blob_by_fire.setdefault(cell["fire_id"], []).append(cell)
 
+    # Self-heal a partial PUBLISH, which the local write ordering below cannot
+    # cover. Locally the blob is written before the state, so a crash between
+    # the two leaves a state that under-claims — safe, and the next run just
+    # redoes the work. The R2 boundary has no such ordering: publish() uploads
+    # everything under archive/ through an unordered ThreadPoolExecutor, so a
+    # publish that dies partway can land scale_blob_state.json in the bucket
+    # while blob_{year}.json never makes it. The next hydrate() then restores a
+    # state claiming tracks are processed whose geometry is nowhere in the blob,
+    # and because ONLY a digest change ever puts a track back into `to_process`,
+    # those fires would be missing from the blob permanently. So: any state entry
+    # for THIS year with no cells in the blob we just loaded is forgotten, which
+    # feeds it straight back into `to_process` below. Other years are left alone
+    # — their absence from this year's blob is the normal case, and dropping them
+    # would mean re-fetching every past year's track bodies on every run.
+    for track_id in [
+        tid
+        for tid, entry in state.items()
+        if entry.get("year") == target_year and tid not in blob_by_fire
+    ]:
+        del state[track_id]
+
     to_process = {tid: digest for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest}
 
     new_fire_polys: dict[str, list[list[tuple[float, float]]]] = {}

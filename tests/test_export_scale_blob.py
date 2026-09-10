@@ -142,6 +142,56 @@ def test_run_export_second_new_fire_does_not_overlap_first(tmp_path):
     assert not boxes_overlap(box_a, box_b)
 
 
+def test_run_export_reprocesses_a_track_whose_cells_never_reached_the_blob(tmp_path):
+    """Self-heals a partial PUBLISH, which the local write ordering cannot cover.
+
+    Locally the blob is written before the state, so a crash between the two
+    only ever under-claims. The R2 boundary has no ordering at all: publish()
+    uploads archive/ through an unordered ThreadPoolExecutor, so
+    scale_blob_state.json can land in the bucket while blob_{year}.json does
+    not. hydrate() then restores a state marking the track processed with no
+    geometry to show for it — and since only a DIGEST CHANGE ever reprocesses a
+    track, that fire would be missing from the blob permanently.
+    """
+    import h3
+
+    settings = _settings(tmp_path)
+    # grid_disk, not two nearby lat/lngs: 45.000,5.000 and 45.001,5.001 land in
+    # the SAME res-8 cell, which would make the no-duplicates assertion below
+    # fail against a fixture that was duplicated to begin with.
+    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
+    assert len(set(cells)) == 2
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+    index = json.loads((settings.out_dir / ARCHIVE_TRACKS_INDEX).read_text())
+
+    # Exactly what a half-finished publish leaves behind: state says done at the
+    # CURRENT digest (so nothing would re-trigger it), blob has none of its cells.
+    state_path = settings.out_dir / SCALE_BLOB_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "fire-2026": {"digest": index["fire-2026"], "year": 2026},
+        # A different year, and no longer in the index at all: reconciliation
+        # must leave it alone. Dropping every stateful entry with no cells in
+        # THIS year's blob would re-fetch every past year's track body forever.
+        "fire-2025-retired": {"digest": "whatever", "year": 2025},
+    }))
+    blob_path = settings.out_dir / scale_blob_key(2026)
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_text(json.dumps([]))
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    blob = json.loads(blob_path.read_text())
+    assert {cell["fire_id"] for cell in blob} == {"fire-2026"}, "the orphaned track must come back"
+    assert len(blob) == len(cells)
+    assert len({cell["cell_id"] for cell in blob}) == len(cells)  # no duplicates from the redo
+
+    state_final = json.loads(state_path.read_text())
+    assert state_final["fire-2026"]["year"] == 2026
+    assert "fire-2025-retired" in state_final  # other years untouched
+
+
 def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, monkeypatch):
     """Simulates a crash between the blob_{year}.json write and the
     scale_blob_state.json write (export_scale_blob.py:107-108). The blob
