@@ -290,17 +290,18 @@ export async function activateScaleBlob(
       source: SOURCE_ID,
       paint: { "fill-color": ["get", "color"], "fill-opacity": ["case", ["get", "selected"], 0.85, 0.6] },
     });
-    // A highlight border when selected — line-opacity toggles per feature
-    // rather than adding/removing the layer, since every feature shares the
-    // one "selected" flag and this avoids a layer add/remove on every click.
+    // A border, dim even when unselected — the click-to-pick-up gesture isn't
+    // discoverable if the shape looks like flat, non-interactive fill until
+    // the moment it's clicked. Brightens and thickens once selected, so the
+    // two states still read clearly apart.
     map.addLayer({
       id: OUTLINE_LAYER_ID,
       type: "line",
       source: SOURCE_ID,
       paint: {
         "line-color": ["get", "stroke"],
-        "line-width": 2,
-        "line-opacity": ["case", ["get", "selected"], 1, 0],
+        "line-width": ["case", ["get", "selected"], 3, 1],
+        "line-opacity": ["case", ["get", "selected"], 1, 0.4],
       },
     });
 
