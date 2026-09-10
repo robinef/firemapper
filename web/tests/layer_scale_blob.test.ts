@@ -188,7 +188,7 @@ describe("activateScaleBlob", () => {
   });
 });
 
-describe("drag lifecycle", () => {
+describe("select-then-drag lifecycle", () => {
   async function activated(hit = true) {
     const map = stubMap({ hit });
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
@@ -197,8 +197,65 @@ describe("drag lifecycle", () => {
     return { map, canvas };
   }
 
-  it("preserves the grab offset: the grabbed point stays under the cursor through a drag", async () => {
+  /** A click (down+up at ~the same point) on the shape — selects it. */
+  function click(canvas: HTMLCanvasElement, pointerId = 1, x = 10, y = 10) {
+    dispatch(canvas, "pointerdown", { pointerId, clientX: x, clientY: y });
+    dispatch(canvas, "pointerup", { pointerId, clientX: x, clientY: y });
+  }
+
+  function selectedFlag(map: maplibregl.Map): boolean {
+    return (blobSource(map).data.features[0].properties as any).selected;
+  }
+
+  it("starts unselected on activation", async () => {
+    const { map } = await activated();
+    expect(selectedFlag(map)).toBe(false);
+  });
+
+  it("a click on the shape selects it without moving it", async () => {
     const { map, canvas } = await activated();
+    const before = blobSource(map).data.features[0].geometry;
+
+    click(canvas);
+
+    expect(selectedFlag(map)).toBe(true);
+    expect(blobSource(map).data.features[0].geometry).toEqual(before);
+  });
+
+  it("a click on the shape while it's already selected deselects it", async () => {
+    const { map, canvas } = await activated();
+    click(canvas); // select
+    expect(selectedFlag(map)).toBe(true);
+
+    click(canvas); // click again
+    expect(selectedFlag(map)).toBe(false);
+  });
+
+  it("a press elsewhere on the canvas deselects it", async () => {
+    const { map, canvas } = await activated();
+    click(canvas);
+    expect(selectedFlag(map)).toBe(true);
+
+    (map as any)._setHit(false); // this press misses the shape
+    dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 300, clientY: 300 });
+
+    expect(selectedFlag(map)).toBe(false);
+  });
+
+  it("dragging is a no-op while unselected — no movement, no dragPan suppression", async () => {
+    const { map, canvas } = await activated();
+    const before = blobSource(map).data;
+
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
+
+    expect(blobSource(map).data).toBe(before); // setData never called for a move
+    expect(map.dragPan.disable).not.toHaveBeenCalled();
+  });
+
+  it("once selected, preserves the grab offset: the grabbed point stays under the cursor through a drag", async () => {
+    const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
     // Cursor moves by (+50, +30) canvas px.
@@ -218,6 +275,17 @@ describe("drag lifecycle", () => {
     });
   });
 
+  it("a real drag while selected leaves it selected afterward, not toggled off", async () => {
+    const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
+
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 150, clientY: 230 });
+
+    expect(selectedFlag(map)).toBe(true);
+  });
+
   it("does not start a drag when pointerdown misses the rendered shape", async () => {
     const { map, canvas } = await activated(false);
     const before = blobSource(map).data;
@@ -228,7 +296,7 @@ describe("drag lifecycle", () => {
     expect(blobSource(map).data).toBe(before); // setData never called again
   });
 
-  it("captures the pointer on pointerdown and releases it on pointerup", async () => {
+  it("captures the pointer on pointerdown and releases it on pointerup, even while unselected", async () => {
     const { map, canvas } = await activated();
 
     dispatch(canvas, "pointerdown", { pointerId: 7, clientX: 10, clientY: 10 });
@@ -238,8 +306,9 @@ describe("drag lifecycle", () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(7);
   });
 
-  it("pointercancel ends the drag exactly like pointerup", async () => {
+  it("pointercancel ends a drag exactly like pointerup", async () => {
     const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
@@ -255,6 +324,7 @@ describe("drag lifecycle", () => {
 
   it("a second pointer cannot hijack an active drag", async () => {
     const { map, canvas } = await activated();
+    click(canvas, 1, 100, 100);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
     const afterFirstDown = blobSource(map).data;
@@ -271,12 +341,15 @@ describe("drag lifecycle", () => {
 
   it("suppresses map dragPan while dragging and restores it on release", async () => {
     const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    // Real movement, past the click tolerance, so this is a drag not a click.
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 30, clientY: 30 });
     expect(map.dragPan.disable).toHaveBeenCalled();
     expect(map.dragPan.isEnabled()).toBe(false);
 
-    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 30, clientY: 30 });
     expect(map.dragPan.enable).toHaveBeenCalled();
     expect(map.dragPan.isEnabled()).toBe(true);
   });

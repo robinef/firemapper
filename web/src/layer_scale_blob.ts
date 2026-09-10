@@ -5,6 +5,12 @@
 // manages its own maplibre source/layer lifecycle and its own pointer
 // listeners, independent of the registry system.
 //
+// Interaction: click once to select (a highlighted outline + bumped
+// opacity), then drag while selected. Clicking the shape again, or clicking
+// anywhere else on the map, deselects it. This is deliberately two steps —
+// a bare click-and-drag on an unselected shape does nothing — so casually
+// panning the map near it can never accidentally pick it up.
+//
 // Pointer handling note: maplibre-gl's Map.on("mousedown"/"touchstart", ...)
 // only exposes maplibre's own wrapped mouse/touch events, not native Pointer
 // Events — and the drag here needs real pointerdown/pointermove/pointerup/
@@ -20,7 +26,7 @@
 // that actually resolves against the installed package.
 import type * as maplibregl from "maplibre-gl";
 import { checkExtentBudget, projectVertices } from "./geo_local";
-import { hashColor } from "./palette";
+import { hashColor, outlineFor } from "./palette";
 
 export type ScaleBlobCell = {
   fire_id: string;
@@ -31,7 +37,13 @@ export type ScaleBlobCell = {
 
 const SOURCE_ID = "scale-blob";
 const LAYER_ID = "scale-blob-fill";
+const OUTLINE_LAYER_ID = "scale-blob-outline";
 const DATA_BASE = "/data";
+
+// A pointerdown/pointerup pair whose total movement stays within this many
+// CSS px is a click, not a drag attempt — same tolerance maplibre's own
+// click-vs-drag distinction uses (map_event.ts's default clickTolerance).
+const CLICK_TOLERANCE_PX = 3;
 
 let active = false;
 let activating = false;
@@ -40,8 +52,15 @@ let dropLat = 0;
 let dropLon = 0;
 let grabOffsetLat = 0;
 let grabOffsetLon = 0;
+// The shape is only draggable once selected — a single click (not a drag)
+// toggles selection. This exists so a stray drag on the map, or just
+// scanning around, can't move the shape by accident; picking it up is a
+// deliberate two-step "select, then drag" action.
+let selected = false;
 let dragging = false;
 let activePointerId: number | null = null;
+let pointerDownPoint: [number, number] | null = null;
+let pointerDownWasSelected = false;
 let dragPanWasEnabled = false;
 let currentMap: maplibregl.Map | null = null;
 let currentCanvas: HTMLCanvasElement | null = null;
@@ -65,25 +84,45 @@ function toGeoJSON(): GeoJSON.FeatureCollection {
   checkExtentBudget(cells.map((c) => c.vertices_m));
   return {
     type: "FeatureCollection",
-    features: sortedForOverlapTieBreak(cells).map((cell) => ({
-      type: "Feature",
-      properties: {
-        fire_id: cell.fire_id,
-        cell_id: cell.cell_id,
-        res: cell.res,
-        color: hashColor(cell.fire_id),
-      },
-      geometry: {
-        type: "Polygon",
-        coordinates: [projectVertices(cell.vertices_m, dropLat, dropLon)],
-      },
-    })),
+    features: sortedForOverlapTieBreak(cells).map((cell) => {
+      const color = hashColor(cell.fire_id);
+      return {
+        type: "Feature",
+        properties: {
+          fire_id: cell.fire_id,
+          cell_id: cell.cell_id,
+          res: cell.res,
+          color,
+          stroke: outlineFor(color),
+          // Selection is a single shared state for the whole shape, not
+          // per-fire — baked onto every feature so the paint expressions
+          // below can react to it without an imperative setPaintProperty
+          // call on every toggle.
+          selected,
+        },
+        geometry: {
+          type: "Polygon",
+          coordinates: [projectVertices(cell.vertices_m, dropLat, dropLon)],
+        },
+      };
+    }),
   };
 }
 
 function render(map: maplibregl.Map): void {
   const source = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
   source?.setData(toGeoJSON());
+}
+
+/** Toggle the shape's selected/draggable state, re-render so the highlight
+ * (opacity bump + outline) reflects it immediately, and update the cursor:
+ * "pointer" (click to pick up) when unselected, "grab" when selected and
+ * ready to drag. */
+function setSelected(value: boolean): void {
+  if (selected === value) return;
+  selected = value;
+  if (currentMap) render(currentMap);
+  if (currentCanvas && !dragging) currentCanvas.style.cursor = selected ? "grab" : "pointer";
 }
 
 /** Canvas-relative CSS-pixel coordinates for a pointer event, via
@@ -97,32 +136,53 @@ function canvasPoint(canvas: HTMLCanvasElement, e: PointerEvent): [number, numbe
   return [e.clientX - rect.left, e.clientY - rect.top];
 }
 
+function capturePointer(pointerId: number): void {
+  if (!currentCanvas) return;
+  try {
+    currentCanvas.setPointerCapture(pointerId);
+  } catch (err) {
+    // setPointerCapture can throw (e.g. a NotFoundError if the browser has
+    // already implicitly released capture) — proceed without native capture
+    // rather than aborting the gesture.
+    console.warn("layer_scale_blob: setPointerCapture failed unexpectedly", err);
+  }
+}
+
 function onPointerDown(e: PointerEvent): void {
-  if (!currentMap || !currentCanvas || dragging) return;
+  if (!currentMap || !currentCanvas || dragging || pointerDownPoint !== null) return;
   const point = canvasPoint(currentCanvas, e);
   // Native canvas events fire for the whole canvas, not just this layer —
   // map.on("mousedown", LAYER_ID, ...) would filter that for us, but here we
   // have to hit-test ourselves.
   const hits = currentMap.queryRenderedFeatures(point, { layers: [LAYER_ID] });
-  if (hits.length === 0) return;
+  if (hits.length === 0) {
+    // A press anywhere else on the map deselects — the same "click away"
+    // convention as any selectable UI element. Left to the map's own
+    // handlers otherwise; nothing here calls preventDefault/stopPropagation.
+    setSelected(false);
+    return;
+  }
+
+  activePointerId = e.pointerId;
+  pointerDownPoint = point;
+  pointerDownWasSelected = selected;
+  capturePointer(e.pointerId);
+
+  if (!selected) {
+    // Not yet selected: this press might turn out to be the click that
+    // selects it, but it must not move the shape or fight the map's own
+    // pan — decided on pointerup, once we know whether it was a click or a
+    // drag attempt.
+    return;
+  }
 
   const lngLat = currentMap.unproject(point);
   dragging = true;
-  activePointerId = e.pointerId;
   // Preserve the offset between the grab point and the shape's current drop
   // point — grabbing an edge keeps that edge under the cursor throughout the
   // drag, rather than snapping the shape's center to the cursor.
   grabOffsetLat = dropLat - lngLat.lat;
   grabOffsetLon = dropLon - lngLat.lng;
-
-  try {
-    currentCanvas.setPointerCapture(e.pointerId);
-  } catch (err) {
-    // setPointerCapture can throw (e.g. a NotFoundError if the browser has
-    // already implicitly released capture) — proceed without native capture
-    // rather than aborting the drag.
-    console.warn("layer_scale_blob: setPointerCapture failed unexpectedly", err);
-  }
 
   // Suppress the map's own pan while dragging the shape — the drag would
   // otherwise fight the map's built-in canvas drag-pan for the same pointer
@@ -147,21 +207,38 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if (!dragging || e.pointerId !== activePointerId) return;
-  endDrag(e.pointerId);
+  if (e.pointerId !== activePointerId || !currentCanvas || pointerDownPoint === null) return;
+
+  const point = canvasPoint(currentCanvas, e);
+  const dx = point[0] - pointerDownPoint[0];
+  const dy = point[1] - pointerDownPoint[1];
+  const wasClick = Math.hypot(dx, dy) <= CLICK_TOLERANCE_PX;
+
+  if (dragging) endDrag(e.pointerId);
+  else releasePointerTracking(e.pointerId);
+
+  // A click (not a drag) on the shape toggles selection: select it if it
+  // wasn't, deselect it if it already was. A real drag leaves it selected —
+  // the user should be able to drag again without re-clicking first.
+  if (wasClick) setSelected(!pointerDownWasSelected);
 }
 
-function endDrag(pointerId: number): void {
-  dragging = false;
+function releasePointerTracking(pointerId: number): void {
   activePointerId = null;
+  pointerDownPoint = null;
   if (currentCanvas) {
     try {
       currentCanvas.releasePointerCapture(pointerId);
     } catch (err) {
       console.warn("layer_scale_blob: releasePointerCapture failed unexpectedly", err);
     }
-    currentCanvas.style.cursor = "grab";
   }
+}
+
+function endDrag(pointerId: number): void {
+  dragging = false;
+  releasePointerTracking(pointerId);
+  if (currentCanvas) currentCanvas.style.cursor = selected ? "grab" : "pointer";
   if (currentMap?.dragPan && dragPanWasEnabled) {
     currentMap.dragPan.enable();
   }
@@ -202,12 +279,29 @@ export async function activateScaleBlob(
     dropLat = center.lat;
     dropLon = center.lng;
 
+    selected = false;
+    activePointerId = null;
+    pointerDownPoint = null;
+
     map.addSource(SOURCE_ID, { type: "geojson", data: toGeoJSON() });
     map.addLayer({
       id: LAYER_ID,
       type: "fill",
       source: SOURCE_ID,
-      paint: { "fill-color": ["get", "color"], "fill-opacity": 0.6 },
+      paint: { "fill-color": ["get", "color"], "fill-opacity": ["case", ["get", "selected"], 0.85, 0.6] },
+    });
+    // A highlight border when selected — line-opacity toggles per feature
+    // rather than adding/removing the layer, since every feature shares the
+    // one "selected" flag and this avoids a layer add/remove on every click.
+    map.addLayer({
+      id: OUTLINE_LAYER_ID,
+      type: "line",
+      source: SOURCE_ID,
+      paint: {
+        "line-color": ["get", "stroke"],
+        "line-width": 2,
+        "line-opacity": ["case", ["get", "selected"], 1, 0],
+      },
     });
 
     const canvas = map.getCanvas();
@@ -217,7 +311,9 @@ export async function activateScaleBlob(
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
-    canvas.style.cursor = "grab";
+    // "pointer" (click to select), not "grab" — dragging only works once
+    // selected, see the module doc comment.
+    canvas.style.cursor = "pointer";
     active = true;
   } finally {
     activating = false;
@@ -230,6 +326,8 @@ export async function activateScaleBlob(
 export function deactivateScaleBlob(map: maplibregl.Map): void {
   if (dragging && activePointerId !== null) endDrag(activePointerId);
 
+  // Layers referencing a source must go before the source itself.
+  if (map.getLayer(OUTLINE_LAYER_ID)) map.removeLayer(OUTLINE_LAYER_ID);
   if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
   if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
 
@@ -241,7 +339,9 @@ export function deactivateScaleBlob(map: maplibregl.Map): void {
   canvas.style.cursor = "";
 
   dragging = false;
+  selected = false;
   activePointerId = null;
+  pointerDownPoint = null;
   active = false;
   cells = [];
   currentMap = null;
