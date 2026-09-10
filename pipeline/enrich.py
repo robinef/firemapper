@@ -79,7 +79,8 @@ def load_places(path: Path, min_places: int = 0) -> Places:
         except ValueError:
             continue  # one unparseable row, not a reason to lose the gazetteer
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
-            out.append({"name": cols[1], "lat": lat, "lon": lon})
+            country = cols[8] if len(cols) > 8 and cols[8] else None
+            out.append({"name": cols[1], "lat": lat, "lon": lon, "country": country})
     if len(out) < min_places:
         raise ValueError(
             f"implausible gazetteer: {len(out)} European places parsed from {path} "
@@ -102,7 +103,7 @@ def _pick(
             best, best_m = p, d
     if best is None or best_m / 1000 > max_km:
         return None
-    return {"name": best["name"], "distance_km": round(best_m / 1000, 1)}
+    return {"name": best["name"], "distance_km": round(best_m / 1000, 1), "country": best.get("country")}
 
 
 def nearest_place(lat: float, lon: float, places: Places, max_km: float = MAX_PLACE_KM) -> dict | None:

@@ -40,10 +40,32 @@ def test_load_places_filters_and_parses(tmp_path):
     assert {p["name"] for p in places} == {"Testville", "FarCity"}
 
 
+def test_load_places_captures_country_code(tmp_path):
+    f = tmp_path / "cities5000.txt"
+    f.write_text(GEONAMES_TSV)
+    places = load_places(f)
+    assert {p["name"]: p["country"] for p in places} == {"Testville": "IT", "FarCity": "SE"}
+
+
+def test_load_places_tolerates_a_missing_country_column(tmp_path):
+    """A malformed/short row shouldn't be dropped just for lacking column 8 —
+    only lat/lon (columns 4-5) are load-bearing for the gazetteer index."""
+    f = tmp_path / "cities5000.txt"
+    f.write_text("1\tShortRow\tShortRow\t\t45.05\t8.05\n")
+    places = load_places(f)
+    assert next(iter(places))["country"] is None
+
+
 def test_nearest_place():
     places = Places([{"name": "Testville", "lat": 45.05, "lon": 8.05}, {"name": "FarCity", "lat": 60.0, "lon": 20.0}])
     p = nearest_place(45.0, 8.0, places)
     assert p["name"] == "Testville" and p["distance_km"] < 10
+
+
+def test_nearest_place_returns_country():
+    places = Places([{"name": "Testville", "lat": 45.05, "lon": 8.05, "country": "IT"}])
+    p = nearest_place(45.0, 8.0, places)
+    assert p["country"] == "IT"
 
 
 def test_nearest_place_rejects_a_match_beyond_max_km():
@@ -71,7 +93,7 @@ def test_load_places_returns_an_indexed_gazetteer(tmp_path):
 def _linear_nearest(lat, lon, raw, max_km=100.0):
     best = min(raw, key=lambda p: haversine_m(lat, lon, p["lat"], p["lon"]))
     d = round(haversine_m(lat, lon, best["lat"], best["lon"]) / 1000, 1)
-    return None if d > max_km else {"name": best["name"], "distance_km": d}
+    return None if d > max_km else {"name": best["name"], "distance_km": d, "country": best.get("country")}
 
 
 def test_indexed_nearest_place_matches_the_linear_scan():
