@@ -54,8 +54,13 @@ function stubMap() {
 
 function button(): HTMLButtonElement {
   document.body.innerHTML =
-    `<button id="scale-blob-toggle" aria-pressed="false">Compare fire scale</button>`;
+    `<button id="scale-blob-toggle" aria-pressed="false">Compare fire scale</button>` +
+    `<div id="scale-blob-breakdown"></div>`;
   return document.getElementById("scale-blob-toggle") as HTMLButtonElement;
+}
+
+function breakdownEl(): HTMLElement {
+  return document.getElementById("scale-blob-breakdown") as HTMLElement;
 }
 
 afterEach(() => {
@@ -72,19 +77,25 @@ afterEach(() => {
  * control that could dismiss it now invisible.
  */
 describe("scale blob vs compare mode", () => {
-  it("compare:enter deactivates the layer and resets the button", async () => {
+  it("compare:enter deactivates the layer, resets the button, and clears the breakdown panel", async () => {
     const { wireScaleBlobToggle } = await import("../src/main");
     const map = stubMap();
     const btn = button();
-    const fetchSpy = vi
-      .fn()
-      .mockResolvedValue({ ok: true, json: async () => sampleBlob });
+    const breakdown = breakdownEl();
+    const fetchSpy = vi.fn((url: string) =>
+      Promise.resolve(
+        url.includes("_fires.json")
+          ? { ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) }
+          : { ok: true, json: async () => sampleBlob },
+      ),
+    );
     vi.stubGlobal("fetch", fetchSpy);
 
-    const off = wireScaleBlobToggle(map, btn);
+    const off = wireScaleBlobToggle(map, btn, breakdown);
     btn.click();
-    // The click handler is async (fetch → addSource); let it settle.
+    // The click handler is async (fetch → addSource → fetch the breakdown); let it settle.
     await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
     expect(map._layers).toContain("scale-blob-fill");
     expect(btn.getAttribute("aria-pressed")).toBe("true");
 
@@ -99,6 +110,8 @@ describe("scale blob vs compare mode", () => {
     // to exit a shape that no longer exists.
     expect(btn.getAttribute("aria-pressed")).toBe("false");
     expect(btn.textContent).toBe("Compare fire scale");
+    // ...nor does the country breakdown linger for a shape that's gone.
+    expect(breakdown.innerHTML).toBe("");
 
     off();
     vi.unstubAllGlobals();
@@ -109,7 +122,7 @@ describe("scale blob vs compare mode", () => {
     const map = stubMap();
     const btn = button();
 
-    const off = wireScaleBlobToggle(map, btn);
+    const off = wireScaleBlobToggle(map, btn, breakdownEl());
     expect(() => emitUi("compare:enter")).not.toThrow();
     expect(isScaleBlobActive()).toBe(false);
 
@@ -123,7 +136,8 @@ describe("scale blob vs compare mode", () => {
     const { uiSubscriberCount } = await import("../src/ui_events");
     const before = uiSubscriberCount("compare:enter");
 
-    const off = wireScaleBlobToggle(stubMap(), button());
+    const btn = button();
+    const off = wireScaleBlobToggle(stubMap(), btn, breakdownEl());
     expect(uiSubscriberCount("compare:enter")).toBe(before + 1);
     off();
     expect(uiSubscriberCount("compare:enter")).toBe(before);

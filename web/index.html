@@ -53,6 +53,11 @@
            wireScaleBlobToggle assigns the button's textContent on every state
            change, which would delete any child node placed inside it. -->
       <p id="scale-blob-note">Detected fire footprint, archived fires only</p>
+      <!-- Populated by scale_blob_panel.ts while the blob is active; empty
+           (and collapsed via :empty in CSS) otherwise. Lives inside the same
+           positioned wrapper as the button so it inherits its collision-safe
+           placement rather than needing its own. -->
+      <div id="scale-blob-breakdown"></div>
     </div>
     <!-- One container for every non-map view. data-view picks which child
          shows; data-size is the fire card's peek/full state on mobile. -->

@@ -51,6 +51,7 @@ import {
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
 import { activateScaleBlob, deactivateScaleBlob, isScaleBlobActive } from "./layer_scale_blob";
+import { hideScaleBlobPanel, showScaleBlobPanel } from "./scale_blob_panel";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
 import { infoHtml } from "./info";
@@ -269,6 +270,7 @@ async function boot() {
     wireScaleBlobToggle(
       map,
       document.getElementById("scale-blob-toggle") as HTMLButtonElement,
+      document.getElementById("scale-blob-breakdown") as HTMLElement,
     );
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
@@ -526,10 +528,12 @@ async function boot() {
 export function wireScaleBlobToggle(
   map: maplibregl.Map,
   button: HTMLButtonElement,
+  breakdown: HTMLElement,
 ): () => void {
   const reset = () => {
     button.setAttribute("aria-pressed", "false");
     button.textContent = "Compare fire scale";
+    hideScaleBlobPanel(breakdown);
   };
   const onClick = () => void (async () => {
     if (isScaleBlobActive()) {
@@ -540,10 +544,15 @@ export function wireScaleBlobToggle(
     button.disabled = true;
     button.textContent = "Loading…";
     try {
-      await activateScaleBlob(map, new Date().getFullYear());
+      const year = new Date().getFullYear();
+      await activateScaleBlob(map, year);
       if (isScaleBlobActive()) {
         button.setAttribute("aria-pressed", "true");
         button.textContent = "Exit fire-scale compare";
+        // Best-effort: a failed/empty fetch here just leaves the breakdown
+        // panel empty (showScaleBlobPanel is tolerant of that), it doesn't
+        // affect whether the blob itself activated.
+        void showScaleBlobPanel(breakdown, year);
       } else {
         button.textContent = "Compare fire scale (unavailable)";
       }
