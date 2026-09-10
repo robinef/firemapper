@@ -1,5 +1,8 @@
 """Incremental export of the current year's archived-fire footprints into
-one packed, position-independent blob for the web scale-comparison layer.
+one gap-free, position-independent hex blob for the web scale-comparison
+layer. Each fire gets a hex count proportional to its real detected area,
+packed into a shared spiral (pipeline/pack_blob.py) — the blob is a felt
+sense of total scale, not a reconstruction of each fire's actual shape.
 
 See docs/superpowers/specs/2026-09-09-fire-scale-blob-design.md."""
 import json
@@ -16,8 +19,8 @@ from .config import (
     scale_blob_key,
 )
 from .enrich import Places, load_places, nearest_place
-from .geo_local import cell_boundary_local_m, centroid_of_cells
-from .pack_blob import bounding_box, pack_fires
+from .geo_local import centroid_of_cells
+from .pack_blob import hex_count_for_area, pack_fires_as_blob
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -126,8 +129,7 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
 
     to_process = {tid: digest for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest}
 
-    new_fire_polys: dict[str, list[list[tuple[float, float]]]] = {}
-    new_fire_cells: dict[str, list[str]] = {}
+    new_fire_hex_counts: dict[str, int] = {}
     places: Places | None = None
 
     for track_id, digest in to_process.items():
@@ -145,25 +147,33 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
 
         cells = body["cells"]
         origin_lat, origin_lon = centroid_of_cells(cells)
-        new_fire_polys[track_id] = [cell_boundary_local_m(c, origin_lat, origin_lon) for c in cells]
-        new_fire_cells[track_id] = cells
+        area_km2 = round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
 
         if places is None:  # lazy, once per run, only if there's actually work to do
             places = _load_places(settings)
         place = nearest_place(origin_lat, origin_lon, places)
         fires_summary[track_id] = {
             "country": place["country"] if place else None,
-            "area_km2": round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1),
+            "area_km2": area_km2,
         }
+        # The blob shows total scale, not each fire's real detected shape —
+        # a fixed-size hex count proportional to real area, packed into one
+        # gap-free spiral (pack_blob.py), not the fire's actual footprint.
+        new_fire_hex_counts[track_id] = hex_count_for_area(area_km2)
 
-    if new_fire_polys:
-        existing_boxes = [bounding_box([c["vertices_m"] for c in cells]) for cells in blob_by_fire.values()]
-        packed = pack_fires(new_fire_polys, existing_boxes=existing_boxes)
+    if new_fire_hex_counts:
+        # New hexes start right after every already-published one — a spiral
+        # fill can't skip or collide, so this is the only bookkeeping needed
+        # to keep placing previously-packed fires exactly where they are.
+        start_index = sum(len(cells) for cells in blob_by_fire.values())
+        packed = pack_fires_as_blob(new_fire_hex_counts, start_index=start_index)
         for fire_id, polys in packed.items():
-            cell_ids = new_fire_cells[fire_id]
             blob_by_fire[fire_id] = [
-                {"fire_id": fire_id, "cell_id": cid, "res": h3.get_resolution(cid), "vertices_m": poly}
-                for cid, poly in zip(cell_ids, polys)
+                # cell_id/res no longer name a real H3 cell (there is no
+                # real cell here) — kept only because the web layer's schema
+                # expects them, `res` fixed at 8 as a harmless placeholder.
+                {"fire_id": fire_id, "cell_id": f"{fire_id}-{i}", "res": 8, "vertices_m": poly}
+                for i, poly in enumerate(polys)
             ]
 
     new_blob = [cell for cells in blob_by_fire.values() for cell in cells]

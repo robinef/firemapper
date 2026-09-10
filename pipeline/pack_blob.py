@@ -1,62 +1,95 @@
-"""Greedy spiral bounding-box packing: places each fire's real footprint
-shape onto a shared canvas with no cross-fire collision, largest first.
-Each fire's shape is translated as a whole — never resized or distorted."""
+"""Packs fires into one gap-free hex blob.
+
+Earlier versions preserved each fire's real detected shape via a
+bounding-box spiral (collision-avoided, margin between shapes). That left
+visible gaps between fires — a click landing in a gap hit nothing and fell
+through to the map's own pan, and the empty space read as "nothing here"
+when it was really just packing margin, not a meaningful absence.
+
+Individual fire shape was never the point — the point is a felt sense of
+total scale. So: pick one fixed hex size, give each fire a hex COUNT
+proportional to its real area, and fill one continuous spiral with them,
+each fire a contiguous run. A spiral fill can't produce a gap or a
+collision — there is no "avoid overlap" step because there is nothing to
+avoid; every position is used exactly once, in order."""
 import math
 
 Polygon = list[tuple[float, float]]
 
+# 0.7 km² — the same VIIRS single-cell area already used elsewhere
+# (pipeline.metrics.CELL_KM2), not a new unit invented for this.
+HEX_AREA_KM2 = 0.7
+_HEX_EDGE_M = math.sqrt((HEX_AREA_KM2 * 1_000_000) / (3 * math.sqrt(3) / 2))
 
-def bounding_box(polygons: list[Polygon]) -> tuple[float, float, float, float]:
-    xs = [x for poly in polygons for x, _ in poly]
-    ys = [y for poly in polygons for _, y in poly]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def translate_polygons(polygons: list[Polygon], dx: float, dy: float) -> list[Polygon]:
-    return [[(x + dx, y + dy) for x, y in poly] for poly in polygons]
-
-
-def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    return ax0 < bx1 and bx0 < ax1 and ay0 < by1 and by0 < ay1
+# Standard axial hex-grid direction vectors (pointy-top), in ring-walk order.
+# See redblobgames.com/grids/hexagons — direction 4 is the start-of-ring
+# corner; walking all 6 directions `radius` steps each traces one full ring.
+_DIRECTIONS = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)]
 
 
-def _box_area(box: tuple[float, float, float, float]) -> float:
-    x0, y0, x1, y1 = box
-    return (x1 - x0) * (y1 - y0)
+def hex_count_for_area(area_km2: float) -> int:
+    """How many fixed-size display hexes represent this much real area.
+    Never zero — a fire too small to round up to one hex would otherwise
+    vanish from the blob entirely, which is worse than a slight oversize."""
+    return max(1, round(area_km2 / HEX_AREA_KM2))
 
 
-def pack_fires(
-    fire_polygons: dict[str, list[Polygon]],
-    existing_boxes: list[tuple[float, float, float, float]] = (),
-) -> dict[str, list[Polygon]]:
-    ordered = sorted(fire_polygons.items(), key=lambda kv: -_box_area(bounding_box(kv[1])))
-    placed_boxes: list[tuple[float, float, float, float]] = list(existing_boxes)
+def _spiral_axial_coords(n: int):
+    """The first `n` axial (q, r) hex coordinates in spiral order, starting
+    at the center and expanding ring by ring. Every position is distinct and
+    every position within the spiral is filled — no gaps, no collisions, by
+    construction rather than by checking afterward."""
+    if n <= 0:
+        return
+    yield (0, 0)
+    produced = 1
+    radius = 1
+    while produced < n:
+        dq0, dr0 = _DIRECTIONS[4]
+        q, r = dq0 * radius, dr0 * radius
+        for dq, dr in _DIRECTIONS:
+            for _ in range(radius):
+                if produced >= n:
+                    return
+                yield (q, r)
+                produced += 1
+                q, r = q + dq, r + dr
+        radius += 1
+
+
+def _axial_to_local_m(q: int, r: int) -> tuple[float, float]:
+    x = _HEX_EDGE_M * (math.sqrt(3) * q + math.sqrt(3) / 2 * r)
+    y = _HEX_EDGE_M * (1.5 * r)
+    return x, y
+
+
+def _hexagon_vertices_m(cx: float, cy: float) -> Polygon:
+    return [
+        (
+            cx + _HEX_EDGE_M * math.cos(math.radians(60 * i - 30)),
+            cy + _HEX_EDGE_M * math.sin(math.radians(60 * i - 30)),
+        )
+        for i in range(6)
+    ]
+
+
+def pack_fires_as_blob(fire_hex_counts: dict[str, int], start_index: int = 0) -> dict[str, list[Polygon]]:
+    """Assigns each fire a contiguous run of hexes in one shared spiral,
+    starting after `start_index` positions already used by previously-packed
+    fires — so a new fire is placed without ever moving or overlapping an
+    already-published one. Iteration order of `fire_hex_counts` is the order
+    fires are laid out in the spiral."""
+    total_new = sum(fire_hex_counts.values())
+    coords = list(_spiral_axial_coords(start_index + total_new))[start_index:]
+
     result: dict[str, list[Polygon]] = {}
-
-    for fire_id, polys in ordered:
-        box = bounding_box(polys)
-        w, h = box[2] - box[0], box[3] - box[1]
-        step = max(w, h, 1.0) * 0.5 + 25.0  # margin between shapes, meters
-        cx0, cy0 = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-
-        placed = False
-        radius = 0.0
-        while not placed:
-            candidates = [(0.0, 0.0)] if radius == 0.0 else [
-                (radius * math.cos(2 * math.pi * i / n), radius * math.sin(2 * math.pi * i / n))
-                for n in [max(int((2 * math.pi * radius) / step), 8)]
-                for i in range(n)
-            ]
-            for cx, cy in candidates:
-                dx, dy = cx - cx0, cy - cy0
-                candidate_box = (box[0] + dx, box[1] + dy, box[2] + dx, box[3] + dy)
-                if not any(boxes_overlap(candidate_box, pb) for pb in placed_boxes):
-                    result[fire_id] = translate_polygons(polys, dx, dy)
-                    placed_boxes.append(candidate_box)
-                    placed = True
-                    break
-            radius += step
-
+    i = 0
+    for fire_id, count in fire_hex_counts.items():
+        polys = []
+        for _ in range(count):
+            q, r = coords[i]
+            cx, cy = _axial_to_local_m(q, r)
+            polys.append(_hexagon_vertices_m(cx, cy))
+            i += 1
+        result[fire_id] = polys
     return result

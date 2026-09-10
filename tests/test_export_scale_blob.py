@@ -123,7 +123,7 @@ def test_run_export_does_not_reprocess_unchanged_digest(tmp_path, monkeypatch):
     assert calls == []  # unchanged digest, never re-inspected
 
 
-def test_run_export_second_new_fire_does_not_overlap_first(tmp_path):
+def test_run_export_second_new_fire_never_moves_or_overlaps_the_first(tmp_path):
     import h3
 
     settings = _settings(tmp_path)
@@ -133,19 +133,29 @@ def test_run_export_second_new_fire_does_not_overlap_first(tmp_path):
     _make_local_archive(settings.out_dir, tracks_a)
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
+    blob_after_a = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
+    fire_a_before = [cell["vertices_m"] for cell in blob_after_a if cell["fire_id"] == "fire-a"]
+
     tracks_b = {**tracks_a, "fire-b": _track_body("fire-b", cells_b, "2026-02-01T00:00:00+00:00")}
     _make_local_archive(settings.out_dir, tracks_b)
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    from pipeline.pack_blob import bounding_box, boxes_overlap
 
     blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
     by_fire: dict[str, list] = {}
     for cell in blob:
         by_fire.setdefault(cell["fire_id"], []).append(cell["vertices_m"])
-    box_a = bounding_box(by_fire["fire-a"])
-    box_b = bounding_box(by_fire["fire-b"])
-    assert not boxes_overlap(box_a, box_b)
+
+    # fire-a, already published, must not have been repacked or moved by
+    # fire-b's arrival — a spiral fill only ever appends.
+    assert by_fire["fire-a"] == fire_a_before
+
+    # No two hexes (from either fire) share a position — a gap-free spiral
+    # fill is collision-free by construction; this confirms it held here.
+    def centroid(poly):
+        return (round(sum(x for x, _ in poly) / len(poly), 3), round(sum(y for _, y in poly) / len(poly), 3))
+
+    all_centroids = [centroid(poly) for polys in by_fire.values() for poly in polys]
+    assert len(set(all_centroids)) == len(all_centroids)
 
 
 def test_run_export_reprocesses_a_track_whose_cells_never_reached_the_blob(tmp_path):
