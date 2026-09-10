@@ -469,57 +469,26 @@ body.compare-mode #fire-readout { display: none; }
 }
 #rail button:hover, #rail a:hover { border-color: #ff6b00; }
 
-/* The on-map trigger for layer_scale_blob.ts's draggable H3 shape, plus the
-   caption the design spec requires next to it. Not a registry.ts module — no
-   fixed geographic footprint to toggle — so it isn't in #sidebar/#legend, and
-   it isn't #rail-scale's /scale page either.
-
-   ONE positioned wrapper for the pair. No corner here is unclaimed (see
-   #fire-readout's own note), and the two widths claim different ones:
-
-   MOBILE, top-right at 56px. The `top: 12px` this replaces put a 44px-tall
-   right-anchored pill straight across the #header freshness badge, which is
-   centred with max-width 92vw — x 15–360 of a 375px screen — and loses on
-   z-index (5 against 9). 56px is the same clearance #compare-bar and
-   #view-chip already use for that badge, and it is the file's established
-   "below the header at every width" number. #fire-readout is display:none
-   below 641px, so nothing else claims this corner here.
-
-   DESKTOP, bottom-right above the time bar. #fire-readout owns the top-right
-   corner at this width — same top 12px / right 12px the button used, so an
-   open fire card painted the button over the wind/FRP reading. Its height
-   GROWS with the content it renders, so no fixed `top` here could be
-   guaranteed to clear it.
-   The bottom-right is genuinely free: #rail is a left-edge column, #notice and
-   maplibre's scale control are bottom-LEFT, and #timeline is cleared by the
-   measured --timebar — the same offset #rail uses on mobile and
-   .maplibregl-ctrl-bottom-left uses here. #view is left-anchored (68px, 320px
-   wide), so it never reaches this side either. */
-#scale-blob-control { position: absolute; top: 56px; right: 12px; z-index: 9;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
-  max-width: 210px; }
-#scale-blob-toggle { min-height: 44px; padding: 0 14px; border-radius: 999px;
-  background: var(--panel); color: var(--fg); font: inherit; font-weight: 600;
-  border: 1px solid rgba(255,255,255,.14); cursor: pointer;
-  box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+/* The trigger for layer_scale_blob.ts's draggable H3 shape, plus the caption
+   the design spec requires next to it — lives inline in #sidebar now (see
+   index.html's comment on #scale-blob-control for why it's a sibling of
+   #layers, not a child of it), so it just needs to flow in that column like
+   #legend does, not float over the map with its own z-index/corner math. */
+#scale-blob-control { display: flex; flex-direction: column; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.1); }
+#scale-blob-toggle { align-self: flex-start; min-height: 44px; padding: 0 14px;
+  border-radius: 999px; background: var(--panel); color: var(--fg);
+  font: inherit; font-weight: 600; border: 1px solid rgba(255,255,255,.14);
+  cursor: pointer; }
 #scale-blob-toggle:hover { border-color: #ff6b00; }
 #scale-blob-toggle:disabled { opacity: .6; cursor: default; }
-/* The caption reports, it is not a control — pointer-events off for the same
-   reason #fire-readout has it off: the map underneath stays draggable through
-   it, and the shape itself is dragged on that map. */
-#scale-blob-note { margin: 0; padding: 4px 8px; border-radius: 6px;
-  background: var(--panel); color: var(--muted); font-size: 11px;
-  line-height: 1.25; text-align: right; pointer-events: none;
-  box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+#scale-blob-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.25; }
 /* Populated by scale_blob_panel.ts only while the blob is active — :empty
-   collapses it the rest of the time so it never reserves dead space in the
-   #scale-blob-control column. Scrolls rather than growing unbounded: a heavy
-   fire year could touch a few dozen countries. */
-#scale-blob-breakdown { width: 100%; max-height: 220px; overflow-y: auto;
-  padding: 8px 10px; border-radius: 6px; background: var(--panel);
-  box-shadow: 0 2px 12px rgba(0,0,0,.45); }
-#scale-blob-breakdown:empty { display: none; padding: 0; box-shadow: none; }
-#scale-blob-breakdown .fc-title { font-size: 13px; margin: 0 0 6px; }
+   collapses it the rest of the time. Scrolls rather than growing unbounded:
+   a heavy fire year could touch a few dozen countries. */
+#scale-blob-breakdown { max-height: 220px; overflow-y: auto; }
+#scale-blob-breakdown:empty { display: none; }
+#scale-blob-breakdown .fc-title { font-size: 13px; margin: 8px 0 6px; }
 #scale-blob-breakdown .fc-stat { padding: 4px 0; font-size: 12px;
   border-bottom: 1px solid rgba(255,255,255,.06); }
 #scale-blob-breakdown .fc-stat:last-child { border-bottom: none; }
@@ -527,17 +496,16 @@ body.compare-mode #fire-readout { display: none; }
 /* Compare owns the whole map surface: no rail at any width (nothing may
    compete with the divider drag, and on desktop the rail sits at the left
    edge where a drag can begin), no histogram (there is nothing to scrub
-   while two dated images are being compared), and no scale-blob trigger
-   (dragging the shape would fight the swipe divider for the same gesture).
-
-   Hiding the trigger is only half of it: CSS cannot unbind the layer's canvas
-   pointer listeners, so main.ts also DEACTIVATES the blob on compare:enter.
-   Without that the shape kept rendering over the compared imagery and kept
-   fighting the divider for the same drag, with the only control that could
-   turn it off now hidden. */
+   while two dated images are being compared). The scale-blob trigger needs
+   no entry here anymore — it lives inside #sidebar now, and #sidebar is
+   inside #view, which compare mode already hides wholesale (see the note
+   below #compare-bar). CSS still can't unbind the layer's canvas pointer
+   listeners though, so main.ts DEACTIVATES the blob on compare:enter
+   regardless of whether its button happens to be visible — without that the
+   shape kept rendering over the compared imagery and fighting the swipe
+   divider for the same drag gesture. */
 body.compare-mode #rail,
-body.compare-mode #timeline,
-body.compare-mode #scale-blob-control { display: none; }
+body.compare-mode #timeline { display: none; }
 
 /* Compare's own chrome, outside #view because #view is hidden for it.
    Starts BELOW #header (top 12px, z-index 5), not over it: this bar is opaque
@@ -590,12 +558,6 @@ body.compare-mode #scale-blob-control { display: none; }
     box-shadow: 0 2px 20px rgba(0,0,0,.55); }
   #timeline { left: 80px; }
   .fc-peek { display: none; }
-  /* Out of #fire-readout's corner and down to the bottom-right — see the
-     block's own comment for why a fixed `top` cannot clear a readout whose
-     height depends on its content. `top: auto` is required, not tidiness: the
-     base rule sets `top: 56px`, and an absolutely positioned box with both
-     `top` and `bottom` set resolves to the top and stretches. */
-  #scale-blob-control { top: auto; bottom: calc(var(--timebar) + 12px); }
 }
 
 #info .fc-stat span { text-transform: capitalize; }
