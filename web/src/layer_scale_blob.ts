@@ -148,13 +148,25 @@ function capturePointer(pointerId: number): void {
   }
 }
 
+// A single exact pixel can miss a real click near a hex boundary — WebGL
+// polygon rasterization/anti-aliasing leaves a sub-pixel seam between two
+// adjacent fills where neither one's hit test claims that pixel. Querying a
+// small box around the point instead of the point itself is the standard
+// maplibre workaround, and gives clicks near an edge the same forgiveness a
+// human finger or a slightly-off mouse click needs anyway.
+const HIT_TEST_BUFFER_PX = 3;
+
 function onPointerDown(e: PointerEvent): void {
   if (!currentMap || !currentCanvas || dragging || pointerDownPoint !== null) return;
   const point = canvasPoint(currentCanvas, e);
   // Native canvas events fire for the whole canvas, not just this layer —
   // map.on("mousedown", LAYER_ID, ...) would filter that for us, but here we
   // have to hit-test ourselves.
-  const hits = currentMap.queryRenderedFeatures(point, { layers: [LAYER_ID] });
+  const hitBox: [maplibregl.PointLike, maplibregl.PointLike] = [
+    [point[0] - HIT_TEST_BUFFER_PX, point[1] - HIT_TEST_BUFFER_PX],
+    [point[0] + HIT_TEST_BUFFER_PX, point[1] + HIT_TEST_BUFFER_PX],
+  ];
+  const hits = currentMap.queryRenderedFeatures(hitBox, { layers: [LAYER_ID] });
   if (hits.length === 0) {
     // A press anywhere else on the map deselects — the same "click away"
     // convention as any selectable UI element. Left to the map's own

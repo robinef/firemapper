@@ -69,7 +69,7 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
       const [x, y] = Array.isArray(p) ? p : [p.x, p.y];
       return { lng: x / 1000, lat: y / 1000 };
     },
-    queryRenderedFeatures: () => (hit ? [{}] : []),
+    queryRenderedFeatures: vi.fn(() => (hit ? [{}] : [])),
     dragPan,
     _setHit: (v: boolean) => {
       hit = v;
@@ -294,6 +294,23 @@ describe("select-then-drag lifecycle", () => {
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
 
     expect(blobSource(map).data).toBe(before); // setData never called again
+  });
+
+  it("hit-tests a small box around the click, not the exact pixel — a click can land on a hex boundary", async () => {
+    const { map, canvas } = await activated();
+
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
+
+    // A bare point would miss a click that lands exactly on the WebGL seam
+    // between two adjacent hexes — querying a box around it instead gives
+    // an edge click the same forgiveness a real finger or mouse needs.
+    expect(map.queryRenderedFeatures).toHaveBeenCalledWith(
+      [
+        [100 - 3, 200 - 3],
+        [100 + 3, 200 + 3],
+      ],
+      { layers: ["scale-blob-fill"] },
+    );
   });
 
   it("captures the pointer on pointerdown and releases it on pointerup, even while unselected", async () => {
