@@ -39,6 +39,34 @@ test.describe("mobile 375x812", () => {
     await expectNoOverlap(page, "#view-chip", "#header", "the freshness badge must stay readable");
   });
 
+  test("the scale-blob trigger clears the freshness badge", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // Same defect class as the view chip above, and the same cause: the button
+    // shipped at top 12px / right 12px, and #header is CENTRED with max-width
+    // 92vw — 345px of a 375px screen, x 15–360 — so a right-anchored 44px-tall
+    // pill at the same 12px offset lands straight across the freshness badge
+    // and wins on z-index (9 vs 5). It now starts at 56px, the same clearance
+    // #compare-bar and #view-chip use.
+    await expectNoOverlap(
+      page,
+      "#scale-blob-toggle",
+      "#header",
+      "the freshness badge must stay readable",
+    );
+    // The spec's binding framing, asserted where a reader would see it rather
+    // than only in the stylesheet: a large mass of real fire outlines with no
+    // statement that it is a PARTIAL footprint reads as the whole season.
+    await expect(page.locator("#scale-blob-note")).toBeVisible();
+    await expect(page.locator("#scale-blob-note")).toHaveText(
+      /detected fire footprint, archived fires only/i,
+    );
+    // #fire-readout is display:none below 641px, so there is nothing to clear
+    // here — the desktop test asserts that half of the pair.
+    await expect(page.locator("#fire-readout")).toBeHidden();
+  });
+
   test("a peeked fire card clears both the rail and the time bar", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
@@ -87,6 +115,47 @@ test.describe("desktop 1280x800", () => {
     // 44px into a time bar which is actually ~164px tall once a fire card
     // swaps its own series in. It now reads the measured --timebar.
     await expectNoOverlap(page, "#view", "#timeline", "the panel must clear the time bar");
+  });
+
+  test("the scale-blob trigger clears the fire readout and the header", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // A card must be OPEN first, for the same reason the view-chip test opens
+    // one: #fire-readout is only mounted while a fire card is showing, so
+    // asserting at boot would pass with the button parked right on top of it —
+    // which is exactly where it shipped (both at top 12px / right 12px, the
+    // button winning on z-index at 9 against the readout's 7).
+    await openRail(page, "rail-search", "search");
+    const rows = fireRows(page);
+    await expect(rows.first()).toBeVisible();
+    await rows.first().click();
+    await expect(page.locator("#fire-readout")).toBeVisible();
+
+    await expectNoOverlap(
+      page,
+      "#scale-blob-toggle",
+      "#fire-readout",
+      "the wind/FRP readout must stay readable while a card is open",
+    );
+    await expectNoOverlap(
+      page,
+      "#scale-blob-toggle",
+      "#header",
+      "the freshness badge must stay readable",
+    );
+    // The button drops to the bottom-right at this width, so it also has to
+    // clear the time bar it now sits above — the --timebar offset is measured
+    // at runtime and grows when the card swaps its own series in.
+    await expectNoOverlap(
+      page,
+      "#scale-blob-toggle",
+      "#timeline",
+      "the button must clear the time bar it is anchored above",
+    );
+    await expect(page.locator("#scale-blob-note")).toHaveText(
+      /detected fire footprint, archived fires only/i,
+    );
   });
 
   test("mobile-only chrome stays hidden here", async ({ page }) => {

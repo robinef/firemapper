@@ -32,10 +32,28 @@
          "scale comparison" blob (layer_scale_blob.ts), not the /scale page's
          EFFIS burned-area stats. Top-level like #compare-bar/#view-chip, not
          inside #rail (a fixed icon strip) or #sidebar (registry.ts's layer
-         switcher) — main.ts wires its click handler directly. -->
-    <button id="scale-blob-toggle" type="button" aria-pressed="false" title="Compare fire scale">
-      Compare fire scale
-    </button>
+         switcher) — main.ts wires its click handler directly.
+
+         The button and its caption share ONE positioned wrapper so the pair
+         can only ever be placed as a unit — a separately-positioned caption is
+         a second box to keep clear of #header and #fire-readout, and it would
+         drift the first time either offset changed. -->
+    <div id="scale-blob-control">
+      <button id="scale-blob-toggle" type="button" aria-pressed="false" title="Compare fire scale">
+        Compare fire scale
+      </button>
+      <!-- Binding constraint from the design spec's Global Constraints: the
+           copy must say "detected fire footprint, archived fires only", never
+           "actually burned" or "all fires". The shape is what satellites
+           DETECTED, and it holds only fires already archived — still-burning
+           fires, fires quiet for less than 48 h, and fires under 4 detections
+           are all absent. Without this line the reader sees a large mass of
+           real fire outlines and has no way to know it is a partial one.
+           A separate element, not part of the button's label: main.ts's
+           wireScaleBlobToggle assigns the button's textContent on every state
+           change, which would delete any child node placed inside it. -->
+      <p id="scale-blob-note">Detected fire footprint, archived fires only</p>
+    </div>
     <!-- One container for every non-map view. data-view picks which child
          shows; data-size is the fire card's peek/full state on mobile. -->
     <div id="view" data-view="map">
