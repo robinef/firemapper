@@ -63,12 +63,18 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
     },
     getCanvas: () => canvas,
     getCenter: () => opts.center ?? { lat: 45.0, lng: 5.0 },
-    // Deterministic, purely-numeric pixel->lngLat mapping — not real
-    // geography, but exact and easy to hand-verify in assertions.
+    // Deterministic, purely-numeric pixel->lngLat mapping (and its exact
+    // inverse) — not real geography, but exact and easy to hand-verify in
+    // assertions, and round-trips cleanly for commitDrag's project+unproject.
     unproject: (p: [number, number] | { x: number; y: number }) => {
       const [x, y] = Array.isArray(p) ? p : [p.x, p.y];
       return { lng: x / 1000, lat: y / 1000 };
     },
+    project: (lngLat: [number, number] | { lng: number; lat: number }) => {
+      const [lng, lat] = Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat];
+      return { x: lng * 1000, y: lat * 1000 };
+    },
+    setPaintProperty: vi.fn(),
     queryRenderedFeatures: vi.fn(() => (hit ? [{}] : [])),
     dragPan,
     _setHit: (v: boolean) => {
@@ -242,7 +248,7 @@ describe("select-then-drag lifecycle", () => {
     expect(selectedFlag(map)).toBe(false);
   });
 
-  it("dragging is a no-op while unselected — no movement, no dragPan suppression", async () => {
+  it("dragging is a no-op while unselected — no translate, no dragPan suppression", async () => {
     const { map, canvas } = await activated();
     const before = blobSource(map).data;
 
@@ -250,29 +256,53 @@ describe("select-then-drag lifecycle", () => {
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
 
     expect(blobSource(map).data).toBe(before); // setData never called for a move
+    expect(map.setPaintProperty).not.toHaveBeenCalled();
     expect(map.dragPan.disable).not.toHaveBeenCalled();
   });
 
-  it("once selected, preserves the grab offset: the grabbed point stays under the cursor through a drag", async () => {
+  it("once selected, pointermove sets a pure pixel-space translate — no geometry recompute per frame", async () => {
+    // The performance fix: with thousands of real hexes, recomputing every
+    // vertex's lat/lon and re-uploading the whole source on every pointermove
+    // was the actual drag lag, not H3 itself. Moving now only sets the
+    // fill/line layers' `-translate` paint properties (a GPU-side pixel
+    // offset) — setData is never called until the drag ends.
+    const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
+    const beforeMove = blobSource(map).data;
+
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
+    // Cursor moves by (+50, +30) canvas px from the grab point.
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
+
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [50, 30]);
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-outline", "line-translate", [50, 30]);
+    // No geometry recompute happened — setData was never called for the move.
+    expect(blobSource(map).data).toBe(beforeMove);
+  });
+
+  it("dropping (pointerup) commits the real geometry once and resets the translate to zero", async () => {
     const { map, canvas } = await activated();
     click(canvas, 1, 10, 10);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    // Cursor moves by (+50, +30) canvas px.
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 150, clientY: 230 });
 
-    // unproject is x/1000, y/1000 here, so the cursor's lngLat moved by
-    // (0.05, 0.03). The drop point must move by EXACTLY that same delta —
-    // that is the grab-offset contract: the grabbed point stays fixed under
-    // the cursor, the shape does not snap its center to the cursor.
-    const newDropLat = 45.0 + 0.03;
-    const newDropLon = 5.0 + 0.05;
-    const expected = projectVertices(sampleBlob[0].vertices_m, newDropLat, newDropLon);
+    // stubMap's project/unproject are exact inverses (x/1000 <-> lng*1000),
+    // so committing a (+50, +30) px drag from the original drop point
+    // (45.0, 5.0) must land on exactly (45.03, 5.05) — the same true
+    // position the old per-frame lat/lon math targeted, now computed once.
+    const expected = projectVertices(sampleBlob[0].vertices_m, 45.03, 5.05);
     const actual = (blobSource(map).data.features[0].geometry as GeoJSON.Polygon).coordinates[0];
     actual.forEach((vertex: number[], i: number) => {
       expect(vertex[0]).toBeCloseTo(expected[i][0], 9);
       expect(vertex[1]).toBeCloseTo(expected[i][1], 9);
     });
+
+    // The translate must reset to zero — the new geometry already reflects
+    // the drop position, so a lingering translate would double-offset it.
+    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
   });
 
   it("a real drag while selected leaves it selected afterward, not toggled off", async () => {
@@ -323,19 +353,21 @@ describe("select-then-drag lifecycle", () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(7);
   });
 
-  it("pointercancel ends a drag exactly like pointerup", async () => {
+  it("pointercancel ends a drag exactly like pointerup — commits once, then further movement is ignored", async () => {
     const { map, canvas } = await activated();
     click(canvas, 1, 10, 10);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-    const midDrag = blobSource(map).data;
+    const beforeCancel = blobSource(map).data; // still the pre-drag geometry — move only translates
 
     dispatch(canvas, "pointercancel", { pointerId: 1, clientX: 150, clientY: 230 });
+    const afterCancel = blobSource(map).data;
+    expect(afterCancel).not.toBe(beforeCancel); // cancel committed real geometry, same as pointerup would
+
     // Further movement of the same (now-released) pointer must not move the shape.
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 300, clientY: 300 });
-
-    expect(blobSource(map).data).toBe(midDrag);
+    expect(blobSource(map).data).toBe(afterCancel);
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
   });
 
@@ -344,16 +376,16 @@ describe("select-then-drag lifecycle", () => {
     click(canvas, 1, 100, 100);
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
-    const afterFirstDown = blobSource(map).data;
+    (map.setPaintProperty as ReturnType<typeof vi.fn>).mockClear();
 
-    // A second finger lands mid-drag — must be ignored.
+    // A second finger lands mid-drag — must be ignored, no translate from it.
     dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 0, clientY: 0 });
     dispatch(canvas, "pointermove", { pointerId: 2, clientX: 0, clientY: 0 });
-    expect(blobSource(map).data).toBe(afterFirstDown);
+    expect(map.setPaintProperty).not.toHaveBeenCalled();
 
     // The original pointer still drives the drag.
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 110, clientY: 100 });
-    expect(blobSource(map).data).not.toBe(afterFirstDown);
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [10, 0]);
   });
 
   it("suppresses map dragPan while dragging and restores it on release", async () => {
