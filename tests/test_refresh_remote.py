@@ -44,6 +44,34 @@ def test_defaults_to_the_full_tier(tmp_path, monkeypatch, r2_env):
     assert seen == ["full"]
 
 
+def test_a_failing_scale_blob_export_still_publishes(tmp_path, monkeypatch, capsys, r2_env):
+    """The scale-blob export must never cost us the publish.
+
+    It is a bonus tier read off the archive, and every input it touches can be
+    malformed (empty `series`, no "cells", a bad H3 id, a truncated body). Left
+    unguarded between refresh() and publish(), any of those aborts main() before
+    publish() runs, and the live map keeps serving the PREVIOUS generation until
+    a human notices — a frozen map traded for a missing bonus layer. Same
+    contract, same _safe helper, as pipeline/run.py already applies to
+    archive_past_tracks, the producer of the data this consumes.
+    """
+    order: list[str] = []
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: order.append("hydrate"))
+    monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: order.append(f"refresh:{tier}"))
+    monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: order.append("publish"))
+    monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")
+
+    def boom(*_a, **_k):
+        raise ValueError("track fire-x has empty series, cannot attribute a year")
+
+    monkeypatch.setattr(refresh_remote, "run_export", boom)
+
+    assert refresh_remote.main(["fast"], client=object()) == 0
+    assert order == ["hydrate", "refresh:fast", "publish"]
+    # Degraded, not silent: the run has to say what it dropped.
+    assert "export-scale-blob failed" in capsys.readouterr().err
+
+
 def test_refuses_to_run_without_r2_configured(monkeypatch):
     for var in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
         monkeypatch.delenv(var, raising=False)

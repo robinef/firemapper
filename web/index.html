@@ -35,6 +35,40 @@
       <aside id="sidebar">
         <div id="layers"></div>
         <div id="legend"></div>
+        <!-- Distinct feature from #rail-scale above: this is an on-map H3
+             "scale comparison" blob (layer_scale_blob.ts), not the /scale
+             page's EFFIS burned-area stats. Lives in the same panel as
+             every other layer's toggle so it's found the same way — NOT a
+             real registry.ts LayerModule, though: dragging the shape needs
+             native pointer listeners a simple visibility checkbox can't
+             drive, so main.ts wires its click handler directly instead of
+             going through registry.ts's generic row renderer. A sibling of
+             #layers, not a child of it: registry.ts's render() rewrites
+             #layers' entire innerHTML on every re-render (level change,
+             filter change, any checkbox), which would silently wipe this
+             out if it lived inside. Being inside #sidebar (and so inside
+             #view) is also what hides it automatically in compare mode —
+             see the #view visibility rule below, no separate display:none
+             needed for that anymore. -->
+        <div id="scale-blob-control">
+          <button id="scale-blob-toggle" type="button" aria-pressed="false" title="Compare fire scale">
+            Compare fire scale
+          </button>
+          <!-- Binding constraint from the design spec's Global Constraints: the
+               copy must say "detected fire footprint, archived fires only", never
+               "actually burned" or "all fires". The shape is what satellites
+               DETECTED, and it holds only fires already archived — still-burning
+               fires, fires quiet for less than 48 h, and fires under 4 detections
+               are all absent. Without this line the reader sees a large mass of
+               real fire outlines and has no way to know it is a partial one.
+               A separate element, not part of the button's label: main.ts's
+               wireScaleBlobToggle assigns the button's textContent on every state
+               change, which would delete any child node placed inside it. -->
+          <p id="scale-blob-note">Detected fire footprint, archived fires only</p>
+          <!-- Populated by scale_blob_panel.ts while the blob is active; empty
+               (and collapsed via :empty in CSS) otherwise. -->
+          <div id="scale-blob-breakdown"></div>
+        </div>
       </aside>
       <div id="panel" class="hidden"></div>
       <div id="info"></div>

@@ -50,6 +50,8 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
+import { activateScaleBlob, deactivateScaleBlob, isScaleBlobActive } from "./layer_scale_blob";
+import { hideScaleBlobPanel, showScaleBlobPanel } from "./scale_blob_panel";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
 import { infoHtml } from "./info";
@@ -58,7 +60,7 @@ import { mountPanel } from "./panel";
 import { mountTimeline } from "./timeline";
 import { setupFireCard } from "./firecard";
 import { buildFireIndex, renderFireList, searchFires } from "./firelist";
-import { emitUi } from "./ui_events";
+import { emitUi, onUi } from "./ui_events";
 import type { Manifest } from "./types";
 
 const BASE = "/data";
@@ -264,6 +266,11 @@ async function boot() {
       modules,
       map,
       manifest,
+    );
+    wireScaleBlobToggle(
+      map,
+      document.getElementById("scale-blob-toggle") as HTMLButtonElement,
+      document.getElementById("scale-blob-breakdown") as HTMLElement,
     );
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
@@ -501,6 +508,92 @@ async function boot() {
     // result.
     if (FORCE_FIRE && !openFromList(FORCE_FIRE)) openScarFromList(FORCE_FIRE);
   });
+}
+
+/**
+ * Wire the on-map scale-blob trigger.
+ *
+ * layer_scale_blob.ts is deliberately not a registry.ts LayerModule (see that
+ * file's own header comment), so its trigger is wired here rather than joining
+ * `modules` in boot(). activateScaleBlob resolves NORMALLY (without throwing)
+ * on a 404 — no archive/blob_<year>.json for this year yet — so success is read
+ * back from isScaleBlobActive() after the await, not assumed from the promise
+ * settling; otherwise a missing archive would silently flip the button into a
+ * bogus "active" state.
+ *
+ * Exported, and taking its two collaborators as arguments, so the compare-mode
+ * rule below is testable: boot() needs a WebGL map, a manifest and a network,
+ * and none of that can run under jsdom.
+ */
+export function wireScaleBlobToggle(
+  map: maplibregl.Map,
+  button: HTMLButtonElement,
+  breakdown: HTMLElement,
+): () => void {
+  const reset = () => {
+    button.setAttribute("aria-pressed", "false");
+    button.textContent = "Compare fire scale";
+    hideScaleBlobPanel(breakdown);
+  };
+  const onClick = () => void (async () => {
+    if (isScaleBlobActive()) {
+      deactivateScaleBlob(map);
+      reset();
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Loading…";
+    try {
+      const year = new Date().getFullYear();
+      await activateScaleBlob(map, year);
+      if (isScaleBlobActive()) {
+        button.setAttribute("aria-pressed", "true");
+        button.textContent = "Exit fire-scale compare";
+        // Best-effort: a failed/empty fetch here just leaves the breakdown
+        // panel empty (showScaleBlobPanel is tolerant of that), it doesn't
+        // affect whether the blob itself activated. Fire-and-forget, but
+        // guarded: a slow fetch can still be in flight after the reader
+        // deactivates (or compare:enter deactivates for them) — without the
+        // isScaleBlobActive() recheck, this would resolve afterward and
+        // silently repopulate the panel for a blob that is no longer shown.
+        void showScaleBlobPanel(breakdown, year).then(() => {
+          if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
+        });
+      } else {
+        button.textContent = "Compare fire scale (unavailable)";
+      }
+    } catch {
+      button.textContent = "Compare fire scale (unavailable)";
+    } finally {
+      button.disabled = false;
+    }
+  })();
+  button.addEventListener("click", onClick);
+
+  // Entering compare mode must TURN THE BLOB OFF, not merely hide its button.
+  // style.css drops #scale-blob-control under body.compare-mode because
+  // dragging the shape fights the swipe divider for the same gesture — but CSS
+  // reaches neither the fill layer, nor its GeoJSON source, nor the native
+  // canvas pointer listeners layer_scale_blob.ts installs. Left active, the
+  // shape kept painting over the two dated images, the drag kept working
+  // against the divider, and the one control that could switch it off was now
+  // invisible: unreachable until the reader left compare mode. The button's own
+  // state is reset too, so it does not come back out of compare mode reading
+  // "Exit fire-scale compare" over a shape that is gone.
+  //
+  // Subscribed here rather than in shell.ts's compare:enter handler (which is
+  // where the body class is added): the shell is chrome + nav and holds no map
+  // reference by design, and scrubber.ts already sets the precedent of a
+  // non-shell module listening for this event to stop what it is doing.
+  const offCompare = onUi("compare:enter", () => {
+    deactivateScaleBlob(map);
+    reset();
+  });
+
+  return () => {
+    button.removeEventListener("click", onClick);
+    offCompare();
+  };
 }
 
 /**

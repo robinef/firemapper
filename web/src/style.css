@@ -469,10 +469,41 @@ body.compare-mode #fire-readout { display: none; }
 }
 #rail button:hover, #rail a:hover { border-color: #ff6b00; }
 
+/* The trigger for layer_scale_blob.ts's draggable H3 shape, plus the caption
+   the design spec requires next to it — lives inline in #sidebar now (see
+   index.html's comment on #scale-blob-control for why it's a sibling of
+   #layers, not a child of it), so it just needs to flow in that column like
+   #legend does, not float over the map with its own z-index/corner math. */
+#scale-blob-control { display: flex; flex-direction: column; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.1); }
+#scale-blob-toggle { align-self: flex-start; min-height: 44px; padding: 0 14px;
+  border-radius: 999px; background: var(--panel); color: var(--fg);
+  font: inherit; font-weight: 600; border: 1px solid rgba(255,255,255,.14);
+  cursor: pointer; }
+#scale-blob-toggle:hover { border-color: #ff6b00; }
+#scale-blob-toggle:disabled { opacity: .6; cursor: default; }
+#scale-blob-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.25; }
+/* Populated by scale_blob_panel.ts only while the blob is active — :empty
+   collapses it the rest of the time. Scrolls rather than growing unbounded:
+   a heavy fire year could touch a few dozen countries. */
+#scale-blob-breakdown { max-height: 220px; overflow-y: auto; }
+#scale-blob-breakdown:empty { display: none; }
+#scale-blob-breakdown .fc-title { font-size: 13px; margin: 8px 0 6px; }
+#scale-blob-breakdown .fc-stat { padding: 4px 0; font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,.06); }
+#scale-blob-breakdown .fc-stat:last-child { border-bottom: none; }
+
 /* Compare owns the whole map surface: no rail at any width (nothing may
    compete with the divider drag, and on desktop the rail sits at the left
-   edge where a drag can begin), and no histogram (there is nothing to
-   scrub while two dated images are being compared). */
+   edge where a drag can begin), no histogram (there is nothing to scrub
+   while two dated images are being compared). The scale-blob trigger needs
+   no entry here anymore — it lives inside #sidebar now, and #sidebar is
+   inside #view, which compare mode already hides wholesale (see the note
+   below #compare-bar). CSS still can't unbind the layer's canvas pointer
+   listeners though, so main.ts DEACTIVATES the blob on compare:enter
+   regardless of whether its button happens to be visible — without that the
+   shape kept rendering over the compared imagery and fighting the swipe
+   divider for the same drag gesture. */
 body.compare-mode #rail,
 body.compare-mode #timeline { display: none; }
 

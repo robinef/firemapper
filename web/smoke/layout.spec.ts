@@ -39,6 +39,39 @@ test.describe("mobile 375x812", () => {
     await expectNoOverlap(page, "#view-chip", "#header", "the freshness badge must stay readable");
   });
 
+  test("the scale-blob control sits inside the layers panel, not floating over the map", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // It moved out of the map's floating chrome and into #sidebar — the same
+    // panel Wind/Fires/etc. live in, reachable the same way, rather than a
+    // separately-positioned button whose corner had to be kept clear of
+    // #header and #fire-readout by hand. Only rendered once the layers view
+    // is actually open, same as every other row in that panel.
+    await openRail(page, "rail-layers", "layers");
+
+    await expect(page.locator("#scale-blob-toggle")).toBeVisible();
+    // The spec's binding framing, asserted where a reader would see it rather
+    // than only in the stylesheet: a large mass of real fire outlines with no
+    // statement that it is a PARTIAL footprint reads as the whole season.
+    await expect(page.locator("#scale-blob-note")).toHaveText(
+      /detected fire footprint, archived fires only/i,
+    );
+
+    // Structurally inside #sidebar, stacked below the layer checkboxes in
+    // normal flow — not escaped back out to some independent floating
+    // position, the failure mode the old absolutely-positioned version had.
+    const control = await boxOf(page, "#scale-blob-control");
+    const sidebar = await boxOf(page, "#sidebar");
+    const layers = await boxOf(page, "#layers");
+    expect(control, "#scale-blob-control must be on screen").not.toBeNull();
+    expect(sidebar, "#sidebar must be on screen").not.toBeNull();
+    expect(layers, "#layers must be on screen").not.toBeNull();
+    expect(control!.x).toBeGreaterThanOrEqual(sidebar!.x - 1);
+    expect(control!.x + control!.width).toBeLessThanOrEqual(sidebar!.x + sidebar!.width + 1);
+    expect(control!.y).toBeGreaterThanOrEqual(layers!.y + layers!.height - 1);
+  });
+
   test("a peeked fire card clears both the rail and the time bar", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
@@ -87,6 +120,32 @@ test.describe("desktop 1280x800", () => {
     // 44px into a time bar which is actually ~164px tall once a fire card
     // swaps its own series in. It now reads the measured --timebar.
     await expectNoOverlap(page, "#view", "#timeline", "the panel must clear the time bar");
+  });
+
+  test("the scale-blob control sits inside the layers panel, not floating over the map", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // It moved out of the map's floating chrome and into #sidebar — the same
+    // slide-out panel Wind/Fires/etc. live in at this width (left: 68px,
+    // width: 320px), rather than a bottom-right button that had to be kept
+    // clear of #fire-readout, #header, and the time bar by hand.
+    await openRail(page, "rail-layers", "layers");
+
+    await expect(page.locator("#scale-blob-toggle")).toBeVisible();
+    await expect(page.locator("#scale-blob-note")).toHaveText(
+      /detected fire footprint, archived fires only/i,
+    );
+
+    const control = await boxOf(page, "#scale-blob-control");
+    const sidebar = await boxOf(page, "#sidebar");
+    const layers = await boxOf(page, "#layers");
+    expect(control, "#scale-blob-control must be on screen").not.toBeNull();
+    expect(sidebar, "#sidebar must be on screen").not.toBeNull();
+    expect(layers, "#layers must be on screen").not.toBeNull();
+    expect(control!.x).toBeGreaterThanOrEqual(sidebar!.x - 1);
+    expect(control!.x + control!.width).toBeLessThanOrEqual(sidebar!.x + sidebar!.width + 1);
+    expect(control!.y).toBeGreaterThanOrEqual(layers!.y + layers!.height - 1);
   });
 
   test("mobile-only chrome stays hidden here", async ({ page }) => {

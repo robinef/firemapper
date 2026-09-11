@@ -82,3 +82,22 @@ export function outlineFor(hex: string): string {
 }
 
 export const markerColor = (s: EventProps["state"]) => STATE_COLORS[s];
+
+// A fixed categorical palette, cycled deterministically by fire id — good
+// enough for "these are different fires," not meant for identity lookup
+// (no legend is shown alongside it).
+const HASH_PALETTE = [
+  "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
+  "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe",
+  "#008080", "#e6beff", "#9a6324", "#800000", "#808000",
+  "#000075", "#a9a9a9",
+];
+
+export function hashColor(fireId: string): string {
+  let hash = 0;
+  for (let i = 0; i < fireId.length; i++) {
+    hash = (hash * 31 + fireId.charCodeAt(i)) | 0;
+  }
+  const index = Math.abs(hash) % HASH_PALETTE.length;
+  return HASH_PALETTE[index];
+}
