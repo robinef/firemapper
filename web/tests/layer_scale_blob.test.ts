@@ -23,6 +23,7 @@ import type * as maplibregl from "maplibre-gl";
 function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } = {}) {
   const sources: Record<string, any> = {};
   const layers: string[] = [];
+  const layerDefs: Record<string, any> = {};
   const canvas = document.createElement("canvas");
   canvas.getBoundingClientRect = () =>
     ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
@@ -52,7 +53,11 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
     addSource: (id: string, def: any) => {
       sources[id] = { ...def, setData: vi.fn((data: any) => { sources[id].data = data; }) };
     },
-    addLayer: (def: any) => layers.push(def.id),
+    addLayer: (def: any) => {
+      layers.push(def.id);
+      layerDefs[def.id] = def;
+    },
+    getLayerDef: (id: string) => layerDefs[id],
     getLayer: (id: string) => (layers.includes(id) ? {} : undefined),
     removeLayer: (id: string) => {
       const i = layers.indexOf(id);
@@ -120,6 +125,20 @@ describe("activateScaleBlob", () => {
     // Initial drop point is the current map viewport center.
     const expected = projectVertices(sampleBlob[0].vertices_m, 45.0, 5.0);
     expect((source.data.features[0].geometry as GeoJSON.Polygon).coordinates[0]).toEqual(expected);
+  });
+
+  it("disables the default 300ms transition on the translate paint properties", async () => {
+    // maplibre eases every Transitionable paint property (fill-translate and
+    // line-translate included) over 300ms unless overridden per-property —
+    // without this, each pointermove's translate would visibly lag the
+    // cursor by up to 300ms instead of snapping instantly.
+    const map = stubMap() as unknown as maplibregl.Map & { getLayerDef: (id: string) => any };
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
+
+    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
+
+    expect(map.getLayerDef("scale-blob-fill").paint["fill-translate-transition"]).toEqual({ duration: 0 });
+    expect(map.getLayerDef("scale-blob-outline").paint["line-translate-transition"]).toEqual({ duration: 0 });
   });
 
   it("does not re-fetch on a second activation while already active", async () => {
@@ -353,7 +372,7 @@ describe("select-then-drag lifecycle", () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(7);
   });
 
-  it("pointercancel ends a drag exactly like pointerup — commits once, then further movement is ignored", async () => {
+  it("pointercancel ends a drag without committing geometry — cancel coordinates aren't trustworthy", async () => {
     const { map, canvas } = await activated();
     click(canvas, 1, 10, 10);
 
@@ -362,13 +381,37 @@ describe("select-then-drag lifecycle", () => {
     const beforeCancel = blobSource(map).data; // still the pre-drag geometry — move only translates
 
     dispatch(canvas, "pointercancel", { pointerId: 1, clientX: 150, clientY: 230 });
-    const afterCancel = blobSource(map).data;
-    expect(afterCancel).not.toBe(beforeCancel); // cancel committed real geometry, same as pointerup would
+
+    // No setData — cancel resets the translate but never commits geometry.
+    expect(blobSource(map).data).toBe(beforeCancel);
+    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
 
     // Further movement of the same (now-released) pointer must not move the shape.
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 300, clientY: 300 });
-    expect(blobSource(map).data).toBe(afterCancel);
+    expect(blobSource(map).data).toBe(beforeCancel);
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("a plain click on an already-selected, dragging shape resets translate but skips the geometry commit", async () => {
+    const { map, canvas } = await activated();
+    click(canvas, 1, 10, 10);
+
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
+    const setDataCalls = () => (blobSource(map).setData as ReturnType<typeof vi.fn>).mock.calls.length;
+    const beforeUp = setDataCalls();
+
+    // No real movement — within CLICK_TOLERANCE_PX — so this is a click, not a drag.
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 101, clientY: 200 });
+
+    // Selection toggling still re-renders once (to flip the "selected" paint
+    // property) — but commitDrag's geometry recompute must not run on top of
+    // it, so setData fires exactly once, not twice, for this zero-distance "drag".
+    expect(setDataCalls()).toBe(beforeUp + 1);
+    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
+    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
+    // A click while already selected toggles it off, same as any other click.
+    expect(selectedFlag(map)).toBe(false);
   });
 
   it("a second pointer cannot hijack an active drag", async () => {

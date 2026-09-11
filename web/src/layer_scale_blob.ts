@@ -220,17 +220,26 @@ function onPointerMove(e: PointerEvent): void {
   const point = canvasPoint(currentCanvas, e);
   const dx = point[0] - pointerDownPoint[0];
   const dy = point[1] - pointerDownPoint[1];
-  // Pure GPU-side pixel offset — no vertex math, no setData, however many
-  // thousand hexes are in the source. See the module doc comment.
-  currentMap.setPaintProperty(LAYER_ID, "fill-translate", [dx, dy]);
-  currentMap.setPaintProperty(OUTLINE_LAYER_ID, "line-translate", [dx, dy]);
+  setTranslate(currentMap, [dx, dy]);
+}
+
+/** Set both layers' `-translate` in one place — every call site (a drag
+ * frame, or resetting to zero) goes through this so the pair can never
+ * drift out of sync, and each call checks the layer still exists first
+ * (the established defensive pattern in this codebase, e.g. firecard.ts's
+ * setPaintProperty calls) rather than assuming the drag can't outlive the
+ * layers it's animating. */
+function setTranslate(map: maplibregl.Map, offset: [number, number]): void {
+  if (map.getLayer(LAYER_ID)) map.setPaintProperty(LAYER_ID, "fill-translate", offset);
+  if (map.getLayer(OUTLINE_LAYER_ID)) map.setPaintProperty(OUTLINE_LAYER_ID, "line-translate", offset);
 }
 
 /** The one real geometry update per drag: project the current true drop
  * point to screen space, add the total pixel delta the drag moved, unproject
  * back to a real lngLat, commit it via render()'s setData, then zero the
  * `-translate` paint properties (the geometry itself now reflects the new
- * position, so leaving a stale translate would double-offset it). */
+ * position, so leaving a stale translate would double-offset it). Only
+ * called for a genuine drag with real movement — see onPointerUp. */
 function commitDrag(dx: number, dy: number): void {
   if (!currentMap) return;
   const screenPos = currentMap.project([dropLon, dropLat]);
@@ -238,28 +247,50 @@ function commitDrag(dx: number, dy: number): void {
   dropLat = newLngLat.lat;
   dropLon = newLngLat.lng;
   render(currentMap);
-  currentMap.setPaintProperty(LAYER_ID, "fill-translate", [0, 0]);
-  currentMap.setPaintProperty(OUTLINE_LAYER_ID, "line-translate", [0, 0]);
+  setTranslate(currentMap, [0, 0]);
 }
 
 function onPointerUp(e: PointerEvent): void {
   if (e.pointerId !== activePointerId || !currentCanvas || pointerDownPoint === null) return;
 
+  // pointercancel's coordinates aren't reliable across browsers/situations
+  // (OS gesture takeover, palm rejection, a dropped touch) — never trust
+  // them for a real geometry commit. Treat a cancel as "abort the drag,
+  // keep the last committed position", the same as a plain click: not a
+  // deliberate drop, so it shouldn't toggle selection either.
+  const isCancel = e.type === "pointercancel";
   const point = canvasPoint(currentCanvas, e);
   const dx = point[0] - pointerDownPoint[0];
   const dy = point[1] - pointerDownPoint[1];
-  const wasClick = Math.hypot(dx, dy) <= CLICK_TOLERANCE_PX;
+  const wasClick = !isCancel && Math.hypot(dx, dy) <= CLICK_TOLERANCE_PX;
 
   if (dragging) {
-    commitDrag(dx, dy);
-    endDrag(e.pointerId);
+    try {
+      // A plain click on an already-selected shape (no real movement), or a
+      // cancel whose coordinates can't be trusted, skips the geometry
+      // recompute entirely — with thousands of hexes, paying setData's cost
+      // for a zero-distance "drag" would be exactly the waste this fix
+      // removes. Just snap any sub-tolerance translate residue back to zero.
+      if (isCancel || wasClick) {
+        if (currentMap) setTranslate(currentMap, [0, 0]);
+      } else {
+        commitDrag(dx, dy);
+      }
+    } finally {
+      // Always release drag state, even if commitDrag threw — otherwise
+      // onPointerDown's re-entrancy guard (dragging || pointerDownPoint !==
+      // null) would wedge the shape unresponsive to every future pointer
+      // event until reload.
+      endDrag(e.pointerId);
+    }
   } else {
     releasePointerTracking(e.pointerId);
   }
 
-  // A click (not a drag) on the shape toggles selection: select it if it
-  // wasn't, deselect it if it already was. A real drag leaves it selected —
-  // the user should be able to drag again without re-clicking first.
+  // A click (not a drag, not a cancel) on the shape toggles selection:
+  // select it if it wasn't, deselect it if it already was. A real drag
+  // leaves it selected — the user should be able to drag again without
+  // re-clicking first.
   if (wasClick) setSelected(!pointerDownWasSelected);
 }
 
@@ -337,6 +368,11 @@ export async function activateScaleBlob(
         "fill-opacity": ["case", ["get", "selected"], 0.85, 0.6],
         "fill-translate": [0, 0],
         "fill-translate-anchor": "viewport",
+        // maplibre eases every Transitionable paint property (fill-translate
+        // included) over 300ms by default — without this override, each
+        // pointermove's translate update would visibly lag behind the
+        // cursor by up to 300ms instead of snapping instantly.
+        "fill-translate-transition": { duration: 0 },
       },
     });
     // A border, dim even when unselected — the click-to-pick-up gesture isn't
@@ -353,6 +389,7 @@ export async function activateScaleBlob(
         "line-opacity": ["case", ["get", "selected"], 1, 0.4],
         "line-translate": [0, 0],
         "line-translate-anchor": "viewport",
+        "line-translate-transition": { duration: 0 },
       },
     });
 
