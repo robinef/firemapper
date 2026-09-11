@@ -435,3 +435,46 @@ def test_run_export_reprocessing_a_middle_fire_does_not_overlap_a_later_untouche
 
     all_centroids = [centroid(poly) for polys in by_fire.values() for poly in polys]
     assert len(set(all_centroids)) == len(all_centroids), "repacked fire-a must not collide with untouched fire-c"
+
+
+def test_run_export_stops_early_when_the_time_budget_runs_out(tmp_path):
+    """A cold start against a large real archive (19,347 tracks in prod, as
+    of the first production run) can't fetch every track body serially
+    within a single CI job's timeout. run_export must make partial progress
+    and stop cleanly rather than get killed mid-loop with nothing written —
+    a hard process kill can't be caught by the _safe() wrapper in
+    scripts/refresh_remote.py, so the guard has to live inside run_export
+    itself."""
+    import h3
+
+    settings = _settings(tmp_path)
+    tracks = {}
+    for i in range(5):
+        cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0 + i, 5.0, 8), 1))[:2]
+        tracks[f"fire-{i}"] = _track_body(f"fire-{i}", cells, "2026-06-01T00:00:00+00:00")
+    _make_local_archive(settings.out_dir, tracks)
+
+    # A fake clock that reports elapsed time past the budget after the 3rd
+    # track's processing has started (deadline check happens once per
+    # iteration, before that track's own work).
+    calls = {"n": 0}
+
+    def fake_clock() -> float:
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 3 else 1000.0  # first few calls "before deadline"
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None, time_budget_s=500.0, clock=fake_clock)
+
+    state = json.loads((settings.out_dir / SCALE_BLOB_STATE_KEY).read_text())
+    processed = len(state)
+    assert 0 < processed < 5, f"expected partial progress, got {processed} of 5 processed"
+
+    blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
+    blob_fire_ids = {cell["fire_id"] for cell in blob}
+    assert blob_fire_ids == set(state.keys()), "every processed fire must have cells in the blob"
+
+    # A second run, unbudgeted, must pick up exactly the tracks the first
+    # run didn't get to — nothing is lost, nothing is silently skipped.
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+    state_final = json.loads((settings.out_dir / SCALE_BLOB_STATE_KEY).read_text())
+    assert set(state_final.keys()) == set(tracks.keys())
