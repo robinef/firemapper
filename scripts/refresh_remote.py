@@ -65,11 +65,26 @@ def main(argv: list[str], client=None) -> int:
     # generation for as long as the fault persists — a stale map is a far worse
     # outcome than a stale blob. So a failure here falls back to "no new scale
     # blob this run" and the refresh publishes regardless.
+    #
+    # _safe only catches IN-PROCESS exceptions, not a hard kill of the whole
+    # job — and the first production run proved that matters: this job's own
+    # 30-minute timeout (below, in the CI workflow) killed the process mid
+    # run_export, before publish() ever ran, because a cold start against
+    # prod's real archive (19,347 tracks, fetched serially, none of it
+    # written until the very end) can't finish in time. time_budget_s makes
+    # run_export stop itself early and write whatever it finished, well
+    # inside that 30-minute ceiling: ~3 min of pipeline work runs before this
+    # step (measured on the run that timed out), so 900s (15 min) here still
+    # leaves comfortable margin for publish() and everything else in the job.
     _timed(
         "export_scale_blob",
         lambda: _safe(
             lambda: run_export(
-                settings, target_year=datetime.now(timezone.utc).year, client=client, r2_bucket=settings.r2_bucket
+                settings,
+                target_year=datetime.now(timezone.utc).year,
+                client=client,
+                r2_bucket=settings.r2_bucket,
+                time_budget_s=900.0,
             ),
             default=None,
             label="export-scale-blob",

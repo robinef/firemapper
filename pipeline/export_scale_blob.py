@@ -6,8 +6,10 @@ sense of total scale, not a reconstruction of each fire's actual shape.
 
 See docs/superpowers/specs/2026-09-09-fire-scale-blob-design.md."""
 import json
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import h3
 
@@ -114,7 +116,25 @@ def _load_track_body(out_dir: Path, track_id: str, client, r2_bucket: str | None
     return json.loads(body) if body is not None else None
 
 
-def run_export(settings: Settings, target_year: int, client, r2_bucket: str | None = None) -> None:
+def run_export(
+    settings: Settings,
+    target_year: int,
+    client,
+    r2_bucket: str | None = None,
+    time_budget_s: float = 600.0,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """`time_budget_s` bounds this function's own wall-clock cost — the real
+    ceiling is scripts/refresh_remote.py's 30-minute CI job timeout, which
+    can hard-kill the whole process (not just this function) before
+    anything gets written at all: a cold start against a large real archive
+    (19,347 tracks in prod as of the first production run) fetches every
+    body serially and cannot finish within that budget. Rather than block
+    the entire refresh cycle indefinitely — repeating the same failed
+    cold-start every run, forever — this stops processing new tracks once
+    the budget is spent and writes whatever it *did* finish. Unprocessed
+    tracks simply never entered `state`, so the next run's `to_process` diff
+    picks them up automatically; no separate resumption bookkeeping needed."""
     index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
     if not index_path.exists():
         return  # nothing archived yet
@@ -156,8 +176,11 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
 
     new_fire_hex_counts: dict[str, int] = {}
     places: Places | None = None
+    deadline = clock() + time_budget_s
 
     for track_id, digest in to_process.items():
+        if clock() > deadline:
+            break  # out of time this cycle — remaining tracks stay in to_process, retried next run
         body = _load_track_body(settings.out_dir, track_id, client, r2_bucket)
         if body is None:
             continue  # transient fetch failure — stays unprocessed, retried next run
