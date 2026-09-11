@@ -551,8 +551,14 @@ export function wireScaleBlobToggle(
         button.textContent = "Exit fire-scale compare";
         // Best-effort: a failed/empty fetch here just leaves the breakdown
         // panel empty (showScaleBlobPanel is tolerant of that), it doesn't
-        // affect whether the blob itself activated.
-        void showScaleBlobPanel(breakdown, year);
+        // affect whether the blob itself activated. Fire-and-forget, but
+        // guarded: a slow fetch can still be in flight after the reader
+        // deactivates (or compare:enter deactivates for them) — without the
+        // isScaleBlobActive() recheck, this would resolve afterward and
+        // silently repopulate the panel for a blob that is no longer shown.
+        void showScaleBlobPanel(breakdown, year).then(() => {
+          if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
+        });
       } else {
         button.textContent = "Compare fire scale (unavailable)";
       }

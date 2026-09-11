@@ -74,6 +74,31 @@ def _save_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, sort_keys=True))
 
 
+def _true_area_km2(cells: list[str]) -> float:
+    """Sum of each cell's real area, without double-counting.
+
+    A track's cells can legitimately include both a coarse Meteosat cell and
+    the several finer VIIRS cells nested inside it (design spec: "a coarse
+    res-7 Meteosat cell spatially containing several res-8 VIIRS cells" is an
+    expected occurrence, not a bug). The children exactly tile the parent, so
+    summing every cell's area double-counts that ground. Drop any cell that
+    is the H3 parent of another cell already in the set — its area is
+    already accounted for by its children. (If only some of a parent's
+    children are present, this slightly undercounts the parent's uncovered
+    remainder — an acceptable trade against the double-counting this exists
+    to fix.)"""
+    cell_set = set(cells)
+    kept = [
+        c
+        for c in cell_set
+        if not any(
+            h3.get_resolution(other) > h3.get_resolution(c) and h3.cell_to_parent(other, h3.get_resolution(c)) == c
+            for other in cell_set
+        )
+    ]
+    return round(sum(h3.cell_area(c, unit="km^2") for c in kept), 1)
+
+
 def _load_track_body(out_dir: Path, track_id: str, client, r2_bucket: str | None) -> dict | None:
     local_path = out_dir / "archive" / "tracks" / f"{track_id}.json"
     if local_path.exists():
@@ -147,7 +172,7 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
 
         cells = body["cells"]
         origin_lat, origin_lon = centroid_of_cells(cells)
-        area_km2 = round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
+        area_km2 = _true_area_km2(cells)
 
         if places is None:  # lazy, once per run, only if there's actually work to do
             places = _load_places(settings)
@@ -162,17 +187,27 @@ def run_export(settings: Settings, target_year: int, client, r2_bucket: str | No
         new_fire_hex_counts[track_id] = hex_count_for_area(area_km2)
 
     if new_fire_hex_counts:
-        # New hexes start right after every already-published one — a spiral
-        # fill can't skip or collide, so this is the only bookkeeping needed
-        # to keep placing previously-packed fires exactly where they are.
-        start_index = sum(len(cells) for cells in blob_by_fire.values())
+        # New hexes start right after the highest spiral position any
+        # currently-published cell actually occupies — NOT a sum of
+        # currently-tracked fires' hex counts. A reprocessed fire (digest
+        # changed) is popped from blob_by_fire above, so if it wasn't the
+        # last fire ever packed, summing what's left undercounts: a fire
+        # packed after it is still sitting at its own (higher) positions,
+        # untouched, and a sum-based start_index would silently reuse them.
+        # The per-cell "index" is what makes the true high-water mark
+        # derivable regardless of which fires this run did or didn't touch.
+        start_index = 1 + max(
+            (cell["index"] for cells in blob_by_fire.values() for cell in cells),
+            default=-1,
+        )
         packed = pack_fires_as_blob(new_fire_hex_counts, start_index=start_index)
         for fire_id, polys in packed.items():
             blob_by_fire[fire_id] = [
                 # cell_id/res no longer name a real H3 cell (there is no
                 # real cell here) — kept only because the web layer's schema
                 # expects them, `res` fixed at 8 as a harmless placeholder.
-                {"fire_id": fire_id, "cell_id": f"{fire_id}-{i}", "res": 8, "vertices_m": poly}
+                {"fire_id": fire_id, "cell_id": f"{fire_id}-{i}", "res": 8, "vertices_m": poly,
+                 "index": start_index + i}
                 for i, poly in enumerate(polys)
             ]
 

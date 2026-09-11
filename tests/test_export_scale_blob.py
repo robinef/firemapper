@@ -67,7 +67,11 @@ def test_run_export_writes_blob_for_tracks_in_target_year(tmp_path):
     import h3
 
     settings = _settings(tmp_path)
-    cells = [h3.latlng_to_cell(45.0, 5.0, 8), h3.latlng_to_cell(45.001, 5.001, 8)]
+    # grid_disk, not two nearby lat/lngs: 45.000,5.000 and 45.001,5.001 land
+    # in the SAME res-8 cell (see the comment on the crash-recovery test
+    # below), which would make len(blob) == 2 fail against a 1-cell fixture.
+    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
+    assert len(set(cells)) == 2
     tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
     _make_local_archive(settings.out_dir, tracks)
 
@@ -314,7 +318,11 @@ def test_run_export_area_km2_matches_the_sum_of_real_cell_areas(tmp_path):
     import h3
 
     settings = _settings(tmp_path)
-    cells = [h3.latlng_to_cell(45.0, 5.0, 8), h3.latlng_to_cell(45.001, 5.001, 8)]
+    # grid_disk, not two nearby lat/lngs — see the comment on the
+    # writes-blob test above: 45.000,5.000 and 45.001,5.001 collide into the
+    # SAME res-8 cell, which would make this a 1-cell, not 2-cell, fixture.
+    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
+    assert len(set(cells)) == 2
     tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
     _make_local_archive(settings.out_dir, tracks)
 
@@ -353,3 +361,77 @@ def test_run_export_fires_summary_reconciles_like_the_blob(tmp_path):
 
     fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
     assert "fire-2026" in fires  # reprocessed, not left permanently missing
+
+
+def test_run_export_area_km2_does_not_double_count_parent_child_cells(tmp_path):
+    """A track's cells can legitimately include both a coarse Meteosat cell
+    and the finer VIIRS cells nested inside it (design spec: 'What can still
+    overlap: a single fire's own mixed-resolution cells'). Summing raw
+    h3.cell_area over both double-counts the same physical ground."""
+    import h3
+
+    settings = _settings(tmp_path)
+    parent = h3.latlng_to_cell(45.0, 5.0, 7)
+    children = h3.cell_to_children(parent, 8)
+    cells = [parent, *children]
+    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks)
+
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    true_area = round(h3.cell_area(parent, unit="km^2"), 1)  # children exactly tile the parent
+    assert fires["fire-2026"]["area_km2"] == true_area
+
+
+def test_run_export_reprocessing_a_middle_fire_does_not_overlap_a_later_untouched_fire(tmp_path):
+    """start_index for newly-(re)packed fires must be the true highest
+    occupied spiral position, not a sum of currently-tracked fires' hex
+    counts — summing undercounts whenever a fire earlier in the spiral gets
+    reprocessed (a digest change, an expected occurrence per the design doc)
+    while a fire packed after it is left untouched: the untouched fire's
+    cells no longer correspond to a contiguous range starting at 0, so a
+    naive sum silently reuses positions it still occupies."""
+    import h3
+
+    settings = _settings(tmp_path)
+    # fire-a: enough cells to be packed first (larger fires are placed
+    # first in a fresh batch) and to leave room for a real collision if
+    # start_index is wrong. fire-c: packed after fire-a, in a later run,
+    # never touched again.
+    cells_a = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 2))[:5]
+    cells_c = sorted(h3.grid_disk(h3.latlng_to_cell(50.0, 10.0, 8), 2))[:4]
+    tracks_a = {"fire-a": _track_body("fire-a", cells_a, "2026-01-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks_a)
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    tracks_ac = {**tracks_a, "fire-c": _track_body("fire-c", cells_c, "2026-02-01T00:00:00+00:00")}
+    _make_local_archive(settings.out_dir, tracks_ac)
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    blob_before = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
+    fire_c_before = [cell["vertices_m"] for cell in blob_before if cell["fire_id"] == "fire-c"]
+
+    # fire-a's content changes (grew/corrected) — same track id, different
+    # cells, so a new digest. fire-c is untouched.
+    cells_a_grown = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 2))[:8]
+    tracks_grown = {
+        "fire-a": _track_body("fire-a", cells_a_grown, "2026-01-02T00:00:00+00:00"),
+        "fire-c": tracks_ac["fire-c"],
+    }
+    _make_local_archive(settings.out_dir, tracks_grown)
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    blob_after = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
+    by_fire: dict[str, list] = {}
+    for cell in blob_after:
+        by_fire.setdefault(cell["fire_id"], []).append(cell["vertices_m"])
+
+    # fire-c, never touched, must be byte-for-byte unchanged.
+    assert by_fire["fire-c"] == fire_c_before
+
+    def centroid(poly):
+        return (round(sum(x for x, _ in poly) / len(poly), 3), round(sum(y for _, y in poly) / len(poly), 3))
+
+    all_centroids = [centroid(poly) for polys in by_fire.values() for poly in polys]
+    assert len(set(all_centroids)) == len(all_centroids), "repacked fire-a must not collide with untouched fire-c"

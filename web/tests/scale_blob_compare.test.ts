@@ -129,6 +129,50 @@ describe("scale blob vs compare mode", () => {
     off();
   });
 
+  it("a slow country-breakdown fetch that resolves after deactivation does not repopulate the panel", async () => {
+    // The panel fetch is fire-and-forget (activation doesn't wait on it) —
+    // so it can still be in flight when the reader deactivates the blob
+    // before it resolves. Without a recheck, the stale resolve would
+    // silently write country stats back into a panel for a blob that's no
+    // longer shown.
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+
+    let resolveFiresFetch!: (v: { ok: boolean; json: () => Promise<unknown> }) => void;
+    const fetchSpy = vi.fn((url: string) => {
+      if (url.includes("_fires.json")) {
+        return new Promise((resolve) => {
+          resolveFiresFetch = resolve;
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => sampleBlob });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const off = wireScaleBlobToggle(map, btn, breakdown);
+    btn.click();
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    expect(breakdown.innerHTML).toBe(""); // fires.json fetch still pending
+
+    // Deactivate before the pending fetch ever resolves.
+    btn.click();
+    expect(isScaleBlobActive()).toBe(false);
+    expect(breakdown.innerHTML).toBe("");
+
+    // Now let the stale fetch resolve.
+    resolveFiresFetch({ ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) });
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    // A tick for the .then() guard to run after the promise settles.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(breakdown.innerHTML).toBe("");
+
+    off();
+    vi.unstubAllGlobals();
+  });
+
   it("the returned teardown unsubscribes from compare:enter", async () => {
     // A leaked subscriber would keep deactivating against a stale map for every
     // future compare:enter — the same leak tests/scrubber.test.ts guards.

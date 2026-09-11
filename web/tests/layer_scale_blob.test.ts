@@ -168,23 +168,23 @@ describe("activateScaleBlob", () => {
     expect(map.getSource("scale-blob")).toBeUndefined();
   });
 
-  it("renders overlapping same-fire cells in a deterministic (res, cell_id) order", async () => {
+  it("renders cells in a deterministic cell_id order, independent of fetch order", async () => {
+    // Every hex now has its own distinct spiral position (pack_blob.py), so
+    // there's nothing left to overlap — this just confirms render order is
+    // stable (sorted by cell_id) rather than depending on array/object
+    // insertion order, which would make painting order flicker across reloads.
     const map = stubMap();
-    const mixed: ScaleBlobCell[] = [
-      { fire_id: "fire-1", cell_id: "z", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
-      { fire_id: "fire-1", cell_id: "a", res: 7, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
-      { fire_id: "fire-1", cell_id: "a", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    const cells: ScaleBlobCell[] = [
+      { fire_id: "fire-1", cell_id: "fire-1-2", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+      { fire_id: "fire-1", cell_id: "fire-1-0", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+      { fire_id: "fire-1", cell_id: "fire-1-1", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
     ];
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => mixed });
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => cells });
 
     await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
 
-    const order = blobSource(map).data.features.map((f: any) => [f.properties.res, f.properties.cell_id]);
-    expect(order).toEqual([
-      [7, "a"],
-      [8, "a"],
-      [8, "z"],
-    ]);
+    const order = blobSource(map).data.features.map((f: any) => f.properties.cell_id);
+    expect(order).toEqual(["fire-1-0", "fire-1-1", "fire-1-2"]);
   });
 });
 

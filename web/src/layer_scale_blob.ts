@@ -65,15 +65,12 @@ let dragPanWasEnabled = false;
 let currentMap: maplibregl.Map | null = null;
 let currentCanvas: HTMLCanvasElement | null = null;
 
-/** Same-fire mixed-resolution cells can overlap (a coarse Meteosat res-7
- * cell spatially containing several VIIRS res-8 cells from the same track —
- * see the design doc's "Overlap handling"). Render in a deterministic order
- * so which cell paints on top is stable across reloads, not an unexplained
- * rendering-order bug hunt. This is a same-fire artifact, not a cross-fire
- * union problem — packing already keeps different fires on disjoint canvas
- * regions. */
-function sortedForOverlapTieBreak(cellList: ScaleBlobCell[]): ScaleBlobCell[] {
-  return [...cellList].sort((a, b) => a.res - b.res || a.cell_id.localeCompare(b.cell_id));
+/** Every hex now occupies its own distinct spiral position (pack_blob.py),
+ * so overlap — same-fire or cross-fire — is no longer possible; this is
+ * just a stable render order, so painting order is deterministic across
+ * reloads rather than depending on object insertion order. */
+function sortedForStableRenderOrder(cellList: ScaleBlobCell[]): ScaleBlobCell[] {
+  return [...cellList].sort((a, b) => a.cell_id.localeCompare(b.cell_id));
 }
 
 function toGeoJSON(): GeoJSON.FeatureCollection {
@@ -84,7 +81,7 @@ function toGeoJSON(): GeoJSON.FeatureCollection {
   checkExtentBudget(cells.map((c) => c.vertices_m));
   return {
     type: "FeatureCollection",
-    features: sortedForOverlapTieBreak(cells).map((cell) => {
+    features: sortedForStableRenderOrder(cells).map((cell) => {
       const color = hashColor(cell.fire_id);
       return {
         type: "Feature",
