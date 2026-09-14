@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadEvents, loadManifest, loadTrack } from "../src/data";
+import { loadEvents, loadFootprint, loadManifest, loadTrack } from "../src/data";
 import type { Manifest } from "../src/types";
 
 const manifest = {
@@ -79,5 +79,23 @@ describe("addressing the generation that actually holds a track", () => {
 
     await loadTrack(liveManifest, "scar-1", "/data", fetchFn, "archive");
     expect(seen).toEqual(["/data/archive/tracks/scar-1.json"]);
+  });
+});
+
+describe("loadFootprint", () => {
+  // An EFFIS scar's real perimeter (pipeline/archive_footprints.py) lives at
+  // a fixed, non-generation path — unlike loadTrack, there is no generation
+  // or "archive" sentinel to resolve, since the file never moves once written.
+  it("fetches the permanent per-scar footprint file", async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (u: string) => {
+      seen.push(u);
+      return { json: async () => ({ type: "Feature", geometry: { type: "Polygon", coordinates: [] } }) };
+    }) as unknown as typeof fetch;
+
+    const footprint = await loadFootprint("562583", "/data", fetchFn);
+
+    expect(seen).toEqual(["/data/archive/footprints/562583.json"]);
+    expect(footprint.type).toBe("Feature");
   });
 });

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import (
+    ARCHIVE_FOOTPRINTS_INDEX,
     ARCHIVE_TRACKS_INDEX,
     GENERATIONS_KEPT,
     SCALE_BLOB_STATE_KEY,
@@ -172,6 +173,14 @@ def hydrate(settings: Settings, client) -> str | None:
         index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_bytes(archive_index_body)
+
+    # The permanent EFFIS scar footprint archive (archive_footprints.py) —
+    # same index-only rationale as the tracks index just above.
+    footprints_index_body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{ARCHIVE_FOOTPRINTS_INDEX}")
+    if footprints_index_body is not None:
+        footprints_index_path = settings.out_dir / ARCHIVE_FOOTPRINTS_INDEX
+        footprints_index_path.parent.mkdir(parents=True, exist_ok=True)
+        footprints_index_path.write_bytes(footprints_index_body)
 
     # The scale-comparison year blob and its incremental export state
     # (pipeline/export_scale_blob.py). Same explicit-restore pattern as the

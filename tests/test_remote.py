@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.config import (
+    ARCHIVE_FOOTPRINTS_INDEX,
     ARCHIVE_TRACKS_INDEX,
     SCALE_BLOB_STATE_KEY,
     load_settings,
@@ -500,6 +501,55 @@ def test_hydrate_tolerates_no_archive_index_yet(tmp_path):
 
     assert hydrate(settings, client) == gen
     assert not (settings.out_dir / ARCHIVE_TRACKS_INDEX).exists()
+
+
+def test_hydrate_downloads_the_permanent_footprints_index(tmp_path):
+    """Same rationale as the tracks index above, for EFFIS scar footprints
+    (pipeline/archive_footprints.py) — the one small file
+    archive_effis_footprints() needs to know what is already archived."""
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{ARCHIVE_FOOTPRINTS_INDEX}": json.dumps({"562583": "abc123"}).encode(),
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    hydrate(settings, client)
+
+    restored = json.loads((settings.out_dir / ARCHIVE_FOOTPRINTS_INDEX).read_text())
+    assert restored == {"562583": "abc123"}
+
+
+def test_hydrate_never_downloads_archived_footprint_bodies(tmp_path):
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{ARCHIVE_FOOTPRINTS_INDEX}": json.dumps({"562583": "abc123"}).encode(),
+        "data/archive/footprints/562583.json": b'{"type":"Feature"}',
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    hydrate(settings, client)
+
+    assert "data/archive/footprints/562583.json" not in client.fetched
+    assert not (settings.out_dir / "archive" / "footprints" / "562583.json").exists()
+
+
+def test_hydrate_tolerates_no_footprints_index_yet(tmp_path):
+    gen = "gen-20260805T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+    }
+    client = FakeS3(objects)
+    settings = _settings(tmp_path)
+
+    assert hydrate(settings, client) == gen
+    assert not (settings.out_dir / ARCHIVE_FOOTPRINTS_INDEX).exists()
 
 
 def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):

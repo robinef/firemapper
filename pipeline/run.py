@@ -5,6 +5,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .archive_footprints import (
+    archive_effis_footprints,
+    previous_footprints_index,
+    stamp_footprint_flags,
+)
 from .archive_tracks import archive_past_tracks, previous_archive_index
 from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
 from .day_slices import build_day_slices
@@ -175,6 +180,17 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # often down, so fetch_effis_ba is self-guarding and _safe wraps it again.
     effis = _safe(lambda: fetch_effis_ba(settings), default=[], label="effis-ba")
     print(f"[info] EFFIS burned-area scars: {len(effis)} (scars: {effis_scars_status})")
+    # Each EFFIS scar's real perimeter (fetch_effis_ba's `geometry` key) gets a
+    # permanent archived copy here, the same write-once pattern as
+    # archive_past_tracks above — see pipeline/archive_footprints.py. Must never
+    # block publishing live fire data, so a failure here falls back to "archive
+    # nothing new this run" and every scar simply keeps no footprint flag.
+    prev_footprints_index = previous_footprints_index(settings.out_dir)
+    footprints_index = _safe(
+        lambda: archive_effis_footprints(settings.out_dir, effis, prev_footprints_index),
+        default=prev_footprints_index, label="archive-effis-footprints",
+    )
+    stamp_footprint_flags(effis, footprints_index)
 
     # Season totals for /scale: independent fetch, independent backend, no
     # ordering dependency on the scars snapshot above.

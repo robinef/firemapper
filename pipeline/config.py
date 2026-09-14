@@ -39,6 +39,11 @@ GENERATIONS_KEPT = TRACK_REWRITE_EVERY + 1
 # longer (generations publish every ~15 min, not once a day); this instead
 # costs one small permanent file per real past fire, ever.
 ARCHIVE_TRACKS_INDEX = "archive/tracks_index.json"  # {id: sha256 of its archived body}
+# Same permanent, generation-pruning-immune archive as ARCHIVE_TRACKS_INDEX
+# above, for EFFIS burned-area polygons (pipeline/archive_footprints.py): a
+# settled EFFIS scar's perimeter never changes, so it is written once and
+# never rewritten.
+ARCHIVE_FOOTPRINTS_INDEX = "archive/footprints_index.json"  # {id: sha256 of its archived body}
 SCALE_BLOB_STATE_KEY = "archive/scale_blob_state.json"
 
 

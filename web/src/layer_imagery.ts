@@ -38,6 +38,13 @@ export interface Scar {
    * megafires and EFFIS scars, which never ran through our H3 detection and
    * have no track to load. */
   track_gen?: string | null;
+  /** True when this EFFIS-sourced scar has a real burned-area perimeter
+   * archived at the fixed, non-generation `archive/footprints/{id}.json` path
+   * (see pipeline/archive_footprints.py) — loadFootprint resolves it there.
+   * Absent for every other scar kind (FIRMS-tracked scars show their
+   * arrival footprint from `track_gen` instead; curated megafires have
+   * neither). */
+  footprint?: boolean;
 }
 
 export interface ImageryConfig {

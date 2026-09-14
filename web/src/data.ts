@@ -46,6 +46,19 @@ export async function loadTrack(
   return (await r.json()) as Track;
 }
 
+/** An EFFIS scar's real burned-area perimeter (pipeline/archive_footprints.py).
+ * Unlike loadTrack, this path never depends on a generation or the "archive"
+ * sentinel — the file lives at one fixed, permanent location from the moment
+ * it is first archived. */
+export async function loadFootprint(
+  id: string,
+  base = "/data",
+  fetchFn: Fetch = fetch,
+): Promise<GeoJSON.Feature> {
+  const r = await fetchFn(`${base}/archive/footprints/${id}.json`);
+  return (await r.json()) as GeoJSON.Feature;
+}
+
 /** One day's Europe-wide detection cells: [h3_cell, count] pairs. */
 export async function loadDaySlice(
   m: Manifest,
