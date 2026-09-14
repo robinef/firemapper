@@ -73,6 +73,26 @@ def test_scar_carries_no_cell_count(tmp_path):
     assert "cum_cells" not in fetch_effis_ba(settings)[0]
 
 
+def test_scar_carries_its_real_perimeter_as_geojson(tmp_path):
+    """The polygon itself (not just its centroid) travels with the scar, so
+    run.py can hand it to archive_effis_footprints and the map can show the
+    real burned-area shape instead of nothing — see
+    pipeline/archive_footprints.py."""
+    settings = seed(tmp_path, [row("a", 900.0, wkt=FAR)])
+    scar = fetch_effis_ba(settings)[0]
+    assert scar["geometry"]["type"] == "Polygon"
+    ring = scar["geometry"]["coordinates"][0]
+    assert sorted({tuple(p) for p in ring}) == [(10.0, 40.0), (10.0, 42.0), (12.0, 40.0), (12.0, 42.0)]
+
+
+def test_geometry_survives_a_multipolygon_round_trip(tmp_path):
+    from pipeline.fetch_effis_season import _rows_from_records
+
+    rows = _rows_from_records([LIVE_SHAPED_RECORD])
+    scar = fetch_effis_ba(seed(tmp_path, rows))[0]
+    assert scar["geometry"]["type"] == "MultiPolygon"
+
+
 def test_a_zero_area_row_still_reports_zero_not_missing(tmp_path):
     settings = seed(tmp_path, [row("a", 0.0)])
     scar = fetch_effis_ba(settings)[0]
@@ -250,7 +270,7 @@ def test_a_live_shaped_rest_record_round_trips_to_a_valid_scar(tmp_path):
     scar = scars[0]
     assert set(scar) == {
         "id", "label", "kind", "lon", "lat", "area_km2",
-        "started", "before", "after", "place",
+        "started", "before", "after", "place", "geometry",
     }
     assert scar["id"] == "683014"
     assert scar["kind"] == "past"

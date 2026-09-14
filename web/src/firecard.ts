@@ -1,7 +1,7 @@
 import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
 import { areaText, footprintNote, numOr } from "./area";
-import { loadTrack } from "./data";
+import { loadFootprint, loadTrack } from "./data";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
 import { SCAR_LAYER_IDS } from "./layer_scars";
@@ -416,17 +416,32 @@ export function setupFireCard(
       paint: { "line-color": "#000", "line-width": 0.3, "line-opacity": 0.25 },
     });
   };
-  const setFootprint = (cells: [string, number][]) => {
+  const paintFootprintFeatures = (features: GeoJSON.Feature[]) => {
     ensureFootprint();
+    (map.getSource("fire-bin") as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features });
+    for (const id of ["fire-bin-fill", "fire-bin-line"]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "visible");
+    }
+  };
+  const setFootprint = (cells: [string, number][]) => {
     const features: GeoJSON.Feature[] = cells.map(([cell, t]) => {
       const ring = cellToBoundary(cell).map(([lat, lng]) => [lng, lat]);
       ring.push(ring[0]);
       return { type: "Feature", geometry: { type: "Polygon", coordinates: [ring] }, properties: { t } };
     });
-    (map.getSource("fire-bin") as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features });
-    for (const id of ["fire-bin-fill", "fire-bin-line"]) {
-      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "visible");
-    }
+    paintFootprintFeatures(features);
+  };
+  // An EFFIS scar (pipeline/fetch_effis.py) carries no time-of-burn data, so
+  // there is no real arrival gradient to paint — one fixed mid-ramp tone,
+  // reusing the same fire-bin-fill/fire-bin-line layers a live fire's H3
+  // arrival footprint uses. scarCardHtml only mounts the ".fc-arrival"
+  // "earlier -> now" legend when cell_bins exist, which stays false for these
+  // scars, so this colour is never captioned as if it meant something by time.
+  const STATIC_FOOTPRINT_T = 0.55;
+  const paintStaticFootprint = (feature: GeoJSON.Feature) => {
+    paintFootprintFeatures([
+      { ...feature, properties: { ...(feature.properties ?? {}), t: STATIC_FOOTPRINT_T } },
+    ]);
   };
   const clearBin = () => {
     binMarker?.remove();
@@ -649,6 +664,17 @@ export function setupFireCard(
         /* archived track missing/failed — card still renders from props */
       }
     }
+    // Mutually exclusive with track_gen: an EFFIS scar has a real perimeter
+    // but no H3 arrival detail, so it never carries both (see
+    // pipeline/archive_footprints.py's stamp_footprint_flags).
+    let footprint: GeoJSON.Feature | null = null;
+    if (!s.track_gen && s.footprint) {
+      try {
+        footprint = await loadFootprint(scarId, "/data", fetch);
+      } catch {
+        /* archived footprint missing/failed — card still renders from props */
+      }
+    }
     if (mine !== openToken) return; // superseded by a newer fire/scar click
     const { series, centroids, cellBins } = trackTimeline(track);
     // Scars never get fire-wind arrows — see fireWindFC's doc comment: a
@@ -658,6 +684,9 @@ export function setupFireCard(
       series, centroids, cellBins, null,
       s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
+    // open() unconditionally clears any earlier fire/scar's footprint before
+    // this point — painting here, after it returns, is what makes it stick.
+    if (footprint) paintStaticFootprint(footprint);
   };
 
   return {

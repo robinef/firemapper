@@ -15,6 +15,7 @@ a bonus tier; the map must never depend on it being up.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
@@ -99,7 +100,8 @@ def fetch_effis_ba(
         rows = con.execute(
             f"""SELECT id, firedate, place, area_ha,
                        ST_X(ST_Centroid(geometry)) AS lon,
-                       ST_Y(ST_Centroid(geometry)) AS lat
+                       ST_Y(ST_Centroid(geometry)) AS lat,
+                       ST_AsGeoJSON(geometry) AS geom_json
                 FROM read_parquet('{_sql_path(path)}')
                 WHERE firedate IS NOT NULL AND geometry IS NOT NULL
                 ORDER BY area_ha DESC
@@ -114,7 +116,7 @@ def fetch_effis_ba(
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     scars: list[dict] = []
-    for fid, fire_date, place, area_ha, lon, lat in rows:
+    for fid, fire_date, place, area_ha, lon, lat, geom_json in rows:
         try:
             before = fire_date - timedelta(days=BASELINE_LEAD_DAYS)
             # Settled black scar, but never a date we cannot have imagery for
@@ -135,6 +137,11 @@ def fetch_effis_ba(
                 "started": fire_date.isoformat(),
                 "before": before.isoformat(),
                 "after": after.isoformat(),
+                # The real burned-area perimeter, not just its centroid — run.py
+                # hands this to archive_effis_footprints() so the map can show
+                # the actual scar shape (see pipeline/archive_footprints.py)
+                # instead of the card rendering with no footprint at all.
+                "geometry": json.loads(geom_json),
             }
         except Exception:  # noqa: BLE001 - skip a malformed row, keep going
             continue
