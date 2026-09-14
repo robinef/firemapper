@@ -24,6 +24,7 @@ service.
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -230,17 +231,47 @@ def hd_config(settings) -> dict | None:
     return {"wms_base": HD_PROXY_PATH, "layer": layer}
 
 
+MIN_DEDUP_RADIUS_KM = 1.5  # floor for a tiny scar's own dedup radius, below
+
+
+def _dedup_radius_km(scar: dict) -> float:
+    """How far apart two centroids of THIS scar's own footprint could
+    plausibly land, depending on who computed them — a FIRMS cell-weighted
+    centroid and an EFFIS polygon centroid of the same real fire routinely
+    disagree by more than a fixed grid cell for a large, irregular burn (a
+    real ~372 km2 fire's two centroids landed 1.09 km apart). Scales with the
+    fire's own physical radius (area = pi r^2); MIN_DEDUP_RADIUS_KM is a floor
+    for small scars, roughly the old fixed-grid's own granularity."""
+    return max(MIN_DEDUP_RADIUS_KM, math.sqrt(scar["area_km2"] / math.pi))
+
+
+def _same_fire(a: dict, b: dict) -> bool:
+    """Same real event: their before/after windows overlap (else a fire that
+    burned the same spot years apart would wrongly merge into one card), AND
+    their centroids are within the larger scar's own dedup radius of each
+    other (not a fixed grid cell, which a large fire's two independently
+    computed centroids can straddle)."""
+    if date.fromisoformat(a["before"]) > date.fromisoformat(b["after"]):
+        return False
+    if date.fromisoformat(b["before"]) > date.fromisoformat(a["after"]):
+        return False
+    mid_lat = math.radians((a["lat"] + b["lat"]) / 2)
+    dlat_km = (b["lat"] - a["lat"]) * 111.0
+    dlon_km = (b["lon"] - a["lon"]) * 111.0 * math.cos(mid_lat)
+    distance_km = math.hypot(dlat_km, dlon_km)
+    return distance_km <= max(_dedup_radius_km(a), _dedup_radius_km(b))
+
+
 def _dedup_scars(scars: list[dict]) -> list[dict]:
-    """Drop scars sharing a rounded lon/lat with an earlier one, so a best-effort
-    external source (EFFIS) does not duplicate a scar we already derived from our
-    own FIRMS detections. First occurrence wins (our own scars come first)."""
-    seen: set[tuple[float, float]] = set()
+    """Drop a scar that is really the same fire as one already kept (see
+    _same_fire), so a best-effort external source (EFFIS) does not duplicate
+    a scar we already derived from our own FIRMS detections. First occurrence
+    wins (our own scars come first). O(n^2), fine at the scale a season's
+    scars run to (low hundreds)."""
     out: list[dict] = []
     for s in scars:
-        key = (round(s["lon"], 2), round(s["lat"], 2))
-        if key in seen:
+        if any(_same_fire(s, kept) for kept in out):
             continue
-        seen.add(key)
         out.append(s)
     return out
 
