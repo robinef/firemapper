@@ -15,6 +15,10 @@ def test_process_end_to_end(tmp_path, monkeypatch):
     # and offline it would hang for minutes.
     monkeypatch.setattr("pipeline.run.fetch_season_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr("pipeline.run.fetch_stats_snapshot", lambda *a, **k: "stale")
+    # Same reason: a fresh tmp_path means every notable_scars.json id is
+    # "missing" from the footprint archive, so unpatched this fires a real
+    # WFS request per curated fire (see fetch_effis_historical.py).
+    monkeypatch.setattr("pipeline.run.fetch_historical_footprints", lambda *a, **k: {})
     monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)
     monkeypatch.setattr("pipeline.run.fetch_frp_points", lambda bbox: [])
     monkeypatch.setattr("pipeline.run.fetch_wind", lambda pts: [])
@@ -40,6 +44,7 @@ def test_static_source_dropped_from_events_but_kept_in_the_live_frp_heatmap(tmp_
     monkeypatch.setattr("pipeline.run.fetch_gdacs", lambda: [])
     monkeypatch.setattr("pipeline.run.fetch_season_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr("pipeline.run.fetch_stats_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr("pipeline.run.fetch_historical_footprints", lambda *a, **k: {})
     monkeypatch.setattr("pipeline.run.mtg_frp_extent", lambda: None)
     monkeypatch.setattr("pipeline.run.fetch_wind", lambda pts: [])
     now = T(31, 23)
@@ -143,6 +148,7 @@ def test_failed_frp_does_not_publish_wind_as_empty(tmp_path, monkeypatch):
     # See test_process_end_to_end: unpatched, this reaches live EFFIS backends.
     monkeypatch.setattr(run_mod, "fetch_season_snapshot", lambda *a, **k: "stale")
     monkeypatch.setattr(run_mod, "fetch_stats_snapshot", lambda *a, **k: "stale")
+    monkeypatch.setattr(run_mod, "fetch_historical_footprints", lambda *a, **k: {})
 
     captured = {}
 

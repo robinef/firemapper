@@ -134,3 +134,17 @@ def test_stamp_footprint_flags_leaves_an_unarchived_scar_alone(tmp_path):
 
     assert "footprint" not in scar
     assert "geometry" not in scar
+
+
+def test_stamp_footprint_flags_stamps_an_already_archived_scar_with_no_geometry_this_run(tmp_path):
+    """A curated historical fire (pipeline/fetch_effis_historical.py) is only
+    ever fetched once — a settled fire's perimeter never changes, so once its
+    id is in the index, later runs skip the network call entirely and never
+    attach a `geometry` key again. It must still get stamped `footprint: True`
+    from index membership alone, or its card would silently stop offering the
+    footprint it already has archived on disk."""
+    scar = {"id": "la-teste-2022"}  # no `geometry` key at all this run
+
+    stamp_footprint_flags([scar], index={"la-teste-2022": "somehash"})
+
+    assert scar["footprint"] is True

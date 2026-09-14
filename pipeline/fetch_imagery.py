@@ -65,22 +65,31 @@ TRUE_COLOR_LAYER = "TRUE_COLOR"
 _NOTABLE_SCARS_FILE = Path(__file__).parent / "notable_scars.json"
 
 
-def notable_scars() -> list[dict]:
+def notable_scars(footprint_ids: set[str] | None = None) -> list[dict]:
     """The curated real megafire scars, shaped like build_scars() output.
 
     Loaded from notable_scars.json next to this module. Fully guarded: a missing
     or unparseable file yields [] rather than raising, so a bad edit can never
-    take the whole imagery manifest down."""
+    take the whole imagery manifest down.
+
+    `footprint_ids` names entries with a real perimeter archived by
+    fetch_effis_historical.py + archive_effis_footprints (pipeline/run.py) —
+    those get `footprint: True`, the same flag an EFFIS current-season scar
+    carries, so web/src/firecard.ts's openScar fetches it identically."""
     try:
         raw = json.loads(_NOTABLE_SCARS_FILE.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - missing/invalid file → no curated scars
         return []
     if not isinstance(raw, list):
         return []
-    return [
+    scars = [
         {**s, "kind": "past", "started": s["before"]}
         for s in raw
     ]
+    for scar in scars:
+        if footprint_ids and str(scar["id"]) in footprint_ids:
+            scar["footprint"] = True
+    return scars
 
 
 def _iso(d: date) -> str:
@@ -279,16 +288,18 @@ def _dedup_scars(scars: list[dict]) -> list[dict]:
 def build_imagery(
     settings, events: dict, now: datetime, places: Places | None = None,
     extra_scars: list[dict] | None = None, archived_ids: set[str] | None = None,
+    notable_footprint_ids: set[str] | None = None,
 ) -> dict | None:
     """Imagery config for the manifest: keyless GIBS layer + per-scar dates,
     with an optional CDSE HD source. Live scars from our detections are joined
     with the curated real megafires (and any best-effort external burned-area
     scars in `extra_scars`, e.g. EFFIS), so the before/after mode always has a
     green→black example to show. `places` labels real scars with their nearest
-    town. `archived_ids` is forwarded to build_scars — see its docstring."""
+    town. `archived_ids` is forwarded to build_scars — see its docstring.
+    `notable_footprint_ids` is forwarded to notable_scars — see its docstring."""
     scars = (
         build_scars(events, now, places, archived_ids)
-        + notable_scars() + (extra_scars or [])
+        + notable_scars(notable_footprint_ids) + (extra_scars or [])
     )
     scars = _dedup_scars(scars)
     if not scars:

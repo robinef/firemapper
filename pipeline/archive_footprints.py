@@ -80,9 +80,15 @@ def archive_effis_footprints(
 def stamp_footprint_flags(scars: list[dict], index: dict[str, str]) -> None:
     """Mutates each scar in place: drops the transient `geometry` key (never
     published — the polygon lives only in the permanent archive file) and, for
-    any scar whose id made it into `index`, sets `footprint: True` — the flag
-    web/src/firecard.ts's openScar reads to decide whether to fetch it."""
+    any scar whose id is in `index`, sets `footprint: True` — the flag
+    web/src/firecard.ts's openScar reads to decide whether to fetch it.
+
+    Stamped from index membership alone, NOT from whether `geometry` is
+    present this run: a curated historical fire (fetch_effis_historical.py)
+    is fetched once, ever — later runs skip the network call and never carry
+    a `geometry` key again, but its id stays in the index forever, and it
+    must keep getting stamped."""
     for scar in scars:
-        had_geometry = scar.pop("geometry", None) is not None
-        if had_geometry and str(scar["id"]) in index:
+        scar.pop("geometry", None)
+        if str(scar["id"]) in index:
             scar["footprint"] = True
