@@ -69,6 +69,7 @@ def captured(monkeypatch, tmp_path):
     # that care about a status override it afterwards.
     monkeypatch.setattr(run, "fetch_season_snapshot", lambda *a, **k: "fresh")
     monkeypatch.setattr(run, "fetch_stats_snapshot", lambda *a, **k: "fresh")
+    monkeypatch.setattr(run, "fetch_historical_footprints", lambda *a, **k: {})
 
     def fake_export(*args, **kwargs):
         seen.update(kwargs)

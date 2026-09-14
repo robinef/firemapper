@@ -12,6 +12,7 @@ from pipeline.fetch_imagery import (
     build_imagery,
     hd_config,
     build_scars,
+    notable_scars,
 )
 
 
@@ -156,6 +157,28 @@ def test_notable_scars_carry_a_real_burned_area_not_a_confident_zero():
     assert len(notable) == 4
     for scar in notable.values():
         assert scar["area_km2"] > 0
+
+
+def test_notable_scars_without_footprint_ids_carries_no_footprint_flag():
+    scars = notable_scars()
+    assert all("footprint" not in s for s in scars)
+
+
+def test_notable_scars_stamps_footprint_for_ids_in_the_given_set():
+    """pipeline/run.py passes the ids fetch_effis_historical.py successfully
+    archived a real perimeter for — web/src/firecard.ts's openScar reads this
+    flag exactly like it does for an EFFIS current-season scar."""
+    scars = notable_scars(footprint_ids={"la-teste-2022"})
+    by_id = {s["id"]: s for s in scars}
+    assert by_id["la-teste-2022"]["footprint"] is True
+    assert "footprint" not in by_id["landiras-2022"]
+
+
+def test_build_imagery_stamps_notable_footprint_ids_through():
+    cfg = build_imagery(_Settings(), {}, NOW, notable_footprint_ids={"la-teste-2022"})
+    by_id = {s["id"]: s for s in cfg["scars"]}
+    assert by_id["la-teste-2022"]["footprint"] is True
+    assert "footprint" not in by_id["landiras-2022"]
 
 
 def test_baseline_lead_reasonable():

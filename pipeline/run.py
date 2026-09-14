@@ -17,11 +17,12 @@ from .enrich import MIN_PLACES, Places, fetch_gdacs, load_places
 from .events import WINDOW_DAYS, cluster, recent_events
 from .export import export
 from .fetch_effis import fetch_effis_ba
+from .fetch_effis_historical import fetch_historical_footprints
 from .fetch_effis_season import fetch_season_snapshot
 from .fetch_effis_stats import fetch_stats_snapshot
 from .fetch_effis_stats import snapshot_path as stats_snapshot_path
 from .fetch_firms import fetch_firms, fetch_firms_history
-from .fetch_imagery import build_imagery
+from .fetch_imagery import build_imagery, notable_scars
 from .fetch_meteosat import (
     EUMETVIEW_WMS,
     MTG_FRP_LAYER,
@@ -192,6 +193,32 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     )
     stamp_footprint_flags(effis, footprints_index)
 
+    # pipeline/notable_scars.json's curated historical fires get a real
+    # perimeter too, from EFFIS's per-year WFS (fetch_effis_historical.py) —
+    # a different, live service from the current-season REST API above. A
+    # settled historical fire's perimeter never changes, so only ids NOT
+    # already in the footprint archive trigger a network call; every later
+    # run is free. Fetched concurrently (fetch_historical_footprints), not
+    # one sequential round trip after another — up to 4 fires x up to 2
+    # years each must never serialize into minutes of blocking mid-run.
+    # Best-effort as a whole: a bad EFFIS day must never block publishing
+    # live fire data, so this is _safe-guarded like every other fetch here.
+    notable = notable_scars()
+    missing_notable = [s for s in notable if str(s["id"]) not in footprints_index]
+    geometry_by_id = _safe(
+        lambda: fetch_historical_footprints(missing_notable), default={},
+        label="effis-historical-notable",
+    )
+    for scar in missing_notable:
+        geometry = geometry_by_id.get(str(scar["id"]))
+        if geometry:
+            scar["geometry"] = geometry
+    footprints_index = _safe(
+        lambda: archive_effis_footprints(settings.out_dir, missing_notable, footprints_index),
+        default=footprints_index, label="archive-notable-footprints",
+    )
+    notable_footprint_ids = {str(s["id"]) for s in notable if str(s["id"]) in footprints_index}
+
     # Season totals for /scale: independent fetch, independent backend, no
     # ordering dependency on the scars snapshot above.
     season_status = _safe(
@@ -222,6 +249,7 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
         lambda: build_imagery(
             settings, scar_events, now, places, extra_scars=effis,
             archived_ids=set(archive_index),
+            notable_footprint_ids=notable_footprint_ids,
         ),
         label="imagery-scars", now=now, default=None,
     )
