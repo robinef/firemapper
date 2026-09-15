@@ -105,6 +105,10 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     // painted footprint — an archived scar paints identical hexes, so it
     // should explain the same colours instead of leaving them uncaptioned.
     expect(document.querySelector(".fc-arrival")).not.toBeNull();
+    // The static-footprint caption is the OTHER case's explanation (a flat,
+    // untimed EFFIS polygon) — must never appear alongside a real arrival
+    // gradient this scar actually has.
+    expect(document.querySelector(".fc-static-footprint")).toBeNull();
   });
 
   it("hides the timeline, rather than showing the continental overview, for a scar with no archived track", async () => {

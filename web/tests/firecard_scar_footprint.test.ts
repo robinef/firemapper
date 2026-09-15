@@ -77,11 +77,20 @@ describe("openScar paints an EFFIS scar's real perimeter", () => {
     const features = (sourceObjs.get("fire-bin")?.data as GeoJSON.FeatureCollection).features;
     expect(features.length).toBe(1);
     expect(features[0].geometry).toEqual(FOOTPRINT_GEOMETRY);
+    // Marked distinctly from an arrival-timed hex — the paint expression
+    // keys off this to use a fixed, off-ramp colour instead of interpolating
+    // ["get", "t"], so a flat "no time data" polygon never reads as sitting
+    // at some position on the same blue->red scale a real arrival gradient uses.
+    expect(features[0].properties?.static).toBe(true);
 
     // No cell_bins for an EFFIS scar — the arrival-gradient legend, which
     // would caption a real "earlier -> now" ramp, must not appear next to a
     // colour that carries no time information.
     expect(document.querySelector(".fc-arrival")).toBeNull();
+    // Instead, its own caption explains the flat polygon honestly.
+    const caption = document.querySelector(".fc-static-footprint");
+    expect(caption).not.toBeNull();
+    expect(caption?.textContent).toMatch(/mapped perimeter/i);
   });
 
   it("never fetches a footprint for a scar without the flag", async () => {
@@ -99,6 +108,7 @@ describe("openScar paints an EFFIS scar's real perimeter", () => {
     await card.openScar(scarClickEvent("scar-no-footprint-flag"));
 
     expect(loadFootprint).not.toHaveBeenCalled();
+    expect(document.querySelector(".fc-static-footprint")).toBeNull();
   });
 
   it("prefers an archived H3 track over a footprint flag when a scar somehow carries both", async () => {
