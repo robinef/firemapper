@@ -173,6 +173,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   background: linear-gradient(90deg, #3aa7e0, #8fd36b 40%, #ff8c00 70%, #ff2d2d); }
 .fc-ramp-lbl { display: flex; justify-content: space-between; font-size: 10px; }
 .fc-arrival-hint { margin-top: 6px; color: #8fd8ff; }
+.fc-static-footprint { margin-top: 16px; font-size: 11px; color: var(--muted); }
+.fc-static-swatch { height: 8px; border-radius: 4px; margin: 5px 0 2px; background: #8b6fd6; }
+.fc-static-footprint-hint { margin-top: 6px; color: #cdbdfa; }
 
 /* ---- Live readout: how hard it is burning, which way the wind pushes -----
    The same block is rendered into TWO mounts, one at a time — firecard.ts

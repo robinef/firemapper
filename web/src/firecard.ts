@@ -145,7 +145,7 @@ export function fireCardHtml(p: EventProps, track: Track | null, readout?: Reado
   );
 }
 
-export function scarCardHtml(s: Scar, track: Track | null = null): string {
+export function scarCardHtml(s: Scar, track: Track | null = null, hasStaticFootprint = false): string {
   const peek =
     `<div class="fc-peek"><b>${esc(s.place || s.label)}</b>` +
     `<span>${s.kind === "past" ? "Past fire" : "Active fire"}</span>` +
@@ -158,6 +158,15 @@ export function scarCardHtml(s: Scar, track: Track | null = null): string {
       `<div class="fc-ramp"></div>` +
       `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
       `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
+    : "";
+  // The other case: a real EFFIS-mapped perimeter (paintStaticFootprint),
+  // painted at one flat, off-ramp colour with no arrival data behind it —
+  // explained on its own terms rather than left to read as an untimed blob
+  // next to fires that DO show a graded footprint.
+  const staticFootprint = hasStaticFootprint
+    ? `<div class="fc-static-footprint"><span>Mapped perimeter</span>` +
+      `<div class="fc-static-swatch"></div>` +
+      `<div class="fc-static-footprint-hint">Satellite-mapped extent — no burn-progression data.</div></div>`
     : "";
   return (
     peek +
@@ -172,6 +181,7 @@ export function scarCardHtml(s: Scar, track: Track | null = null): string {
     statRow("After (scar)", s.after) +
     `</div>` +
     arrival +
+    staticFootprint +
     `<button class="fc-ba">Before / after imagery →</button>`
   );
 }
@@ -402,11 +412,17 @@ export function setupFireCard(
     map.addSource("fire-bin", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({
       id: "fire-bin-fill", type: "fill", source: "fire-bin", layout: { visibility: "none" },
-      // Colour by arrival t (0 = first burned … 1 = most recent): cool → hot.
       paint: {
         "fill-color": [
-          "interpolate", ["linear"], ["get", "t"],
-          0, "#3aa7e0", 0.4, "#8fd36b", 0.7, "#ff8c00", 1, "#ff2d2d",
+          "case",
+          // A static EFFIS polygon (paintStaticFootprint) carries no
+          // arrival data at all — deliberately off this ramp's blue->red
+          // hue family, so a flat "no time data" fill can never read as
+          // sitting at some position on the same earlier->now scale a real
+          // arrival gradient uses.
+          ["==", ["get", "static"], true], "#8b6fd6",
+          // Colour by arrival t (0 = first burned … 1 = most recent): cool → hot.
+          ["interpolate", ["linear"], ["get", "t"], 0, "#3aa7e0", 0.4, "#8fd36b", 0.7, "#ff8c00", 1, "#ff2d2d"],
         ],
         "fill-opacity": 0.42,
       },
@@ -432,15 +448,14 @@ export function setupFireCard(
     paintFootprintFeatures(features);
   };
   // An EFFIS scar (pipeline/fetch_effis.py) carries no time-of-burn data, so
-  // there is no real arrival gradient to paint — one fixed mid-ramp tone,
-  // reusing the same fire-bin-fill/fire-bin-line layers a live fire's H3
-  // arrival footprint uses. scarCardHtml only mounts the ".fc-arrival"
-  // "earlier -> now" legend when cell_bins exist, which stays false for these
-  // scars, so this colour is never captioned as if it meant something by time.
-  const STATIC_FOOTPRINT_T = 0.55;
+  // there is no real arrival gradient to paint — one fixed, off-ramp tone
+  // (the `static` flag, see fire-bin-fill's paint expression above), reusing
+  // the same fire-bin-fill/fire-bin-line layers a live fire's H3 arrival
+  // footprint uses. scarCardHtml's own ".fc-static-footprint" caption
+  // explains the flat colour instead of the ".fc-arrival" ramp legend.
   const paintStaticFootprint = (feature: GeoJSON.Feature) => {
     paintFootprintFeatures([
-      { ...feature, properties: { ...(feature.properties ?? {}), t: STATIC_FOOTPRINT_T } },
+      { ...feature, properties: { ...(feature.properties ?? {}), static: true } },
     ]);
   };
   const clearBin = () => {
@@ -680,7 +695,7 @@ export function setupFireCard(
     // Scars never get fire-wind arrows — see fireWindFC's doc comment: a
     // current forecast sample near an OLD footprint is not this fire's
     // wind, and openScar has never fed windPoints into a readout either.
-    open(scarCardHtml(s, track), lon, lat, scarId,
+    open(scarCardHtml(s, track, footprint !== null), lon, lat, scarId,
       series, centroids, cellBins, null,
       s.kind === "past",
       () => compare?.fromScar({ props: { ...(feat.properties ?? {}) }, lon, lat }));
