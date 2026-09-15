@@ -14,7 +14,13 @@ test.describe("the built app boots", () => {
   test("reaches a live map, not a splash screen", async ({ page }) => {
     const failures: string[] = [];
     page.on("pageerror", (e) => failures.push(`pageerror: ${e.message}`));
-    page.on("requestfailed", (r) => failures.push(`failed: ${r.url()}`));
+    page.on("requestfailed", (r) => {
+      // The Cloudflare Web Analytics beacon is fire-and-forget and optional
+      // to boot; CI runners often have no egress to it (and ad-blockers kill
+      // it in the wild too), so a failure here says nothing about the app.
+      if (r.url().includes("cloudflareinsights.com")) return;
+      failures.push(`failed: ${r.url()}`);
+    });
     page.on("response", (r) => {
       // The worker is fetched as a real URL, so a 404 here is silent in the
       // console but fatal to the map. It also 404s INTO Vite's SPA fallback in
