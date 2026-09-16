@@ -142,6 +142,19 @@ describe("splitIntoClusters", () => {
     expect(clusters).toHaveLength(1);
     expect(clusters[0].cellCount).toBe(1);
   });
+
+  it("keeps spatially-adjacent but temporally-distant detections in separate clusters, matching pipeline/events.py's CLOSE_AFTER_H=48h gate", () => {
+    const anchor = latLngToCell(44.84, -1.03, 8);
+    const neighborCell = gridDisk(anchor, 1).find((c) => c !== anchor) as string;
+    const [nLat, nLon] = cellToLatLng(neighborCell);
+    const rows: HistoricalRow[] = [
+      { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-01-01T00:00:00Z") },
+      { lat: nLat, lon: nLon, frp: 1, time: new Date("2022-03-01T00:00:00Z") }, // ~60 days later
+    ];
+    const clusters = splitIntoClusters(rows);
+    expect(clusters).toHaveLength(2);
+    expect(clusters.map((c) => c.rows.length).sort()).toEqual([1, 1]);
+  });
 });
 
 import { assembleTrack } from "../src/historical_reconstruct";
