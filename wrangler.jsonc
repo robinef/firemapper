@@ -38,6 +38,14 @@
   "triggers": {
     "crons": ["*/30 * * * *"]
   },
+  "durable_objects": {
+    "bindings": [
+      { "name": "GEOCODE_RATE_GATE", "class_name": "GeocodeRateGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GeocodeRateGate"] }
+  ],
   // Required for the Worker to write logs at all: without it, console output
   // exists only in a live `wrangler tail`, i.e. only while someone is watching.
   // The scheduled handler THROWS on a failed dispatch rather than logging,
