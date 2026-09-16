@@ -97,3 +97,46 @@ export function dropStaticSources(rows: HistoricalRow[]): HistoricalRow[] {
   const flagged = staticCells(rows);
   return rows.filter((row) => !flagged.has(cellAt(row)));
 }
+
+export interface ClusterGroup {
+  rows: HistoricalRow[];
+  cellCount: number;
+}
+
+/** Groups rows into spatially-connected clusters via BFS over H3 res-8
+ *  adjacency (gridDisk(cell, 1) — the cell itself plus its 6 immediate
+ *  neighbours). Two clusters mean the bbox+date window caught more than one
+ *  real fire (or a fire and an unrelated reburn) — the caller must not
+ *  silently union them into one fake footprint. */
+export function splitIntoClusters(rows: HistoricalRow[]): ClusterGroup[] {
+  if (rows.length === 0) return [];
+  const rowsByCell = new Map<string, HistoricalRow[]>();
+  for (const row of rows) {
+    const cell = latLngToCell(row.lat, row.lon, H3_RES);
+    const bucket = rowsByCell.get(cell) ?? [];
+    bucket.push(row);
+    rowsByCell.set(cell, bucket);
+  }
+
+  const visited = new Set<string>();
+  const clusters: ClusterGroup[] = [];
+  for (const startCell of rowsByCell.keys()) {
+    if (visited.has(startCell)) continue;
+    const componentCells: string[] = [];
+    const queue = [startCell];
+    visited.add(startCell);
+    while (queue.length > 0) {
+      const cell = queue.pop() as string;
+      componentCells.push(cell);
+      for (const neighbor of gridDisk(cell, 1)) {
+        if (rowsByCell.has(neighbor) && !visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    const clusterRows = componentCells.flatMap((cell) => rowsByCell.get(cell) ?? []);
+    clusters.push({ rows: clusterRows, cellCount: componentCells.length });
+  }
+  return clusters;
+}

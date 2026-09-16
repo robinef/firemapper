@@ -94,3 +94,47 @@ describe("dropStaticSources", () => {
     expect(dropStaticSources(rows)).toEqual(rows);
   });
 });
+
+import { splitIntoClusters } from "../src/historical_reconstruct";
+import { latLngToCell, cellToLatLng, gridDisk } from "h3-js";
+
+// Build a small chain of adjacent res-8 cells around a real anchor, and a
+// second chain far enough away to never be adjacent to the first — avoids
+// hardcoding literal H3 index strings, which are opaque and easy to get
+// subtly wrong by hand.
+function adjacentChain(anchorLat: number, anchorLon: number, length: number): HistoricalRow[] {
+  const anchor = latLngToCell(anchorLat, anchorLon, 8);
+  const ring = gridDisk(anchor, length); // more than enough contiguous cells
+  return ring.slice(0, length).map((cell, i) => {
+    const [lat, lon] = cellToLatLng(cell);
+    return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 6, 1, i)) };
+  });
+}
+
+describe("splitIntoClusters", () => {
+  it("returns one cluster for a set of spatially-adjacent detections", () => {
+    const rows = adjacentChain(44.84, -1.03, 5);
+    const clusters = splitIntoClusters(rows);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].rows).toHaveLength(5);
+  });
+
+  it("returns two clusters for two spatially-disjoint groups", () => {
+    const near = adjacentChain(44.84, -1.03, 3);
+    const far = adjacentChain(48.0, 2.0, 3); // Bordeaux area vs Paris area — never adjacent
+    const clusters = splitIntoClusters([...near, ...far]);
+    expect(clusters).toHaveLength(2);
+    const sizes = clusters.map((c) => c.rows.length).sort();
+    expect(sizes).toEqual([3, 3]);
+  });
+
+  it("returns an empty array for no input", () => {
+    expect(splitIntoClusters([])).toEqual([]);
+  });
+
+  it("treats a single point as its own one-cell cluster", () => {
+    const clusters = splitIntoClusters([{ lat: 44.84, lon: -1.03, frp: 1, time: new Date() }]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].cellCount).toBe(1);
+  });
+});
