@@ -12,10 +12,32 @@ import type { HistoricalLookupMeta } from "./firecard";
 
 export const DEFAULT_RADIUS_KM = 15;
 export const MAX_SPAN_DAYS = 90;
+// Must match worker/historical_hotspots.ts's own MAX_BBOX_DEG exactly -- that
+// Worker rejects any bbox wider than this with a 400, and this constant is
+// what keeps deriveBbox() from ever producing one. Not shared via import:
+// web/ and worker/ are separate build targets in this repo, so this is
+// deliberately a duplicated, commented constant rather than a cross-import.
+const MAX_BBOX_DEG = 0.5;
+// Stay comfortably under the server's exact cap, not flush against it --
+// float rounding on either side of a `>` boundary check must never be the
+// difference between success and a 400.
+const BBOX_SAFETY_MARGIN = 0.98;
 
 export function deriveBbox(lon: number, lat: number, radiusKm: number = DEFAULT_RADIUS_KM): string {
-  const dLat = radiusKm / 111;
-  const dLon = radiusKm / (111 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01));
+  const maxHalfSpan = (MAX_BBOX_DEG * BBOX_SAFETY_MARGIN) / 2;
+  // Height (dLat) is latitude-independent, but a large enough radiusKm alone
+  // can still exceed the cap, so it needs the same clamp as width.
+  const dLat = Math.min(radiusKm / 111, maxHalfSpan);
+  // Width (dLon) grows unboundedly as latitude approaches the poles --
+  // cos(lat) shrinks toward 0, and the old `Math.max(cos, 0.01)` floor only
+  // prevented a divide-by-zero, it never bounded the resulting degrees. A
+  // 15km-radius lookup near Fairbanks or Kiruna silently produced a bbox
+  // over 4x the server's cap and always 400'd. Clamp directly against the
+  // cap instead of just the denominator.
+  const dLon = Math.min(
+    radiusKm / (111 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01)),
+    maxHalfSpan,
+  );
   const west = lon - dLon;
   const south = lat - dLat;
   const east = lon + dLon;
@@ -107,7 +129,14 @@ export async function runHistoricalLookup(
     return;
   }
   if (!response.ok) {
-    deps.onError("historical lookup failed — try again shortly");
+    // Propagate the Worker's own static, non-secret error text (see
+    // worker/historical_hotspots.ts: "invalid or missing bbox", "date range
+    // ... days or fewer", "upstream failure", etc.) instead of one generic
+    // message for every cause -- a bad-bbox 400 and a FIRMS-outage 502 need
+    // different user reactions (fix the search vs. try again later), and a
+    // generic message hides that distinction.
+    const detail = await response.text().catch(() => "");
+    deps.onError(detail ? `historical lookup failed: ${detail}` : "historical lookup failed — try again shortly");
     return;
   }
 

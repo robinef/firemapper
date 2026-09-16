@@ -32,6 +32,28 @@ describe("deriveBbox", () => {
     const [west30] = deriveBbox(-1.03, 44.84, 30).split(",").map(Number);
     expect(west30).toBeLessThan(west15);
   });
+
+  it("stays under the 0.5deg cap at every latitude, not just mid-latitudes", () => {
+    // cos(lat) shrinks toward 0 approaching the poles, so an unclamped
+    // longitude delta grows unboundedly there -- exactly the boreal
+    // wildfire regions (Canada, Alaska, Scandinavia, Siberia) this lookup
+    // needs to work for. Sweep across the full range, not just Bordeaux.
+    for (const lat of [0, 30, 45, 57, 60, 66.5, 75, 89.9]) {
+      const [west, south, east, north] = deriveBbox(10, lat).split(",").map(Number);
+      expect(east - west).toBeLessThan(0.5);
+      expect(north - south).toBeLessThan(0.5);
+    }
+  });
+
+  it("stays under the cap even for a widened radius, at any latitude", () => {
+    // A future radius-widening control (spec: "a fixed generous default the
+    // user can widen") must not be able to produce a bbox the server just
+    // rejects -- height alone (radiusKm/111) can exceed the cap on its own
+    // for a large enough radius, independent of longitude clamping.
+    const [west, south, east, north] = deriveBbox(10, 44.84, 200).split(",").map(Number);
+    expect(east - west).toBeLessThan(0.5);
+    expect(north - south).toBeLessThan(0.5);
+  });
 });
 
 describe("validateDateRange", () => {
