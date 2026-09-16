@@ -128,7 +128,14 @@ export async function handleHistoricalHotspots(
   for (const { date, dayRange } of chunkWindows(range.start, range.end)) {
     const source = firmsSourceFor(new Date(`${date}T00:00:00Z`));
     const upstream = new Request(`${FIRMS_BASE}/${key}/${source}/${bboxStr}/${dayRange}/${date}`);
-    const response = await fetcher(upstream);
+    let response: Response;
+    try {
+      response = await fetcher(upstream);
+    } catch {
+      // Never surface the caught error's own message: it (or the request it
+      // was thrown for) can embed the map key via `upstream.url`.
+      return new Response("historical lookup upstream failure", { status: 502 });
+    }
     if (!response.ok) {
       return new Response("historical lookup upstream failure", { status: 502 });
     }

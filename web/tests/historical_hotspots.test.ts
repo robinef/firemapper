@@ -223,6 +223,19 @@ describe("handleHistoricalHotspots", () => {
     expect(res.status).toBe(502);
   });
 
+  it("returns 502, without leaking the map key or error message, when the fetch itself throws", async () => {
+    const upstream = async () => {
+      throw new Error("ECONNRESET");
+    };
+    const res = await handleHistoricalHotspots(url(VALID_QS), {
+      FIRMS_HISTORICAL_MAP_KEY: "super-secret", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+    });
+    expect(res.status).toBe(502);
+    const body = await res.text();
+    expect(body).not.toContain("super-secret");
+    expect(body).not.toContain("ECONNRESET");
+  });
+
   it("marks a successful response cacheable for a long time — a past date range's data never changes", async () => {
     const upstream = async () => new Response("latitude,longitude\n1,2\n");
     const res = await handleHistoricalHotspots(url(VALID_QS), {
