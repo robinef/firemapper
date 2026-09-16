@@ -48,3 +48,49 @@ describe("parseFirmsCsv", () => {
     expect(parseFirmsCsv("")).toEqual([]);
   });
 });
+
+import { staticCells, dropStaticSources, STATIC_CELL_DAYS } from "../src/historical_reconstruct";
+
+// A real H3 res-8 cell and a point guaranteed to land in it (pins the fixture,
+// not a real fire location).
+const CELL_LAT = 44.84;
+const CELL_LON = -1.03;
+
+function rowsOnDistinctDays(n: number, lat = CELL_LAT, lon = CELL_LON): HistoricalRow[] {
+  return Array.from({ length: n }, (_, i) => ({
+    lat, lon, frp: 1, time: new Date(Date.UTC(2022, 6, 1 + i, 12, 0, 0)),
+  }));
+}
+
+describe("staticCells", () => {
+  it(`flags a cell detected on >= ${STATIC_CELL_DAYS} distinct days`, () => {
+    const flagged = staticCells(rowsOnDistinctDays(STATIC_CELL_DAYS));
+    expect(flagged.size).toBe(1);
+  });
+
+  it(`does not flag a cell detected on fewer than ${STATIC_CELL_DAYS} distinct days`, () => {
+    const flagged = staticCells(rowsOnDistinctDays(STATIC_CELL_DAYS - 1));
+    expect(flagged.size).toBe(0);
+  });
+
+  it("counts distinct CALENDAR days, not detection count — repeats same-day don't count twice", () => {
+    const oneDay = Array.from({ length: 50 }, () => ({
+      lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date("2022-07-01T12:00:00Z"),
+    }));
+    expect(staticCells(oneDay).size).toBe(0);
+  });
+});
+
+describe("dropStaticSources", () => {
+  it("removes every row sitting in a flagged static cell", () => {
+    const staticRows = rowsOnDistinctDays(STATIC_CELL_DAYS);
+    const realFire = [{ lat: 44.9, lon: -1.2, frp: 5, time: new Date("2022-07-22T12:00:00Z") }];
+    const survivors = dropStaticSources([...staticRows, ...realFire]);
+    expect(survivors).toEqual(realFire);
+  });
+
+  it("keeps everything when nothing is static", () => {
+    const rows = rowsOnDistinctDays(3);
+    expect(dropStaticSources(rows)).toEqual(rows);
+  });
+});

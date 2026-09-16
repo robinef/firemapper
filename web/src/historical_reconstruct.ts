@@ -10,6 +10,8 @@
  *    bins_series + pipeline/export.py's _cell_bins.
  */
 
+import { latLngToCell, gridDisk } from "h3-js";
+
 export interface HistoricalRow {
   lat: number;
   lon: number;
@@ -59,4 +61,39 @@ export function parseFirmsCsv(text: string): HistoricalRow[] {
     rows.push({ lat, lon, time: parsed, frp: Number.isFinite(frp) ? frp : 0 });
   }
   return rows;
+}
+
+export const H3_RES = 8;
+export const STATIC_CELL_DAYS = 20;
+
+function cellAt(row: HistoricalRow): string {
+  return latLngToCell(row.lat, row.lon, H3_RES);
+}
+
+function calendarDay(time: Date): string {
+  return time.toISOString().slice(0, 10);
+}
+
+/** Cells detected on >= STATIC_CELL_DAYS distinct days — a fixed heat source
+ *  (flare, refinery), not a wildfire. Ports pipeline/events.py's
+ *  static_cells exactly: a real fire's front moves, a static source keeps
+ *  re-lighting the same ~0.7 km2 cell. */
+export function staticCells(rows: HistoricalRow[]): Set<string> {
+  const daysByCell = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const cell = cellAt(row);
+    const days = daysByCell.get(cell) ?? new Set<string>();
+    days.add(calendarDay(row.time));
+    daysByCell.set(cell, days);
+  }
+  const flagged = new Set<string>();
+  for (const [cell, days] of daysByCell) {
+    if (days.size >= STATIC_CELL_DAYS) flagged.add(cell);
+  }
+  return flagged;
+}
+
+export function dropStaticSources(rows: HistoricalRow[]): HistoricalRow[] {
+  const flagged = staticCells(rows);
+  return rows.filter((row) => !flagged.has(cellAt(row)));
 }
