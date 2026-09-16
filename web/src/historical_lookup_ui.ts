@@ -6,6 +6,10 @@
  * FireCard.openHistoricalLookup together.
  */
 
+import { reconstructHistoricalFire } from "./historical_reconstruct";
+import type { Track } from "./types";
+import type { HistoricalLookupMeta } from "./firecard";
+
 export const DEFAULT_RADIUS_KM = 15;
 export const MAX_SPAN_DAYS = 90;
 
@@ -69,4 +73,54 @@ export function renderAmbiguousResult(clusters: { cellCount: number; rowCount: n
 
 export function renderNoDataResult(): string {
   return `<p>No detections found for this area and date range. Try widening the search or the dates.</p>`;
+}
+
+export interface HistoricalLookupDeps {
+  fetchFn: typeof fetch;
+  openHistoricalLookup: (track: Track, meta: HistoricalLookupMeta) => Promise<void>;
+  onAmbiguous: (clusters: { cellCount: number; rowCount: number }[]) => void;
+  onNoData: () => void;
+  onError: (message: string) => void;
+}
+
+export async function runHistoricalLookup(
+  lon: number,
+  lat: number,
+  place: string,
+  before: string,
+  after: string,
+  deps: HistoricalLookupDeps,
+): Promise<void> {
+  const range = validateDateRange(before, after);
+  if (!range.ok) {
+    deps.onError(range.error);
+    return;
+  }
+
+  const bbox = deriveBbox(lon, lat);
+  const url = `/api/historical-hotspots?bbox=${bbox}&start=${before}&end=${after}`;
+  let response: Response;
+  try {
+    response = await deps.fetchFn(url);
+  } catch {
+    deps.onError("could not reach the historical lookup service");
+    return;
+  }
+  if (!response.ok) {
+    deps.onError("historical lookup failed — try again shortly");
+    return;
+  }
+
+  const csvText = await response.text();
+  const id = `lookup-${Date.now()}`;
+  const result = reconstructHistoricalFire(csvText, id);
+  if (result.status === "no_data") {
+    deps.onNoData();
+    return;
+  }
+  if (result.status === "ambiguous") {
+    deps.onAmbiguous(result.clusters);
+    return;
+  }
+  await deps.openHistoricalLookup(result.track, { lon, lat, place, before, after });
 }

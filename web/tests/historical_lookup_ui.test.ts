@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Track } from "../src/types";
 import { deriveBbox, validateDateRange, DEFAULT_RADIUS_KM, MAX_SPAN_DAYS } from "../src/historical_lookup_ui";
 import {
-  renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
+  renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult, runHistoricalLookup,
 } from "../src/historical_lookup_ui";
 
 describe("deriveBbox", () => {
@@ -108,5 +109,71 @@ describe("renderNoDataResult", () => {
     const el = document.createElement("div");
     el.innerHTML = renderNoDataResult();
     expect(el.textContent?.toLowerCase()).toMatch(/no|nothing/);
+  });
+});
+
+const CSV_ONE_FIRE = "latitude,longitude,acq_date,acq_time,confidence,frp\n44.84,-1.03,2022-07-22,1200,n,5\n";
+
+function deps(overrides: Partial<Parameters<typeof runHistoricalLookup>[5]> = {}) {
+  return {
+    fetchFn: vi.fn(async () => new Response(CSV_ONE_FIRE)),
+    openHistoricalLookup: vi.fn(async () => {}),
+    onAmbiguous: vi.fn(),
+    onNoData: vi.fn(),
+    onError: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("runHistoricalLookup", () => {
+  it("rejects an invalid date range before ever calling fetch", async () => {
+    const d = deps();
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-10", "2022-07-01", d);
+    expect(d.fetchFn).not.toHaveBeenCalled();
+    expect(d.onError).toHaveBeenCalledWith("start date must be before end date");
+  });
+
+  it("calls /api/historical-hotspots with a derived bbox and the given dates", async () => {
+    const d = deps();
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-01", "2022-07-31", d);
+    const calledUrl = (d.fetchFn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("/api/historical-hotspots?");
+    expect(calledUrl).toContain("start=2022-07-01");
+    expect(calledUrl).toContain("end=2022-07-31");
+    expect(calledUrl).toMatch(/bbox=-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*/);
+  });
+
+  it("opens the card on a successful single-cluster reconstruction", async () => {
+    const d = deps();
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-01", "2022-07-31", d);
+    expect(d.openHistoricalLookup).toHaveBeenCalledTimes(1);
+    const [track, meta] = (d.openHistoricalLookup as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(track.cells.length).toBeGreaterThan(0);
+    expect(meta).toEqual({ lon: -1.03, lat: 44.84, place: "Near Arès", before: "2022-07-01", after: "2022-07-31" });
+  });
+
+  it("calls onNoData for an empty result, never opening a card", async () => {
+    const d = deps({ fetchFn: vi.fn(async () => new Response("latitude,longitude,acq_date,acq_time,confidence,frp\n")) });
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-01", "2022-07-31", d);
+    expect(d.onNoData).toHaveBeenCalled();
+    expect(d.openHistoricalLookup).not.toHaveBeenCalled();
+  });
+
+  it("calls onAmbiguous with cluster summaries for a disjoint multi-fire result, never opening a card", async () => {
+    const csv =
+      "latitude,longitude,acq_date,acq_time,confidence,frp\n" +
+      "44.84,-1.03,2022-07-22,1200,n,5\n" +
+      "48.0,2.0,2022-07-22,1200,n,5\n"; // Bordeaux area vs Paris area — disjoint
+    const d = deps({ fetchFn: vi.fn(async () => new Response(csv)) });
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-01", "2022-07-31", d);
+    expect(d.onAmbiguous).toHaveBeenCalled();
+    expect(d.openHistoricalLookup).not.toHaveBeenCalled();
+  });
+
+  it("calls onError, not a silent failure, when the Worker route itself fails", async () => {
+    const d = deps({ fetchFn: vi.fn(async () => new Response("nope", { status: 503 })) });
+    await runHistoricalLookup(-1.03, 44.84, "Near Arès", "2022-07-01", "2022-07-31", d);
+    expect(d.onError).toHaveBeenCalled();
+    expect(d.openHistoricalLookup).not.toHaveBeenCalled();
   });
 });
