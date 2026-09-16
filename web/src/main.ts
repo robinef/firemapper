@@ -355,10 +355,24 @@ async function boot() {
     const showHistoricalLookup = () => {
       pickedLocation = null;
       panel.showHtml(renderHistoricalLookupForm());
-      // Same "any #panel view is a nav entry" rule the cell-picker/list
-      // already follow — openDetail() reads #panel generically and has no
-      // idea a historical-lookup form produced this markup.
-      emitUi("detail:open");
+      // Deliberately NOT emitUi("detail:open") — openRail() (shell.ts) already
+      // pushes the "historical" nav entry itself before/around calling this
+      // function, exactly like rail-search's showFireList. Calling
+      // detail:open here too, while nav.top is still the PREVIOUS view (this
+      // runs before openRail's own push), made openDetail() push a second,
+      // bogus "detail" entry underneath "historical" — every open cost two
+      // stack levels instead of one, and the first Back press looked dead.
+
+      // A prior lookup's map-click listener may still be bound if this view
+      // is being re-entered without ever having been popped off the nav
+      // stack (its entry's `restore` re-runs this function) — remove it
+      // defensively before arming a new one, rather than relying solely on
+      // nav.onExit("historical", ...) below, which only fires when this
+      // entry is actually popped, not when it's merely covered and restored.
+      if (historicalClickHandler) {
+        map.off("click", historicalClickHandler);
+        historicalClickHandler = null;
+      }
 
       const container = document.getElementById("panel")!;
       const locationEl = document.getElementById("historical-lookup-location")!;
@@ -372,7 +386,8 @@ async function boot() {
       // Deliberately the plain, layer-less map.on('click', ...) form (not
       // routed through HANDLERS/CLICK_ORDER above), since a historical
       // lookup can target anywhere, not just an existing fire feature.
-      // Cleaned up by nav.onExit("historical", ...) below.
+      // Cleaned up by nav.onExit("historical", ...) below, and defensively
+      // at the top of this function on re-entry (see above).
       historicalClickHandler = (e) => {
         pickedLocation = { lon: e.lngLat.lng, lat: e.lngLat.lat, place: "Picked on map" };
         locationEl.textContent = `Location: ${e.lngLat.lat.toFixed(2)}, ${e.lngLat.lng.toFixed(2)}`;
@@ -392,7 +407,20 @@ async function boot() {
         resultEl.textContent = "Looking up…";
         await runHistoricalLookup(pickedLocation.lon, pickedLocation.lat, pickedLocation.place, before, after, {
           fetchFn: fetch,
-          openHistoricalLookup: fireCard.openHistoricalLookup,
+          // A successful lookup calls fireCard.openHistoricalLookup, which
+          // overwrites #panel with the fire card and fires detail:open while
+          // this "historical" entry is still nav's top — openDetail()
+          // replace()s it (it's not "map"/"search"), which never fires
+          // nav.onExit("historical", ...). Strip the listener here,
+          // proactively, right before that happens — the only path that
+          // leaves this view without popping it off the stack first.
+          openHistoricalLookup: (track, meta) => {
+            if (historicalClickHandler) {
+              map.off("click", historicalClickHandler);
+              historicalClickHandler = null;
+            }
+            return fireCard.openHistoricalLookup(track, meta);
+          },
           onAmbiguous: (clusters) => { resultEl.innerHTML = renderAmbiguousResult(clusters); },
           onNoData: () => { resultEl.innerHTML = renderNoDataResult(); },
           onError: (message) => { resultEl.textContent = message; },

@@ -62,8 +62,16 @@ export function validateDateRange(before: string, after: string): { ok: true } |
 }
 
 export function renderHistoricalLookupForm(): string {
+  // No .panel-close of its own — see web/tests/nav_integration.test.ts's
+  // "search has exactly one way out" precedent: a .panel-close here would
+  // hide #panel and emit detail:close while nav's stack still says
+  // "historical", not "detail", so shell.ts's detail:close subscriber
+  // (which only calls nav.back() when top === "detail") would silently
+  // no-op, leaving an unclosable empty overlay. The shell's own back
+  // bar (rendered whenever this view is pushed), the rail icon's toggle,
+  // and Escape all correctly call nav.back() regardless of which view is
+  // on top — that's this view's one, working way out.
   return `
-    <button class="panel-close" aria-label="Close">‹ Map</button>
     <h2>Find a past fire</h2>
     <p>Search a place, or click anywhere on the map, then pick the date range you think it burned.</p>
     <form id="historical-lookup-form">

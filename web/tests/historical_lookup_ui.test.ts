@@ -104,10 +104,19 @@ describe("renderHistoricalLookupForm", () => {
     expect(el.querySelector('button[type="submit"]')).not.toBeNull();
   });
 
-  it("has a panel-close affordance, same convention every other panel view uses", () => {
+  it("renders no .panel-close of its own — same convention search's renderFireList uses", () => {
+    // Task 5's whole-branch review found the assumption behind the old
+    // version of this test was backwards: a .panel-close here would hide
+    // #panel and emit detail:close while nav's stack still says
+    // "historical", not "detail" — shell.ts's detail:close subscriber only
+    // calls nav.back() when top === "detail", so the click would silently
+    // no-op, leaving an unclosable empty overlay. See
+    // web/tests/nav_integration.test.ts's "search has exactly one way out"
+    // test for the same, already-established precedent on the sibling
+    // "search" view.
     const el = document.createElement("div");
     el.innerHTML = renderHistoricalLookupForm();
-    expect(el.querySelector(".panel-close")).not.toBeNull();
+    expect(el.querySelector(".panel-close")).toBeNull();
   });
 
   it("instructs the user they can also click the map", () => {
