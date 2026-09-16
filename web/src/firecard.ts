@@ -186,6 +186,47 @@ export function scarCardHtml(s: Scar, track: Track | null = null, hasStaticFootp
   );
 }
 
+export interface HistoricalLookupMeta {
+  lon: number;
+  lat: number;
+  place: string;
+  before: string;
+  after: string;
+}
+
+/** The historical-lookup card's own template — deliberately NOT fireCardHtml
+ *  or scarCardHtml: this has no EFFIS area_km2/kind/cum_cells, and (see this
+ *  plan's Global Constraints) no shareable link. Reuses the same
+ *  ".fc-arrival" legend markup scarCardHtml uses for the graded case, and
+ *  the same "Before / after imagery" button, seeded from the user's own
+ *  search window rather than pipeline-computed dates. */
+export function historicalLookupCardHtml(meta: HistoricalLookupMeta, track: Track): string {
+  const peek =
+    `<div class="fc-peek"><b>${esc(meta.place)}</b>` +
+    `<span>Historical lookup</span>` +
+    `<i aria-hidden="true">›</i></div>`;
+  const hasFootprint = !!(track.cell_bins && track.cell_bins.length);
+  const arrival = hasFootprint
+    ? `<div class="fc-arrival"><span>Footprint colour · when it burned</span>` +
+      `<div class="fc-ramp"></div>` +
+      `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
+      `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
+    : "";
+  return (
+    peek +
+    `<button class="fc-close" aria-label="Close">✕</button>` +
+    `<div class="fc-title">${esc(meta.place)}</div>` +
+    `<div class="fc-sub">Historical lookup · ${esc(meta.before)} – ${esc(meta.after)}</div>` +
+    `<div class="fc-stats">` +
+    statRow("Location", `${meta.lat.toFixed(2)}, ${meta.lon.toFixed(2)}`) +
+    statRow("Search window", `${esc(meta.before)} – ${esc(meta.after)}`) +
+    statRow("Detections", `${track.cells.length} H3 cells`) +
+    `</div>` +
+    arrival +
+    `<button class="fc-ba">Before / after imagery →</button>`
+  );
+}
+
 /**
  * Compare mode is entered from a button INSIDE the card, long after the map
  * click that opened it — so these take a snapshot of the clicked feature, never
