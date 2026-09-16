@@ -13,6 +13,8 @@
  * @cloudflare/workers-types: this file is typechecked by the web tsconfig
  * (DOM lib), and the surface we use is three methods wide.
  */
+import { handleHistoricalHotspots, type HistoricalHotspotsEnv } from "./historical_hotspots";
+
 export interface R2ObjectBody {
   body: ReadableStream | string | null;
 }
@@ -26,7 +28,7 @@ export interface FetcherLike {
   fetch(request: Request): Promise<Response>;
 }
 
-export interface Env {
+export interface Env extends HistoricalHotspotsEnv {
   DATA: R2BucketLike;
   ASSETS: FetcherLike;
   /** Fine-grained GitHub token, Actions: read+write on this repo only. Set with
@@ -179,6 +181,7 @@ function explain(status: number): string {
 
 const DATA_PREFIX = "/data/";
 const HD_PATH = "/hd";
+const HISTORICAL_HOTSPOTS_PATH = "/api/historical-hotspots";
 const HD_UPSTREAM = "https://sh.dataspace.copernicus.eu/ogc/wms";
 /** A tile is fully determined by bbox + time + layer, so it never changes.
  * Sentinel Hub bills processing units per request; caching at the edge is what
@@ -251,6 +254,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === HD_PATH) return hdTile(request, env);
+    if (url.pathname === HISTORICAL_HOTSPOTS_PATH) return handleHistoricalHotspots(request, env);
     if (!url.pathname.startsWith(DATA_PREFIX)) {
       return env.ASSETS.fetch(request);
     }

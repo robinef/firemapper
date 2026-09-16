@@ -22,7 +22,7 @@
     // discards a non-image raster tile WITHOUT firing `error`, so the compare
     // mode goes blank with nothing in the console. Any new Worker route must be
     // added here too; web/tests/wrangler_routes.test.ts enforces that.
-    "run_worker_first": ["/data/**", "/hd"]
+    "run_worker_first": ["/data/**", "/hd", "/api/historical-hotspots"]
   },
   "r2_buckets": [
     { "binding": "DATA", "bucket_name": "firemapper-data" }
