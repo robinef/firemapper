@@ -75,4 +75,16 @@ describe("validateRange", () => {
     const r = validateRange("2022-01-01", "2022-03-31"); // 89 days apart, inclusive span 90
     expect("error" in r).toBe(false);
   });
+
+  it("rejects calendar-invalid dates (Feb 30)", () => {
+    expect(validateRange("2022-02-30", "2022-07-10")).toEqual({ error: "start is not a valid date" });
+  });
+
+  it("accepts valid dates near month boundaries (Feb 28)", () => {
+    const r = validateRange("2022-02-28", "2022-03-15");
+    expect("error" in r).toBe(false);
+    if (!("error" in r)) {
+      expect(r.start.toISOString().slice(0, 10)).toBe("2022-02-28");
+    }
+  });
 });

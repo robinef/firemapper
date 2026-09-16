@@ -27,7 +27,10 @@ export function parseBbox(
 function parseDate(raw: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
   const d = new Date(`${raw}T00:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) return null;
+  // Verify the date round-trips back to the same input (catches calendar-invalid dates like Feb 30)
+  if (d.toISOString().slice(0, 10) !== raw) return null;
+  return d;
 }
 
 export function validateRange(
