@@ -115,6 +115,18 @@ export function dropStaticSources(rows: HistoricalRow[]): HistoricalRow[] {
   return rows.filter((row) => !flagged.has(cellAt(row)));
 }
 
+const STATIC_EVENT_FRAC = 0.5;
+
+/** True when >= STATIC_EVENT_FRAC of a cluster's members sit in a static
+ *  cell -- ports pipeline/events.py's is_static exactly: event-level, not
+ *  cell-level, so a real fire that spreads into a static cell keeps its
+ *  identity as long as that stays a minority of its detections. */
+export function isClusterStatic(rows: HistoricalRow[], staticCellSet: Set<string>): boolean {
+  if (rows.length === 0) return false;
+  const hits = rows.filter((r) => staticCellSet.has(latLngToCell(r.lat, r.lon, H3_RES))).length;
+  return hits / rows.length >= STATIC_EVENT_FRAC;
+}
+
 export interface ClusterGroup {
   rows: HistoricalRow[];
   cellCount: number;
@@ -265,7 +277,7 @@ export function assembleTrack(rows: HistoricalRow[], id: string): Track {
   return {
     id,
     series,
-    cells: [...seenCells],
+    cells: [...seenCells].sort(), // matches pipeline/export.py's sorted(cur_cells[eid])
     cell_bins: cellBins,
     frp_live: [],
   };
@@ -278,10 +290,18 @@ export type ReconstructResult =
 
 export function reconstructHistoricalFire(csvText: string, id: string): ReconstructResult {
   const parsed = parseFirmsCsv(csvText);
-  const survivors = dropStaticSources(parsed);
-  if (survivors.length === 0) return { status: "no_data" };
+  if (parsed.length === 0) return { status: "no_data" };
 
-  const clusters = splitIntoClusters(survivors);
+  // Static-source filtering is event-level (isClusterStatic), not row-level
+  // (dropStaticSources): cluster everything first, then drop whole clusters
+  // that are majority-static, so a real fire that spreads into a static cell
+  // keeps its full footprint as long as that stays a minority of its
+  // detections. dropStaticSources/staticCells stay exported as-is, just no
+  // longer on this path.
+  const staticSet = staticCells(parsed);
+  const clusters = splitIntoClusters(parsed).filter((c) => !isClusterStatic(c.rows, staticSet));
+  if (clusters.length === 0) return { status: "no_data" };
+
   if (clusters.length > 1) {
     return {
       status: "ambiguous",

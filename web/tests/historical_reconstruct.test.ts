@@ -100,6 +100,41 @@ describe("dropStaticSources", () => {
   });
 });
 
+import { isClusterStatic } from "../src/historical_reconstruct";
+
+describe("isClusterStatic", () => {
+  it("returns false for an empty cluster", () => {
+    expect(isClusterStatic([], new Set())).toBe(false);
+  });
+
+  it("returns true when all of a cluster's members sit in a static cell", () => {
+    const cell = latLngToCell(CELL_LAT, CELL_LON, 8);
+    const rows = rowsOnDistinctDays(4);
+    expect(isClusterStatic(rows, new Set([cell]))).toBe(true);
+  });
+
+  it("returns false when fewer than STATIC_EVENT_FRAC (50%) of members sit in a static cell", () => {
+    const staticCell = latLngToCell(CELL_LAT, CELL_LON, 8);
+    const rows: HistoricalRow[] = [
+      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() }, // in the static cell
+      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() }, // not
+      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
+    ];
+    expect(isClusterStatic(rows, new Set([staticCell]))).toBe(false);
+  });
+
+  it("treats exactly STATIC_EVENT_FRAC (50%) as static — >=, not >", () => {
+    const staticCell = latLngToCell(CELL_LAT, CELL_LON, 8);
+    const rows: HistoricalRow[] = [
+      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() },
+      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() },
+      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
+      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
+    ];
+    expect(isClusterStatic(rows, new Set([staticCell]))).toBe(true);
+  });
+});
+
 import { splitIntoClusters } from "../src/historical_reconstruct";
 import { latLngToCell, cellToLatLng, gridDisk } from "h3-js";
 
@@ -222,6 +257,13 @@ function csvRow(lat: number, lon: number, date: string, time: string, frp = 5, c
 }
 const HEADER = "latitude,longitude,acq_date,acq_time,confidence,frp";
 
+function toCsvRow(row: HistoricalRow): string {
+  const date = row.time.toISOString().slice(0, 10);
+  const hh = String(row.time.getUTCHours()).padStart(2, "0");
+  const mm = String(row.time.getUTCMinutes()).padStart(2, "0");
+  return csvRow(row.lat, row.lon, date, `${hh}${mm}`, row.frp);
+}
+
 describe("reconstructHistoricalFire", () => {
   it("returns no_data for an empty result set", () => {
     expect(reconstructHistoricalFire(`${HEADER}\n`, "lookup-1")).toEqual({ status: "no_data" });
@@ -263,5 +305,71 @@ describe("reconstructHistoricalFire", () => {
       expect(result.clusters).toHaveLength(2);
       expect(result.clusters.every((c) => c.rowCount === 3)).toBe(true);
     }
+  });
+
+  it("keeps the WHOLE cluster when static-cell rows are a minority of its members — event-level, not row-level, filtering", () => {
+    const anchor = latLngToCell(44.84, -1.03, 8);
+    const neighbors = gridDisk(anchor, 1).filter((c) => c !== anchor);
+    const realCells = [anchor, ...neighbors.slice(0, 5)]; // 6 real, non-static cells
+    const cellC = neighbors[5]; // 7th cell, directly adjacent to anchor -- the fire spreads into it
+
+    const realRows: HistoricalRow[] = realCells.map((cell, i) => {
+      const [lat, lon] = cellToLatLng(cell);
+      return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 6, 1, i)) };
+    });
+    const [cLat, cLon] = cellToLatLng(cellC);
+    // 3 detections in cellC during the fire's active window -- connects to realRows via
+    // the 48h adjacent-cell rule. The minority share of this cluster.
+    const inWindowRows: HistoricalRow[] = [0, 1, 2].map((d) => ({
+      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 6, 1 + d, 8)),
+    }));
+    // 17 much-older detections in the SAME cell, >48h from the fire and from each other's
+    // day-neighbours -- only here to push cellC's distinct-day count to >= STATIC_CELL_DAYS
+    // so it gets independently flagged static (reuses rowsOnDistinctDays' fixture idea).
+    const oldRows: HistoricalRow[] = Array.from({ length: 17 }, (_, i) => ({
+      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 0, 1 + i, 8)),
+    }));
+
+    const csv = [HEADER, ...[...realRows, ...inWindowRows, ...oldRows].map(toCsvRow)].join("\n");
+    const result = reconstructHistoricalFire(csv, "lookup-1");
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      // 6 real cells + cellC = 7 distinct cells in the surviving cluster.
+      expect(result.track.cells).toHaveLength(7);
+      expect(result.track.cells).toContain(cellC);
+      // All 9 rows of the surviving cluster are present, not just the 6 non-static ones.
+      const totalFrp = result.track.series.reduce((sum, b) => sum + b.frp_sum, 0);
+      expect(totalFrp).toBe(9);
+    }
+  });
+
+  it("drops the WHOLE cluster when static-cell rows are the majority -- contributes to no_data as the only surviving-candidate cluster", () => {
+    const anchor2 = latLngToCell(50.0, 3.0, 8);
+    const neighbors2 = gridDisk(anchor2, 1).filter((c) => c !== anchor2);
+    const realCells2 = [anchor2, ...neighbors2.slice(0, 4)]; // 5 real cells
+    const cellC2 = neighbors2[4]; // adjacent to anchor2
+
+    const realRows: HistoricalRow[] = realCells2.map((cell, i) => {
+      const [lat, lon] = cellToLatLng(cell);
+      return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 7, 1, i)) };
+    });
+    const [cLat, cLon] = cellToLatLng(cellC2);
+    // 15 distinct-day detections in cellC2 during the fire's active window, chained to
+    // each other (24h apart) and to realRows via the 48h adjacent-cell rule -- the
+    // MAJORITY of this cluster.
+    const inWindowRows: HistoricalRow[] = Array.from({ length: 15 }, (_, d) => ({
+      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 7, 1 + d, 12)),
+    }));
+    // 5 much-older, disconnected detections in the same cell, only to push cellC2's
+    // distinct-day count to exactly STATIC_CELL_DAYS (15 + 5 = 20).
+    const oldRows: HistoricalRow[] = Array.from({ length: 5 }, (_, i) => ({
+      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 0, 1 + i, 12)),
+    }));
+
+    const csv = [HEADER, ...[...realRows, ...inWindowRows, ...oldRows].map(toCsvRow)].join("\n");
+    const result = reconstructHistoricalFire(csv, "lookup-1");
+
+    expect(result).toEqual({ status: "no_data" });
   });
 });
