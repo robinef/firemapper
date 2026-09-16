@@ -6,6 +6,40 @@ import type { Track } from "../src/types";
 
 window.URL.createObjectURL ??= () => "";
 
+/** Same deferred-resolver pattern as firecard_race.test.ts: lets the test,
+ *  not the event loop, decide which of an in-flight openFire's loadTrack
+ *  call and an openHistoricalLookup call (which has no await before
+ *  open()) settles first — the only way to actually exercise the shared
+ *  openToken guard across two different entry points. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+const pendingTracks = new Map<string, ReturnType<typeof deferred<unknown>>>();
+vi.mock("../src/data", () => ({
+  loadTrack: (_m: unknown, id: string) => {
+    const d = deferred<unknown>();
+    pendingTracks.set(id, d);
+    return d.promise;
+  },
+}));
+
+function fireClickEvent(id: string, name: string): maplibregl.MapLayerMouseEvent {
+  return {
+    features: [{
+      properties: {
+        id, status: "active", lifecycle_age_h: 1, started: "2026-07-01T00:00:00Z",
+        area_km2: 1, cum_cells: 1, movement: null,
+        freshness: JSON.stringify({ viirs: "2026-07-01T00:00:00Z" }),
+        place: JSON.stringify({ name, distance_km: 1 }),
+      },
+      geometry: { type: "Point", coordinates: [0, 0] },
+    }],
+    lngLat: { lng: 1, lat: 2 },
+  } as unknown as maplibregl.MapLayerMouseEvent;
+}
+
 /** Same map fake as firecard_scar_footprint.test.ts's footprintMap(). */
 function footprintMap() {
   const flights: { center: [number, number]; zoom?: number }[] = [];
@@ -102,10 +136,12 @@ describe("openHistoricalLookup", () => {
     expect(setLevel).toHaveBeenCalledWith(2, { historical: true });
   });
 
-  it("a second lookup supersedes an in-flight first one via the shared openToken guard", async () => {
-    // Mirrors firecard_race.test.ts's pattern: open() is synchronous once
-    // called, so this proves openHistoricalLookup participates in the same
-    // openToken race guard openFire/openScar use, not a fresh one of its own.
+  it("a second lookup's card is what's on screen after two sequential calls", async () => {
+    // Two AWAITED calls in sequence never overlap, so this only proves
+    // last-call-wins overwrite (open() clears the prior card unconditionally
+    // before painting the new one) — it does NOT exercise the openToken
+    // guard itself, since openHistoricalLookup has no await before open()
+    // for a second call to race against. See the next test for that.
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
@@ -120,5 +156,32 @@ describe("openHistoricalLookup", () => {
 
     expect(document.getElementById("panel")!.innerHTML).toContain("Second");
     expect(document.getElementById("panel")!.innerHTML).not.toContain("First");
+  });
+
+  it("does not let a stale fire track overwrite a historical lookup opened while it was loading", async () => {
+    // The genuine cross-method race: openFire's loadTrack is held pending
+    // (real network fetch), and openHistoricalLookup — which never awaits
+    // anything before calling open() — runs and completes while it's still
+    // in flight. openFire's post-await recheck of the SHARED openToken must
+    // then see it has been superseded and discard its stale result.
+    const { setupFireCard } = await import("../src/firecard");
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const { map } = footprintMap();
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const card = setupFireCard(
+      map, { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    const pFire = card.openFire(fireClickEvent("fire-a", "Fire A"));
+    await card.openHistoricalLookup(fakeTrack([]), { ...META, place: "Historical Spot" });
+
+    // Fire A's now-stale response finally lands — it must not win.
+    pendingTracks.get("fire-a")!.resolve({ series: [], cell_bins: null });
+    await pFire;
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.innerHTML).toContain("Historical Spot");
+    expect(panel.innerHTML).not.toContain("Fire A");
   });
 });

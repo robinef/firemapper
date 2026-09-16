@@ -751,8 +751,19 @@ export function setupFireCard(
   };
 
   const openHistoricalLookup = async (track: Track, meta: HistoricalLookupMeta): Promise<void> => {
+    // The CHECK below is structurally inert today: there is no await between
+    // this bump and the check, so mine !== openToken can never be true here
+    // (unlike openFire/openScar's post-await recheck). The BUMP itself is
+    // NOT dead, though — it's what invalidates a concurrently in-flight
+    // openFire/openScar's stale loadTrack response when this call wins the
+    // race (open()'s own unconditional openToken++ does the same job
+    // redundantly). Confirmed by mutation test: disabling this bump alone
+    // doesn't break the cross-method race test below (open()'s bump alone
+    // covers it), but disabling BOTH does. Kept for interface-shape symmetry
+    // with openFire/openScar and as a guard against a future await landing
+    // above open().
     const mine = ++openToken;
-    if (mine !== openToken) return; // consistent with openFire/openScar's guard shape
+    if (mine !== openToken) return;
     const { series, centroids, cellBins } = trackTimeline(track);
     open(
       historicalLookupCardHtml(meta, track),
