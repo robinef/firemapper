@@ -248,6 +248,11 @@ export interface FireCard {
    *  just started, must await it. */
   openFire: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
   openScar: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
+  /** For the historical-lookup feature: the Track is already reconstructed
+   *  client-side (see historical_reconstruct.ts), so this skips the
+   *  loadTrack/loadFootprint network fetch openFire/openScar do and paints
+   *  directly. */
+  openHistoricalLookup: (track: Track, meta: HistoricalLookupMeta) => Promise<void>;
   close: () => void;
   /** Whether a fire/scar card is currently showing. Callers that only want
    *  to dismiss an OPEN card (e.g. a background map tap) must check this
@@ -745,9 +750,28 @@ export function setupFireCard(
     if (footprint) paintStaticFootprint(footprint);
   };
 
+  const openHistoricalLookup = async (track: Track, meta: HistoricalLookupMeta): Promise<void> => {
+    const mine = ++openToken;
+    if (mine !== openToken) return; // consistent with openFire/openScar's guard shape
+    const { series, centroids, cellBins } = trackTimeline(track);
+    open(
+      historicalLookupCardHtml(meta, track),
+      meta.lon, meta.lat, track.id,
+      series, centroids, cellBins,
+      null, // no fire-wind arrows — same reasoning as openScar (fireWindFC's doc comment)
+      true, // historical: always true — an on-demand lookup never has current-moment data
+      () =>
+        compare?.fromFire({
+          props: { before: meta.before, after: meta.after, started: meta.before },
+          lon: meta.lon, lat: meta.lat,
+        }),
+    );
+  };
+
   return {
     openFire,
     openScar,
+    openHistoricalLookup,
     close,
     get isOpen() {
       return !panel.classList.contains("hidden");
