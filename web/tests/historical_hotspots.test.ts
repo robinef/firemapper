@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseBbox, validateRange, MAX_SPAN_DAYS, MAX_BBOX_DEG, firmsSourceFor, chunkWindows } from "../../worker/historical_hotspots";
+import { parseBbox, validateRange, MAX_SPAN_DAYS, MAX_BBOX_DEG, firmsSourceFor, chunkWindows, isAllowedOrigin } from "../../worker/historical_hotspots";
 import { handleHistoricalHotspots } from "../../worker/historical_hotspots";
 
 describe("parseBbox", () => {
@@ -145,7 +145,10 @@ describe("chunkWindows", () => {
 });
 
 describe("handleHistoricalHotspots", () => {
-  const url = (qs: string) => new Request(`https://x/api/historical-hotspots?${qs}`);
+  const url = (qs: string) =>
+    new Request(`https://x/api/historical-hotspots?${qs}`, {
+      headers: { origin: "https://firemapper.robinef.workers.dev" },
+    });
   const VALID_QS = "bbox=-1.3,44.4,-1.0,44.7&start=2022-07-01&end=2022-07-05";
 
   it("503s with no map key configured", async () => {
@@ -242,5 +245,45 @@ describe("handleHistoricalHotspots", () => {
       FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
     });
     expect(res.headers.get("cache-control")).toContain("immutable");
+  });
+
+  it("403s a request from a disallowed origin before checking anything else", async () => {
+    const upstream = vi.fn();
+    const req = new Request(`https://x/api/historical-hotspots?${VALID_QS}`, {
+      headers: { origin: "https://evil.example.com" },
+    });
+    const res = await handleHistoricalHotspots(req, {
+      FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+    });
+    expect(res.status).toBe(403);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+});
+
+describe("isAllowedOrigin", () => {
+  const req = (headers: Record<string, string>) => new Request("https://x/api/historical-hotspots", { headers });
+
+  it("allows the deployed origin", () => {
+    expect(isAllowedOrigin(req({ origin: "https://firemapper.robinef.workers.dev" }))).toBe(true);
+  });
+
+  it("allows local dev", () => {
+    expect(isAllowedOrigin(req({ origin: "http://localhost:5173" }))).toBe(true);
+  });
+
+  it("rejects an unrelated origin", () => {
+    expect(isAllowedOrigin(req({ origin: "https://evil.example.com" }))).toBe(false);
+  });
+
+  it("rejects a request with neither Origin nor Referer", () => {
+    expect(isAllowedOrigin(req({}))).toBe(false);
+  });
+
+  it("falls back to Referer when Origin is absent", () => {
+    expect(isAllowedOrigin(req({ referer: "https://firemapper.robinef.workers.dev/some/page" }))).toBe(true);
+  });
+
+  it("rejects a malformed origin header rather than throwing", () => {
+    expect(isAllowedOrigin(req({ origin: "not-a-url" }))).toBe(false);
   });
 });

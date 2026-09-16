@@ -11,6 +11,21 @@
 export const MAX_SPAN_DAYS = 90;
 export const MAX_BBOX_DEG = 0.5;
 
+const ALLOWED_ORIGINS = new Set([
+  "https://firemapper.robinef.workers.dev",
+  "http://localhost:5173", // vite dev server
+]);
+
+export function isAllowedOrigin(request: Request): boolean {
+  const raw = request.headers.get("origin") ?? request.headers.get("referer");
+  if (!raw) return false;
+  try {
+    return ALLOWED_ORIGINS.has(new URL(raw).origin);
+  } catch {
+    return false;
+  }
+}
+
 export function parseBbox(
   raw: string | null,
 ): { west: number; south: number; east: number; north: number } | null {
@@ -100,6 +115,9 @@ export async function handleHistoricalHotspots(
   request: Request,
   env: HistoricalHotspotsEnv,
 ): Promise<Response> {
+  if (!isAllowedOrigin(request)) {
+    return new Response("forbidden", { status: 403 });
+  }
   const key = env.FIRMS_HISTORICAL_MAP_KEY;
   if (!key) {
     return new Response("historical lookup unavailable", {
