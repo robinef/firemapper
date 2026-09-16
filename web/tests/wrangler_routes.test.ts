@@ -34,4 +34,8 @@ describe("worker routing config", () => {
     // layer, which answered HEAD probes with 503.
     expect(routes()).toContain("/data/**");
   });
+
+  it("routes /api/historical-hotspots to the Worker too", () => {
+    expect(routes()).toContain("/api/historical-hotspots");
+  });
 });
