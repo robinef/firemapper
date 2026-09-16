@@ -37,6 +37,7 @@ function parseCsvLines(text: string): Record<string, string>[] {
  *  needed. Matches pipeline/fetch_firms.py's _LOW_CONF exactly. */
 function isLowConfidence(raw: string): boolean {
   const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "") return false; // blank/missing confidence is not in Python's _LOW_CONF set — keep it
   if (trimmed === "l") return true; // VIIRS low
   const numeric = Number(trimmed);
   if (Number.isFinite(numeric)) return numeric < 30; // MODIS

@@ -43,6 +43,11 @@ describe("parseFirmsCsv", () => {
     expect(parseFirmsCsv(csv)[0].frp).toBe(0);
   });
 
+  it("keeps a row with a blank/missing confidence field, matching Python's set-membership _LOW_CONF (blank is not in the set)", () => {
+    const csv = "latitude,longitude,acq_date,acq_time,confidence,frp\n44.84,-1.03,2022-07-22,1200,,5\n";
+    expect(parseFirmsCsv(csv)).toHaveLength(1);
+  });
+
   it("returns an empty array for an empty/header-only CSV", () => {
     expect(parseFirmsCsv("latitude,longitude,acq_date,acq_time,confidence,frp\n")).toEqual([]);
     expect(parseFirmsCsv("")).toEqual([]);
