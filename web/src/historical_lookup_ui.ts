@@ -124,3 +124,42 @@ export async function runHistoricalLookup(
   }
   await deps.openHistoricalLookup(result.track, { lon, lat, place, before, after });
 }
+
+/** Wires the Search BUTTON's click only — deliberately not the input's
+ *  input/keyup events. See this plan's Global Constraints: autocomplete is
+ *  forbidden by Nominatim's usage policy, not just discouraged. */
+export function wireGeocodeSearch(
+  container: HTMLElement,
+  fetchFn: typeof fetch,
+  onResult: (lon: number, lat: number, place: string) => void,
+): void {
+  const button = container.querySelector<HTMLButtonElement>("#historical-lookup-search");
+  const input = container.querySelector<HTMLInputElement>("#historical-lookup-q");
+  const resultEl = container.querySelector<HTMLElement>("#historical-lookup-geocode-result");
+  if (!button || !input) return;
+
+  button.addEventListener("click", async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    if (resultEl) resultEl.textContent = "Searching…";
+    let response: Response;
+    try {
+      response = await fetchFn(`/api/geocode?q=${encodeURIComponent(q)}`);
+    } catch {
+      if (resultEl) resultEl.textContent = "Search failed — try again.";
+      return;
+    }
+    if (!response.ok) {
+      if (resultEl) resultEl.textContent = "Search failed — try again.";
+      return;
+    }
+    const results = (await response.json()) as { lat: string; lon: string; display_name: string }[];
+    if (!results.length) {
+      if (resultEl) resultEl.textContent = "No match found — try a different place name.";
+      return;
+    }
+    const [first] = results;
+    if (resultEl) resultEl.textContent = `Found: ${first.display_name}`;
+    onResult(Number(first.lon), Number(first.lat), first.display_name);
+  });
+}

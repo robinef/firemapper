@@ -177,3 +177,56 @@ describe("runHistoricalLookup", () => {
     expect(d.openHistoricalLookup).not.toHaveBeenCalled();
   });
 });
+
+import { wireGeocodeSearch } from "../src/historical_lookup_ui";
+
+describe("wireGeocodeSearch", () => {
+  function setup() {
+    document.body.innerHTML = renderHistoricalLookupForm();
+    return document.body;
+  }
+
+  it("only calls /api/geocode when the Search button is clicked, never on input", () => {
+    const container = setup();
+    const fetchFn = vi.fn(async () => new Response("[]"));
+    wireGeocodeSearch(container, fetchFn, vi.fn());
+
+    const input = container.querySelector<HTMLInputElement>("#historical-lookup-q")!;
+    input.value = "Gironde";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("keyup", { bubbles: true }));
+
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("calls /api/geocode with the query on an explicit Search click", async () => {
+    const container = setup();
+    const fetchFn = vi.fn(async () => new Response('[{"lat":"44.84","lon":"-1.03","display_name":"Gironde, France"}]'));
+    const onResult = vi.fn();
+    wireGeocodeSearch(container, fetchFn, onResult);
+
+    const input = container.querySelector<HTMLInputElement>("#historical-lookup-q")!;
+    input.value = "Gironde";
+    container.querySelector<HTMLButtonElement>("#historical-lookup-search")!.click();
+    await Promise.resolve(); // flush the async handler
+    await new Promise(resolve => setTimeout(resolve, 0)); // allow async operations to complete
+
+    expect(fetchFn).toHaveBeenCalledWith("/api/geocode?q=Gironde");
+    expect(onResult).toHaveBeenCalledWith(-1.03, 44.84, "Gironde, France");
+  });
+
+  it("shows an inline message and calls onResult zero times when nothing matches", async () => {
+    const container = setup();
+    const fetchFn = vi.fn(async () => new Response("[]"));
+    const onResult = vi.fn();
+    wireGeocodeSearch(container, fetchFn, onResult);
+
+    container.querySelector<HTMLInputElement>("#historical-lookup-q")!.value = "Nowhereville";
+    container.querySelector<HTMLButtonElement>("#historical-lookup-search")!.click();
+    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(onResult).not.toHaveBeenCalled();
+    expect(container.querySelector("#historical-lookup-geocode-result")?.textContent).toMatch(/no match|not found/i);
+  });
+});
