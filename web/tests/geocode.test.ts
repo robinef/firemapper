@@ -41,6 +41,16 @@ describe("handleGeocode", () => {
     expect(res.status).toBe(403);
   });
 
+  it("405s a non-GET request, and never touches the gate or upstream", async () => {
+    const upstream = vi.fn();
+    const res = await handleGeocode(
+      new Request(`https://x/api/geocode?q=Gironde`, { method: "POST", headers: { origin: ORIGIN } }),
+      { GEOCODE_RATE_GATE: fakeGate(true), GEOCODE_UPSTREAM: upstream, GEOCODE_CACHE: fakeCache() },
+    );
+    expect(res.status).toBe(405);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("400s a missing query", async () => {
     const res = await handleGeocode(req(""), { GEOCODE_RATE_GATE: fakeGate(true) });
     expect(res.status).toBe(400);
@@ -49,6 +59,16 @@ describe("handleGeocode", () => {
   it("400s a too-short query (guards against near-empty/noise queries)", async () => {
     const res = await handleGeocode(req("q=a"), { GEOCODE_RATE_GATE: fakeGate(true) });
     expect(res.status).toBe(400);
+  });
+
+  it("503s when the rate-gate binding itself is missing, and never calls upstream (fail closed, not open)", async () => {
+    const upstream = vi.fn();
+    const res = await handleGeocode(req("q=Gironde"), {
+      GEOCODE_UPSTREAM: upstream,
+      GEOCODE_CACHE: fakeCache(),
+    });
+    expect(res.status).toBe(503);
+    expect(upstream).not.toHaveBeenCalled();
   });
 
   it("429s when the rate gate says no, and never calls upstream", async () => {

@@ -57,6 +57,10 @@ export async function handleGeocode(request: Request, env: GeocodeEnv): Promise<
     return new Response("forbidden", { status: 403 });
   }
 
+  if (request.method !== "GET") {
+    return new Response("method not allowed", { status: 405, headers: { allow: "GET" } });
+  }
+
   const rawQuery = new URL(request.url).searchParams.get("q");
   const normalizedQuery = rawQuery ? normalizeQuery(rawQuery) : "";
   if (!rawQuery || normalizedQuery.length < MIN_QUERY_LENGTH) {
@@ -75,20 +79,27 @@ export async function handleGeocode(request: Request, env: GeocodeEnv): Promise<
     if (cached) return cached;
   }
 
-  if (env.GEOCODE_RATE_GATE) {
-    try {
-      const stub = env.GEOCODE_RATE_GATE.get(env.GEOCODE_RATE_GATE.idFromName("global"));
-      const gateRes = await stub.fetch("https://gate.internal/acquire");
-      const gate = (await gateRes.json()) as { allowed: boolean; retryAfterMs?: number };
-      if (!gate.allowed) {
-        return new Response("rate limited — try again shortly", {
-          status: 429,
-          headers: { "retry-after": String(Math.ceil((gate.retryAfterMs ?? 1000) / 1000)) },
-        });
-      }
-    } catch {
-      return new Response("geocoding upstream failure", { status: 502 });
+  // The rate gate is required infrastructure, not optional: every other
+  // failure path in this handler fails closed (a gate error or an upstream
+  // error both return 502), so a missing binding must not be the one path
+  // that falls through to Nominatim with zero throttling — that would
+  // silently violate Nominatim's 1 req/sec usage policy this whole feature
+  // exists to enforce.
+  if (!env.GEOCODE_RATE_GATE) {
+    return new Response("geocoding rate gate unavailable", { status: 503 });
+  }
+  try {
+    const stub = env.GEOCODE_RATE_GATE.get(env.GEOCODE_RATE_GATE.idFromName("global"));
+    const gateRes = await stub.fetch("https://gate.internal/acquire");
+    const gate = (await gateRes.json()) as { allowed: boolean; retryAfterMs?: number };
+    if (!gate.allowed) {
+      return new Response("rate limited — try again shortly", {
+        status: 429,
+        headers: { "retry-after": String(Math.ceil((gate.retryAfterMs ?? 1000) / 1000)) },
+      });
     }
+  } catch {
+    return new Response("geocoding upstream failure", { status: 502 });
   }
 
   const upstreamUrl = `${NOMINATIM_BASE}?q=${encodeURIComponent(query)}&format=jsonv2&limit=1`;
