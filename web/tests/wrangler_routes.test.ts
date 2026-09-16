@@ -13,11 +13,18 @@ import raw from "../../wrangler.jsonc?raw";
  * answered every tile request with the app shell (text/html, 1080 bytes), which
  * MapLibre discards without firing `error`, leaving a blank compare half.
  */
-function routes(): string[] {
-  // Strip whole-line // comments (JSONC) without touching "//" inside strings.
+// Strip whole-line // comments (JSONC) without touching "//" inside strings.
+function parsedConfig(): {
+  assets: { run_worker_first: string[] };
+  durable_objects: { bindings: { name: string; class_name: string }[] };
+  migrations: { tag: string; new_sqlite_classes?: string[] }[];
+} {
   const json = raw.replace(/^\s*\/\/.*$/gm, "");
-  return (JSON.parse(json) as { assets: { run_worker_first: string[] } })
-    .assets.run_worker_first;
+  return JSON.parse(json);
+}
+
+function routes(): string[] {
+  return parsedConfig().assets.run_worker_first;
 }
 
 describe("worker routing config", () => {
@@ -41,5 +48,15 @@ describe("worker routing config", () => {
 
   it("routes /api/geocode to the Worker too", () => {
     expect(routes()).toContain("/api/geocode");
+  });
+
+  it("declares a durable_objects binding for GeocodeRateGate matching worker/index.ts's export", () => {
+    const { durable_objects } = parsedConfig();
+    expect(durable_objects.bindings.some((b) => b.class_name === "GeocodeRateGate")).toBe(true);
+  });
+
+  it("declares a new_sqlite_classes migration for GeocodeRateGate (config drift has broken this before)", () => {
+    const { migrations } = parsedConfig();
+    expect(migrations.some((m) => m.new_sqlite_classes?.includes("GeocodeRateGate"))).toBe(true);
   });
 });
