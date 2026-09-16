@@ -48,3 +48,29 @@ export function validateRange(
   if (spanDays > MAX_SPAN_DAYS) return { error: `date span must not exceed ${MAX_SPAN_DAYS} days` };
   return { start, end };
 }
+
+// FIRMS' actual source list (firms.modaps.eosdis.nasa.gov/api/area/) has NO
+// VIIRS_NOAA21_SP — NOAA-21 only has an NRT product. Do not add it here
+// without re-checking that page; a previous design draft assumed it existed.
+const VIIRS_SNPP_COVERAGE_START = new Date("2012-01-19T00:00:00Z");
+const VIIRS_SNPP_RETIRED = new Date("2026-11-01T00:00:00Z");
+
+export function firmsSourceFor(date: Date): "MODIS_SP" | "VIIRS_SNPP_SP" | "VIIRS_NOAA20_SP" {
+  if (date < VIIRS_SNPP_COVERAGE_START) return "MODIS_SP";
+  if (date < VIIRS_SNPP_RETIRED) return "VIIRS_SNPP_SP";
+  return "VIIRS_NOAA20_SP";
+}
+
+const MAX_DAY_RANGE = 5; // FIRMS Area API's own per-request cap
+
+export function chunkWindows(start: Date, end: Date): { date: string; dayRange: number }[] {
+  const windows: { date: string; dayRange: number }[] = [];
+  let cursor = start;
+  while (cursor <= end) {
+    const remainingDays = Math.round((end.getTime() - cursor.getTime()) / 86_400_000) + 1;
+    const dayRange = Math.min(MAX_DAY_RANGE, remainingDays);
+    windows.push({ date: cursor.toISOString().slice(0, 10), dayRange });
+    cursor = new Date(cursor.getTime() + dayRange * 86_400_000);
+  }
+  return windows;
+}

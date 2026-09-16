@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBbox, validateRange, MAX_SPAN_DAYS, MAX_BBOX_DEG } from "../../worker/historical_hotspots";
+import { parseBbox, validateRange, MAX_SPAN_DAYS, MAX_BBOX_DEG, firmsSourceFor, chunkWindows } from "../../worker/historical_hotspots";
 
 describe("parseBbox", () => {
   it("parses a valid west,south,east,north string", () => {
@@ -86,5 +86,59 @@ describe("validateRange", () => {
     if (!("error" in r)) {
       expect(r.start.toISOString().slice(0, 10)).toBe("2022-02-28");
     }
+  });
+});
+
+describe("firmsSourceFor", () => {
+  it("uses MODIS_SP before VIIRS S-NPP coverage starts", () => {
+    expect(firmsSourceFor(new Date("2010-06-01T00:00:00Z"))).toBe("MODIS_SP");
+  });
+
+  it("uses VIIRS_SNPP_SP for the main archive era", () => {
+    expect(firmsSourceFor(new Date("2022-07-22T00:00:00Z"))).toBe("VIIRS_SNPP_SP");
+  });
+
+  it("uses VIIRS_NOAA20_SP on/after S-NPP retirement (2026-11-01)", () => {
+    expect(firmsSourceFor(new Date("2026-11-01T00:00:00Z"))).toBe("VIIRS_NOAA20_SP");
+  });
+
+  it("still uses VIIRS_SNPP_SP the day before retirement", () => {
+    expect(firmsSourceFor(new Date("2026-10-31T00:00:00Z"))).toBe("VIIRS_SNPP_SP");
+  });
+
+  it("uses VIIRS_SNPP_SP right at the coverage start boundary", () => {
+    expect(firmsSourceFor(new Date("2012-01-19T00:00:00Z"))).toBe("VIIRS_SNPP_SP");
+  });
+
+  it("uses MODIS_SP the day before the coverage start boundary", () => {
+    expect(firmsSourceFor(new Date("2012-01-18T00:00:00Z"))).toBe("MODIS_SP");
+  });
+});
+
+describe("chunkWindows", () => {
+  it("returns one window for a span of 5 days or fewer", () => {
+    const windows = chunkWindows(new Date("2022-07-01T00:00:00Z"), new Date("2022-07-05T00:00:00Z"));
+    expect(windows).toEqual([{ date: "2022-07-01", dayRange: 5 }]);
+  });
+
+  it("returns one window for a single day", () => {
+    const windows = chunkWindows(new Date("2022-07-01T00:00:00Z"), new Date("2022-07-01T00:00:00Z"));
+    expect(windows).toEqual([{ date: "2022-07-01", dayRange: 1 }]);
+  });
+
+  it("splits an 8-day span into a 5-day window then a 3-day window", () => {
+    const windows = chunkWindows(new Date("2022-07-01T00:00:00Z"), new Date("2022-07-08T00:00:00Z"));
+    expect(windows).toEqual([
+      { date: "2022-07-01", dayRange: 5 },
+      { date: "2022-07-06", dayRange: 3 },
+    ]);
+  });
+
+  it("splits exactly on a 10-day span into two 5-day windows", () => {
+    const windows = chunkWindows(new Date("2022-07-01T00:00:00Z"), new Date("2022-07-10T00:00:00Z"));
+    expect(windows).toEqual([
+      { date: "2022-07-01", dayRange: 5 },
+      { date: "2022-07-06", dayRange: 5 },
+    ]);
   });
 });
