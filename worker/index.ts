@@ -16,6 +16,10 @@
 import { handleHistoricalHotspots, type HistoricalHotspotsEnv } from "./historical_hotspots";
 import { handleGeocode, GeocodeRateGate, type GeocodeEnv } from "./geocode";
 
+// Re-exported so wrangler.jsonc's durable_objects binding (class_name:
+// "GeocodeRateGate") can find the class on this Worker's entry point.
+export { GeocodeRateGate };
+
 export interface R2ObjectBody {
   body: ReadableStream | string | null;
 }
@@ -68,8 +72,6 @@ const UA = "firemapper-refresh-trigger";
  * `Contents: read and write`, which is a token that can push commits. Same
  * result, far less to lose if the secret leaks.
  */
-export { GeocodeRateGate };
-
 export async function dispatchRefresh(
   token: string,
   fetchImpl: typeof fetch = fetch,
