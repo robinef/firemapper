@@ -38,4 +38,8 @@ describe("worker routing config", () => {
   it("routes /api/historical-hotspots to the Worker too", () => {
     expect(routes()).toContain("/api/historical-hotspots");
   });
+
+  it("routes /api/geocode to the Worker too", () => {
+    expect(routes()).toContain("/api/geocode");
+  });
 });
