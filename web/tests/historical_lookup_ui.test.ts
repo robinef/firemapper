@@ -1,5 +1,9 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
 import { deriveBbox, validateDateRange, DEFAULT_RADIUS_KM, MAX_SPAN_DAYS } from "../src/historical_lookup_ui";
+import {
+  renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
+} from "../src/historical_lookup_ui";
 
 describe("deriveBbox", () => {
   it("returns a west,south,east,north string centered on the point", () => {
@@ -49,5 +53,60 @@ describe("validateDateRange", () => {
     expect(validateDateRange("2022-01-01", "2022-12-31")).toEqual({
       ok: false, error: `date range must be ${MAX_SPAN_DAYS} days or fewer`,
     });
+  });
+});
+
+describe("renderHistoricalLookupForm", () => {
+  it("wraps the search input in a <form>, not a bare input with no submit path", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderHistoricalLookupForm();
+    const form = el.querySelector("form");
+    expect(form).not.toBeNull();
+    expect(form?.querySelector("input[type=search], input[type=text]")).not.toBeNull();
+  });
+
+  it("never wires an oninput/onkeyup attribute on the search box — compliance-critical", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderHistoricalLookupForm();
+    const html = el.innerHTML;
+    expect(html).not.toMatch(/oninput/i);
+    expect(html).not.toMatch(/onkeyup/i);
+    expect(html).not.toContain('autocomplete="on"');
+  });
+
+  it("has two date inputs and an explicit submit button", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderHistoricalLookupForm();
+    expect(el.querySelectorAll('input[type="date"]')).toHaveLength(2);
+    expect(el.querySelector('button[type="submit"]')).not.toBeNull();
+  });
+
+  it("has a panel-close affordance, same convention every other panel view uses", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderHistoricalLookupForm();
+    expect(el.querySelector(".panel-close")).not.toBeNull();
+  });
+
+  it("instructs the user they can also click the map", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderHistoricalLookupForm();
+    expect(el.textContent).toMatch(/click.*map/i);
+  });
+});
+
+describe("renderAmbiguousResult", () => {
+  it("names how many distinct fires were found and invites narrowing the search", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderAmbiguousResult([{ cellCount: 3, rowCount: 12 }, { cellCount: 2, rowCount: 5 }]);
+    expect(el.textContent).toContain("2");
+    expect(el.textContent?.toLowerCase()).toMatch(/narrow|smaller|different/);
+  });
+});
+
+describe("renderNoDataResult", () => {
+  it("tells the user nothing was found, not a blank panel", () => {
+    const el = document.createElement("div");
+    el.innerHTML = renderNoDataResult();
+    expect(el.textContent?.toLowerCase()).toMatch(/no|nothing/);
   });
 });
