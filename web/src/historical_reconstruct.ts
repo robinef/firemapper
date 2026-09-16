@@ -11,6 +11,7 @@
  */
 
 import { latLngToCell, gridDisk } from "h3-js";
+import type { Bin, Track } from "./types";
 
 export interface HistoricalRow {
   lat: number;
@@ -139,4 +140,63 @@ export function splitIntoClusters(rows: HistoricalRow[]): ClusterGroup[] {
     clusters.push({ rows: clusterRows, cellCount: componentCells.length });
   }
   return clusters;
+}
+
+const BIN_HOURS = 6;
+
+/** Floors to the 6h UTC boundary — ports pipeline/events.py's bin_start
+ *  (hour // BIN_HOURS * BIN_HOURS) exactly, verified against that source. */
+function binStart(time: Date): Date {
+  const floored = new Date(time);
+  floored.setUTCHours(Math.floor(time.getUTCHours() / BIN_HOURS) * BIN_HOURS, 0, 0, 0);
+  return floored;
+}
+
+export function assembleTrack(rows: HistoricalRow[], id: string): Track {
+  const sorted = [...rows].sort((a, b) => a.time.getTime() - b.time.getTime());
+  const byBin = new Map<string, { lat: number[]; lon: number[]; newCells: string[]; frp: number }>();
+  const seenCells = new Set<string>();
+
+  for (const row of sorted) {
+    const binKey = binStart(row.time).toISOString();
+    const bucket = byBin.get(binKey) ?? { lat: [], lon: [], newCells: [], frp: 0 };
+    bucket.lat.push(row.lat);
+    bucket.lon.push(row.lon);
+    bucket.frp += row.frp;
+    const cell = latLngToCell(row.lat, row.lon, H3_RES);
+    if (!seenCells.has(cell)) {
+      seenCells.add(cell);
+      bucket.newCells.push(cell);
+    }
+    byBin.set(binKey, bucket);
+  }
+
+  const sortedBinKeys = [...byBin.keys()].sort();
+  let cumCells = 0;
+  const series: Bin[] = sortedBinKeys.map((key) => {
+    const bucket = byBin.get(key) as { lat: number[]; lon: number[]; newCells: string[]; frp: number };
+    cumCells += bucket.newCells.length;
+    return {
+      bin: key,
+      centroid: [
+        bucket.lat.reduce((a, b) => a + b, 0) / bucket.lat.length,
+        bucket.lon.reduce((a, b) => a + b, 0) / bucket.lon.length,
+      ],
+      new_cells: bucket.newCells.length,
+      cum_cells: cumCells,
+      frp_sum: Math.round(bucket.frp * 10) / 10,
+    };
+  });
+  const cellBins: [string, string[]][] = sortedBinKeys.map((key) => [
+    key,
+    (byBin.get(key) as { newCells: string[] }).newCells,
+  ]);
+
+  return {
+    id,
+    series,
+    cells: [...seenCells],
+    cell_bins: cellBins,
+    frp_live: [],
+  };
 }

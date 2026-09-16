@@ -138,3 +138,61 @@ describe("splitIntoClusters", () => {
     expect(clusters[0].cellCount).toBe(1);
   });
 });
+
+import { assembleTrack } from "../src/historical_reconstruct";
+
+describe("assembleTrack", () => {
+  it("floors acq_time to a 6h UTC bin, matching pipeline/events.py's bin_start", () => {
+    const rows = [{ lat: 44.84, lon: -1.03, frp: 5, time: new Date("2022-07-22T11:55:00Z") }];
+    const track = assembleTrack(rows, "lookup-1");
+    expect(track.series[0].bin).toBe("2022-07-22T06:00:00.000Z");
+    expect(track.cell_bins?.[0][0]).toBe("2022-07-22T06:00:00.000Z");
+  });
+
+  it("only counts a cell as new the first time it appears, matching _cell_bins", () => {
+    const cell1 = { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T07:00:00Z") };
+    const sameSpotLater = { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T13:00:00Z") };
+    const track = assembleTrack([cell1, sameSpotLater], "lookup-1");
+    const bins = track.cell_bins ?? [];
+    expect(bins).toHaveLength(2); // two 6h bins (06:00 and 12:00)
+    expect(bins[1][1]).toEqual([]); // no NEW cells in the second bin, same cell reburned
+  });
+
+  it("sums frp per bin into series[].frp_sum", () => {
+    const rows = [
+      { lat: 44.84, lon: -1.03, frp: 3, time: new Date("2022-07-22T07:00:00Z") },
+      { lat: 44.85, lon: -1.03, frp: 4, time: new Date("2022-07-22T08:00:00Z") },
+    ];
+    const track = assembleTrack(rows, "lookup-1");
+    expect(track.series[0].frp_sum).toBe(7);
+  });
+
+  it("accumulates cum_cells across bins", () => {
+    const rows = [
+      { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T07:00:00Z") },
+      { lat: 44.85, lon: -1.03, frp: 1, time: new Date("2022-07-22T13:00:00Z") },
+    ];
+    const track = assembleTrack(rows, "lookup-1");
+    expect(track.series.map((b) => b.cum_cells)).toEqual([1, 2]);
+  });
+
+  it("carries the given id and an empty frp_live — no live MTG series for a historical lookup", () => {
+    const track = assembleTrack(
+      [{ lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T07:00:00Z") }],
+      "lookup-42",
+    );
+    expect(track.id).toBe("lookup-42");
+    expect(track.frp_live).toEqual([]);
+  });
+
+  it("carries every distinct cell in .cells, deduped", () => {
+    const track = assembleTrack(
+      [
+        { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T07:00:00Z") },
+        { lat: 44.84, lon: -1.03, frp: 1, time: new Date("2022-07-22T13:00:00Z") }, // same cell again
+      ],
+      "lookup-1",
+    );
+    expect(track.cells).toHaveLength(1);
+  });
+});
