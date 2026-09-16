@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseBbox, validateRange, MAX_SPAN_DAYS, MAX_BBOX_DEG, firmsSourceFor, chunkWindows } from "../../worker/historical_hotspots";
+import { handleHistoricalHotspots } from "../../worker/historical_hotspots";
 
 describe("parseBbox", () => {
   it("parses a valid west,south,east,north string", () => {
@@ -140,5 +141,93 @@ describe("chunkWindows", () => {
       { date: "2022-07-01", dayRange: 5 },
       { date: "2022-07-06", dayRange: 5 },
     ]);
+  });
+});
+
+describe("handleHistoricalHotspots", () => {
+  const url = (qs: string) => new Request(`https://x/api/historical-hotspots?${qs}`);
+  const VALID_QS = "bbox=-1.3,44.4,-1.0,44.7&start=2022-07-01&end=2022-07-05";
+
+  it("503s with no map key configured", async () => {
+    const res = await handleHistoricalHotspots(url(VALID_QS), {});
+    expect(res.status).toBe(503);
+  });
+
+  it("400s on a missing bbox", async () => {
+    const res = await handleHistoricalHotspots(
+      url("start=2022-07-01&end=2022-07-05"),
+      { FIRMS_HISTORICAL_MAP_KEY: "k" },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("bbox");
+  });
+
+  it("400s on an invalid date range, before ever calling upstream", async () => {
+    const upstream = vi.fn();
+    const res = await handleHistoricalHotspots(
+      url("bbox=-1.3,44.4,-1.0,44.7&start=2022-07-10&end=2022-07-01"),
+      { FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    expect(res.status).toBe(400);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("injects the map key and forwards to FIRMS with the right source/day-range/date", async () => {
+    const seenUrls: string[] = [];
+    const upstream = async (r: Request) => {
+      seenUrls.push(r.url);
+      return new Response("latitude,longitude,acq_date,acq_time\n44.5,-1.1,2022-07-01,1200\n");
+    };
+    const res = await handleHistoricalHotspots(
+      url(VALID_QS),
+      { FIRMS_HISTORICAL_MAP_KEY: "secret-key", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    expect(res.status).toBe(200);
+    expect(seenUrls).toEqual([
+      "https://firms.modaps.eosdis.nasa.gov/api/area/csv/secret-key/VIIRS_SNPP_SP/-1.3,44.4,-1.0,44.7/5/2022-07-01",
+    ]);
+    expect(await res.text()).toContain("44.5,-1.1,2022-07-01,1200");
+  });
+
+  it("never leaks the map key into the response body or headers", async () => {
+    const upstream = async () => new Response("latitude,longitude\n1,2\n");
+    const res = await handleHistoricalHotspots(
+      url(VALID_QS),
+      { FIRMS_HISTORICAL_MAP_KEY: "super-secret", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    const body = await res.text();
+    expect(body).not.toContain("super-secret");
+    for (const [, v] of res.headers) expect(v).not.toContain("super-secret");
+  });
+
+  it("chunks a >5-day span into multiple upstream calls and merges the CSVs, keeping one header", async () => {
+    const upstream = async (r: Request) => {
+      const day = r.url.includes("/2022-07-01") ? "2022-07-01" : "2022-07-06";
+      return new Response(`latitude,longitude,acq_date\n1,2,${day}\n`);
+    };
+    const res = await handleHistoricalHotspots(
+      url("bbox=-1.3,44.4,-1.0,44.7&start=2022-07-01&end=2022-07-08"),
+      { FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    const body = await res.text();
+    expect(body.match(/latitude,longitude,acq_date/g)?.length).toBe(1); // header once
+    expect(body).toContain("1,2,2022-07-01");
+    expect(body).toContain("1,2,2022-07-06");
+  });
+
+  it("returns 502 when an upstream chunk fails, rather than a partial merged result", async () => {
+    const upstream = async () => new Response("boom", { status: 500 });
+    const res = await handleHistoricalHotspots(url(VALID_QS), {
+      FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+    });
+    expect(res.status).toBe(502);
+  });
+
+  it("marks a successful response cacheable for a long time — a past date range's data never changes", async () => {
+    const upstream = async () => new Response("latitude,longitude\n1,2\n");
+    const res = await handleHistoricalHotspots(url(VALID_QS), {
+      FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+    });
+    expect(res.headers.get("cache-control")).toContain("immutable");
   });
 });

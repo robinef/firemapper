@@ -74,3 +74,69 @@ export function chunkWindows(start: Date, end: Date): { date: string; dayRange: 
   }
   return windows;
 }
+
+const FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
+// A past date range's FIRMS data never changes once published — same
+// reasoning as worker/index.ts's HD_CACHE for Sentinel Hub tiles: caching at
+// the edge is what stops a repeat viewer costing FIRMS map-key quota.
+const RESPONSE_CACHE = "public, max-age=604800, immutable";
+
+export interface HistoricalHotspotsEnv {
+  FIRMS_HISTORICAL_MAP_KEY?: string;
+  /** Seam for tests; defaults to global fetch. */
+  HISTORICAL_HOTSPOTS_UPSTREAM?: (request: Request) => Promise<Response>;
+}
+
+function mergeCsv(bodies: string[]): string {
+  let merged = "";
+  bodies.forEach((body, i) => {
+    const lines = body.split("\n").filter((l) => l.length > 0);
+    merged += (i === 0 ? lines : lines.slice(1)).join("\n") + "\n";
+  });
+  return merged;
+}
+
+export async function handleHistoricalHotspots(
+  request: Request,
+  env: HistoricalHotspotsEnv,
+): Promise<Response> {
+  const key = env.FIRMS_HISTORICAL_MAP_KEY;
+  if (!key) {
+    return new Response("historical lookup unavailable", {
+      status: 503,
+      headers: { "cache-control": "no-store", "retry-after": "3600" },
+    });
+  }
+
+  const params = new URL(request.url).searchParams;
+  const bboxRaw = params.get("bbox");
+  const bbox = parseBbox(bboxRaw);
+  if (!bbox || !bboxRaw) {
+    return new Response("invalid or missing bbox", { status: 400 });
+  }
+  const range = validateRange(params.get("start"), params.get("end"));
+  if ("error" in range) {
+    return new Response(range.error, { status: 400 });
+  }
+
+  // Forward the raw bbox text (already validated west,south,east,north by
+  // parseBbox) rather than reformatting the parsed floats — stringifying a
+  // number like -1.0 drops the trailing zero, which FIRMS need not accept.
+  const bboxStr = bboxRaw;
+  const fetcher = env.HISTORICAL_HOTSPOTS_UPSTREAM ?? ((r: Request) => fetch(r));
+  const bodies: string[] = [];
+  for (const { date, dayRange } of chunkWindows(range.start, range.end)) {
+    const source = firmsSourceFor(new Date(`${date}T00:00:00Z`));
+    const upstream = new Request(`${FIRMS_BASE}/${key}/${source}/${bboxStr}/${dayRange}/${date}`);
+    const response = await fetcher(upstream);
+    if (!response.ok) {
+      return new Response("historical lookup upstream failure", { status: 502 });
+    }
+    bodies.push(await response.text());
+  }
+
+  return new Response(mergeCsv(bodies), {
+    status: 200,
+    headers: { "content-type": "text/csv", "cache-control": RESPONSE_CACHE },
+  });
+}
