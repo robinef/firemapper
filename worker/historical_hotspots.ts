@@ -11,12 +11,27 @@
 export const MAX_SPAN_DAYS = 90;
 export const MAX_BBOX_DEG = 0.5;
 
+/** Blocks casual hotlinking/embedding of this proxy from another site — not a
+ * hardened boundary. Origin, Referer and Sec-Fetch-Site are all
+ * attacker-controlled request headers; a determined caller can spoof any of
+ * them from a script or a modified browser, so this does not stop a
+ * determined attacker. What it DOES stop is a random page's ordinary
+ * client-side fetch() riding on someone else's browser session and burning
+ * this Worker's own FIRMS map-key quota — the same tradeoff as HD_ALLOWED's
+ * parameter allowlist in worker/index.ts. */
 const ALLOWED_ORIGINS = new Set([
   "https://firemapper.robinef.workers.dev",
   "http://localhost:5173", // vite dev server
 ]);
 
 export function isAllowedOrigin(request: Request): boolean {
+  // Real browsers do not reliably send Origin on a same-origin GET fetch()
+  // (varies by browser/version), and Referer disappears entirely under a
+  // `Referrer-Policy: no-referrer` header or privacy tooling. Sec-Fetch-Site
+  // is a Fetch Metadata header current Chrome/Firefox/Safari send on
+  // essentially all requests regardless of Referrer-Policy, so it is checked
+  // independently rather than folded into the raw/header fallback below.
+  if (request.headers.get("sec-fetch-site") === "same-origin") return true;
   const raw = request.headers.get("origin") ?? request.headers.get("referer");
   if (!raw) return false;
   try {
@@ -78,12 +93,27 @@ export function firmsSourceFor(date: Date): "MODIS_SP" | "VIIRS_SNPP_SP" | "VIIR
 
 const MAX_DAY_RANGE = 5; // FIRMS Area API's own per-request cap
 
+// firmsSourceFor's own two boundaries. A chunk's window must never straddle
+// one of these — see chunkWindows below.
+const SOURCE_BOUNDARIES = [VIIRS_SNPP_COVERAGE_START, VIIRS_SNPP_RETIRED];
+
 export function chunkWindows(start: Date, end: Date): { date: string; dayRange: number }[] {
   const windows: { date: string; dayRange: number }[] = [];
   let cursor = start;
   while (cursor <= end) {
     const remainingDays = Math.round((end.getTime() - cursor.getTime()) / 86_400_000) + 1;
-    const dayRange = Math.min(MAX_DAY_RANGE, remainingDays);
+    let dayRange = Math.min(MAX_DAY_RANGE, remainingDays);
+    // Clamp a chunk shorter than the 5-day cap if it would otherwise cross a
+    // source-transition boundary (VIIRS coverage start / S-NPP retirement):
+    // firmsSourceFor is called per-chunk on the chunk's start date only, so a
+    // chunk that spans a boundary would get queried entirely under the wrong
+    // source for its tail days, silently losing real detections.
+    for (const boundary of SOURCE_BOUNDARIES) {
+      if (boundary > cursor) {
+        const daysToBoundary = Math.round((boundary.getTime() - cursor.getTime()) / 86_400_000);
+        dayRange = Math.min(dayRange, daysToBoundary);
+      }
+    }
     windows.push({ date: cursor.toISOString().slice(0, 10), dayRange });
     cursor = new Date(cursor.getTime() + dayRange * 86_400_000);
   }
@@ -103,12 +133,21 @@ export interface HistoricalHotspotsEnv {
 }
 
 function mergeCsv(bodies: string[]): string {
-  let merged = "";
-  bodies.forEach((body, i) => {
+  // A chunk covering a low-activity window is the COMMON case, not an edge
+  // case: FIRMS returns a header-only (zero data rows) or fully empty body
+  // for it. Such a chunk must contribute nothing to the merge — not even a
+  // blank line — and must never be assumed to be the header source just
+  // because it's chunk 0.
+  let header: string | null = null;
+  const dataLines: string[] = [];
+  for (const body of bodies) {
     const lines = body.split("\n").filter((l) => l.length > 0);
-    merged += (i === 0 ? lines : lines.slice(1)).join("\n") + "\n";
-  });
-  return merged;
+    if (lines.length === 0) continue; // wholly empty chunk: no header, no data
+    if (header === null) header = lines[0]; // first chunk that actually has content
+    if (lines.length > 1) dataLines.push(...lines.slice(1));
+  }
+  if (header === null) return "";
+  return [header, ...dataLines].join("\n") + "\n";
 }
 
 export async function handleHistoricalHotspots(
@@ -147,17 +186,21 @@ export async function handleHistoricalHotspots(
     const source = firmsSourceFor(new Date(`${date}T00:00:00Z`));
     const upstream = new Request(`${FIRMS_BASE}/${key}/${source}/${bboxStr}/${dayRange}/${date}`);
     let response: Response;
+    let body: string;
     try {
       response = await fetcher(upstream);
+      if (!response.ok) {
+        return new Response("historical lookup upstream failure", { status: 502 });
+      }
+      body = await response.text();
     } catch {
       // Never surface the caught error's own message: it (or the request it
-      // was thrown for) can embed the map key via `upstream.url`.
+      // was thrown for) can embed the map key via `upstream.url`. Covers both
+      // a rejected/thrown fetch AND a response whose body read fails (e.g. a
+      // truncated/malformed stream) — either way the caller gets the same 502.
       return new Response("historical lookup upstream failure", { status: 502 });
     }
-    if (!response.ok) {
-      return new Response("historical lookup upstream failure", { status: 502 });
-    }
-    bodies.push(await response.text());
+    bodies.push(body);
   }
 
   return new Response(mergeCsv(bodies), {

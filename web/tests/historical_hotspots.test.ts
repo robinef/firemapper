@@ -142,6 +142,31 @@ describe("chunkWindows", () => {
       { date: "2022-07-06", dayRange: 5 },
     ]);
   });
+
+  function lastDayOf(window: { date: string; dayRange: number }): Date {
+    return new Date(new Date(`${window.date}T00:00:00Z`).getTime() + (window.dayRange - 1) * 86_400_000);
+  }
+
+  it("never lets a single window straddle the S-NPP retirement boundary (2026-11-01)", () => {
+    const windows = chunkWindows(new Date("2026-10-29T00:00:00Z"), new Date("2026-11-05T00:00:00Z"));
+    // Sanity: the range does span the boundary, and windows still cover it end to end.
+    expect(windows.length).toBeGreaterThan(1);
+    for (const w of windows) {
+      const startSource = firmsSourceFor(new Date(`${w.date}T00:00:00Z`));
+      const endSource = firmsSourceFor(lastDayOf(w));
+      expect(endSource).toBe(startSource);
+    }
+  });
+
+  it("never lets a single window straddle the VIIRS coverage-start boundary (2012-01-19)", () => {
+    const windows = chunkWindows(new Date("2012-01-16T00:00:00Z"), new Date("2012-01-23T00:00:00Z"));
+    expect(windows.length).toBeGreaterThan(1);
+    for (const w of windows) {
+      const startSource = firmsSourceFor(new Date(`${w.date}T00:00:00Z`));
+      const endSource = firmsSourceFor(lastDayOf(w));
+      expect(endSource).toBe(startSource);
+    }
+  });
 });
 
 describe("handleHistoricalHotspots", () => {
@@ -218,6 +243,39 @@ describe("handleHistoricalHotspots", () => {
     expect(body).toContain("1,2,2022-07-06");
   });
 
+  it("keeps the header and the data when the FIRST chunk's body is wholly empty (zero detections)", async () => {
+    const upstream = async (r: Request) => {
+      if (r.url.includes("/2022-07-01")) {
+        return new Response(""); // no header at all — the actual dropped-header scenario
+      }
+      return new Response("latitude,longitude,acq_date\n1,2,2022-07-06\n");
+    };
+    const res = await handleHistoricalHotspots(
+      url("bbox=-1.3,44.4,-1.0,44.7&start=2022-07-01&end=2022-07-08"),
+      { FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    const body = await res.text();
+    expect(body.match(/latitude,longitude,acq_date/g)?.length).toBe(1); // header not dropped
+    expect(body).toContain("1,2,2022-07-06");
+  });
+
+  it("does not insert a blank line for an empty chunk in the MIDDLE of a multi-chunk merge", async () => {
+    const upstream = async (r: Request) => {
+      if (r.url.includes("/2022-07-01")) return new Response("latitude,longitude,acq_date\n1,2,2022-07-01\n");
+      if (r.url.includes("/2022-07-06")) return new Response("latitude,longitude,acq_date\n"); // empty middle chunk
+      return new Response("latitude,longitude,acq_date\n1,2,2022-07-11\n");
+    };
+    const res = await handleHistoricalHotspots(
+      url("bbox=-1.3,44.4,-1.0,44.7&start=2022-07-01&end=2022-07-13"),
+      { FIRMS_HISTORICAL_MAP_KEY: "k", HISTORICAL_HOTSPOTS_UPSTREAM: upstream },
+    );
+    const body = await res.text();
+    expect(body).not.toMatch(/\n\n/); // no blank line
+    expect(body.match(/latitude,longitude,acq_date/g)?.length).toBe(1);
+    expect(body).toContain("1,2,2022-07-01");
+    expect(body).toContain("1,2,2022-07-11");
+  });
+
   it("returns 502 when an upstream chunk fails, rather than a partial merged result", async () => {
     const upstream = async () => new Response("boom", { status: 500 });
     const res = await handleHistoricalHotspots(url(VALID_QS), {
@@ -237,6 +295,23 @@ describe("handleHistoricalHotspots", () => {
     const body = await res.text();
     expect(body).not.toContain("super-secret");
     expect(body).not.toContain("ECONNRESET");
+  });
+
+  it("returns 502, without leaking the map key, when reading the upstream response body throws", async () => {
+    const upstream = async () => {
+      const res = new Response("irrelevant, never read successfully");
+      res.text = () => {
+        throw new Error("truncated stream");
+      };
+      return res;
+    };
+    const res = await handleHistoricalHotspots(url(VALID_QS), {
+      FIRMS_HISTORICAL_MAP_KEY: "super-secret", HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+    });
+    expect(res.status).toBe(502);
+    const body = await res.text();
+    expect(body).not.toContain("super-secret");
+    expect(body).not.toContain("truncated stream");
   });
 
   it("marks a successful response cacheable for a long time — a past date range's data never changes", async () => {
@@ -285,5 +360,13 @@ describe("isAllowedOrigin", () => {
 
   it("rejects a malformed origin header rather than throwing", () => {
     expect(isAllowedOrigin(req({ origin: "not-a-url" }))).toBe(false);
+  });
+
+  it("allows a same-origin fetch signalled only via Sec-Fetch-Site, with no Origin/Referer at all", () => {
+    expect(isAllowedOrigin(req({ "sec-fetch-site": "same-origin" }))).toBe(true);
+  });
+
+  it("still rejects a cross-site request with no Origin/Referer, even with Sec-Fetch-Site present", () => {
+    expect(isAllowedOrigin(req({ "sec-fetch-site": "cross-site" }))).toBe(false);
   });
 });
