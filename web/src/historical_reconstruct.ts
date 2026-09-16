@@ -200,3 +200,24 @@ export function assembleTrack(rows: HistoricalRow[], id: string): Track {
     frp_live: [],
   };
 }
+
+export type ReconstructResult =
+  | { status: "ok"; track: Track }
+  | { status: "no_data" }
+  | { status: "ambiguous"; clusters: { cellCount: number; rowCount: number }[] };
+
+export function reconstructHistoricalFire(csvText: string, id: string): ReconstructResult {
+  const parsed = parseFirmsCsv(csvText);
+  const survivors = dropStaticSources(parsed);
+  if (survivors.length === 0) return { status: "no_data" };
+
+  const clusters = splitIntoClusters(survivors);
+  if (clusters.length > 1) {
+    return {
+      status: "ambiguous",
+      clusters: clusters.map((c) => ({ cellCount: c.cellCount, rowCount: c.rows.length })),
+    };
+  }
+
+  return { status: "ok", track: assembleTrack(clusters[0].rows, id) };
+}

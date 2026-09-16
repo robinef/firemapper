@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFirmsCsv } from "../src/historical_reconstruct";
+import { parseFirmsCsv, type HistoricalRow } from "../src/historical_reconstruct";
 
 describe("parseFirmsCsv", () => {
   it("parses a VIIRS-shaped row, combining acq_date + acq_time as UTC", () => {
@@ -194,5 +194,56 @@ describe("assembleTrack", () => {
       "lookup-1",
     );
     expect(track.cells).toHaveLength(1);
+  });
+});
+
+import { reconstructHistoricalFire } from "../src/historical_reconstruct";
+
+function csvRow(lat: number, lon: number, date: string, time: string, frp = 5, conf = "n") {
+  return `${lat},${lon},${date},${time},${conf},${frp}`;
+}
+const HEADER = "latitude,longitude,acq_date,acq_time,confidence,frp";
+
+describe("reconstructHistoricalFire", () => {
+  it("returns no_data for an empty result set", () => {
+    expect(reconstructHistoricalFire(`${HEADER}\n`, "lookup-1")).toEqual({ status: "no_data" });
+  });
+
+  it("returns no_data when every row was filtered out as low-confidence", () => {
+    const csv = `${HEADER}\n${csvRow(44.84, -1.03, "2022-07-22", "1200", 1, "l")}\n`;
+    expect(reconstructHistoricalFire(csv, "lookup-1")).toEqual({ status: "no_data" });
+  });
+
+  it("returns no_data when the only detections were a static source", () => {
+    const rows = Array.from(
+      { length: STATIC_CELL_DAYS },
+      (_, i) => csvRow(44.84, -1.03, `2022-07-${String(i + 1).padStart(2, "0")}`, "1200"),
+    ).join("\n");
+    expect(reconstructHistoricalFire(`${HEADER}\n${rows}\n`, "lookup-1")).toEqual({ status: "no_data" });
+  });
+
+  it("returns ok with a real Track for a single-cluster result", () => {
+    const csv = `${HEADER}\n${csvRow(44.84, -1.03, "2022-07-22", "1200")}\n`;
+    const result = reconstructHistoricalFire(csv, "lookup-1");
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.track.id).toBe("lookup-1");
+      expect(result.track.cells).toHaveLength(1);
+    }
+  });
+
+  it("returns ambiguous with cluster summaries for two disjoint fires in the window", () => {
+    const near = adjacentChain(44.84, -1.03, 3)
+      .map((r) => csvRow(r.lat, r.lon, "2022-07-22", "1200"))
+      .join("\n");
+    const far = adjacentChain(48.0, 2.0, 3)
+      .map((r) => csvRow(r.lat, r.lon, "2022-07-22", "1200"))
+      .join("\n");
+    const result = reconstructHistoricalFire(`${HEADER}\n${near}\n${far}\n`, "lookup-1");
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.clusters).toHaveLength(2);
+      expect(result.clusters.every((c) => c.rowCount === 3)).toBe(true);
+    }
   });
 });
