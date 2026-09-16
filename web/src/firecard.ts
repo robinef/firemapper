@@ -186,6 +186,47 @@ export function scarCardHtml(s: Scar, track: Track | null = null, hasStaticFootp
   );
 }
 
+export interface HistoricalLookupMeta {
+  lon: number;
+  lat: number;
+  place: string;
+  before: string;
+  after: string;
+}
+
+/** The historical-lookup card's own template — deliberately NOT fireCardHtml
+ *  or scarCardHtml: this has no EFFIS area_km2/kind/cum_cells, and (see this
+ *  plan's Global Constraints) no shareable link. Reuses the same
+ *  ".fc-arrival" legend markup scarCardHtml uses for the graded case, and
+ *  the same "Before / after imagery" button, seeded from the user's own
+ *  search window rather than pipeline-computed dates. */
+export function historicalLookupCardHtml(meta: HistoricalLookupMeta, track: Track): string {
+  const peek =
+    `<div class="fc-peek"><b>${esc(meta.place)}</b>` +
+    `<span>Historical lookup</span>` +
+    `<i aria-hidden="true">›</i></div>`;
+  const hasFootprint = !!(track.cell_bins && track.cell_bins.length);
+  const arrival = hasFootprint
+    ? `<div class="fc-arrival"><span>Footprint colour · when it burned</span>` +
+      `<div class="fc-ramp"></div>` +
+      `<div class="fc-ramp-lbl"><span>earlier</span><span>now</span></div>` +
+      `<div class="fc-arrival-hint">Click a histogram bar to rewind the fire.</div></div>`
+    : "";
+  return (
+    peek +
+    `<button class="fc-close" aria-label="Close">✕</button>` +
+    `<div class="fc-title">${esc(meta.place)}</div>` +
+    `<div class="fc-sub">Historical lookup · ${esc(meta.before)} – ${esc(meta.after)}</div>` +
+    `<div class="fc-stats">` +
+    statRow("Location", `${meta.lat.toFixed(2)}, ${meta.lon.toFixed(2)}`) +
+    statRow("Search window", `${esc(meta.before)} – ${esc(meta.after)}`) +
+    statRow("Detections", `${track.cells.length} H3 cells`) +
+    `</div>` +
+    arrival +
+    `<button class="fc-ba">Before / after imagery →</button>`
+  );
+}
+
 /**
  * Compare mode is entered from a button INSIDE the card, long after the map
  * click that opened it — so these take a snapshot of the clicked feature, never
@@ -207,6 +248,11 @@ export interface FireCard {
    *  just started, must await it. */
   openFire: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
   openScar: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
+  /** For the historical-lookup feature: the Track is already reconstructed
+   *  client-side (see historical_reconstruct.ts), so this skips the
+   *  loadTrack/loadFootprint network fetch openFire/openScar do and paints
+   *  directly. */
+  openHistoricalLookup: (track: Track, meta: HistoricalLookupMeta) => Promise<void>;
   close: () => void;
   /** Whether a fire/scar card is currently showing. Callers that only want
    *  to dismiss an OPEN card (e.g. a background map tap) must check this
@@ -704,9 +750,39 @@ export function setupFireCard(
     if (footprint) paintStaticFootprint(footprint);
   };
 
+  const openHistoricalLookup = async (track: Track, meta: HistoricalLookupMeta): Promise<void> => {
+    // The CHECK below is structurally inert today: there is no await between
+    // this bump and the check, so mine !== openToken can never be true here
+    // (unlike openFire/openScar's post-await recheck). The BUMP itself is
+    // NOT dead, though — it's what invalidates a concurrently in-flight
+    // openFire/openScar's stale loadTrack response when this call wins the
+    // race (open()'s own unconditional openToken++ does the same job
+    // redundantly). Confirmed by mutation test: disabling this bump alone
+    // doesn't break the cross-method race test below (open()'s bump alone
+    // covers it), but disabling BOTH does. Kept for interface-shape symmetry
+    // with openFire/openScar and as a guard against a future await landing
+    // above open().
+    const mine = ++openToken;
+    if (mine !== openToken) return;
+    const { series, centroids, cellBins } = trackTimeline(track);
+    open(
+      historicalLookupCardHtml(meta, track),
+      meta.lon, meta.lat, track.id,
+      series, centroids, cellBins,
+      null, // no fire-wind arrows — same reasoning as openScar (fireWindFC's doc comment)
+      true, // historical: always true — an on-demand lookup never has current-moment data
+      () =>
+        compare?.fromFire({
+          props: { before: meta.before, after: meta.after, started: meta.before },
+          lon: meta.lon, lat: meta.lat,
+        }),
+    );
+  };
+
   return {
     openFire,
     openScar,
+    openHistoricalLookup,
     close,
     get isOpen() {
       return !panel.classList.contains("hidden");
