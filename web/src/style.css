@@ -445,6 +445,7 @@ body.compare-mode #fire-readout { display: none; }
 #view[data-view="layers"] > #sidebar { display: flex; }
 #view[data-view="detail"] > #panel:not(.hidden) { display: block; }
 #view[data-view="search"] > #panel:not(.hidden) { display: block; }
+#view[data-view="historical"] > #panel:not(.hidden) { display: block; }
 #view[data-view="info"] > #info { display: block; }
 
 #view-bar { display: flex; align-items: center; justify-content: space-between;

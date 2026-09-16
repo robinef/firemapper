@@ -22,7 +22,10 @@ export async function waitForBoot(page: Page): Promise<void> {
   // single strongest "the map actually loaded" signal available from outside.
   await expect(page.locator("#loading")).toHaveCount(0, { timeout: 60_000 });
   await expect(page.locator("#header")).not.toBeEmpty();
-  await expect(page.locator("#rail button")).toHaveCount(3);
+  // 4, not 3: rail-layers, rail-search, rail-info, rail-historical
+  // (rail-scale is a real <a> link to the standalone /scale page, deliberately
+  // outside the SPA's view stack, so it's not a <button> and isn't counted here).
+  await expect(page.locator("#rail button")).toHaveCount(4);
   await expect(page.locator("canvas")).toHaveCount(1);
 }
 

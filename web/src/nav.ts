@@ -32,7 +32,7 @@
  * the arithmetic here testable without a document.
  */
 
-export type ViewId = "map" | "detail" | "compare" | "layers" | "search" | "info";
+export type ViewId = "map" | "detail" | "compare" | "layers" | "search" | "info" | "historical";
 
 export interface Entry {
   view: ViewId;

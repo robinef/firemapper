@@ -16,6 +16,7 @@ export interface ShellDeps {
   showFireList?: (query: string) => void;
   lastQuery?: () => string;
   infoContent?: () => string;
+  showHistoricalLookup?: () => void;
 }
 
 export interface Shell {
@@ -250,6 +251,7 @@ export function createShell(deps: ShellDeps): Shell {
     const el = document.getElementById("info");
     if (el && deps.infoContent) el.innerHTML = deps.infoContent();
   });
+  bindRail("rail-historical", "historical", "Find a past fire", () => deps.showHistoricalLookup?.());
 
   const chip = document.getElementById("view-chip");
   const onChip = () => nav.reset();
