@@ -124,4 +124,46 @@ describe("handleGeocode", () => {
     });
     expect(res.status).toBe(502);
   });
+
+  it("returns 502 (not an uncaught throw) when the upstream fetch itself rejects", async () => {
+    const upstream = async () => {
+      throw new Error("network error");
+    };
+    const res = await handleGeocode(req("q=Gironde"), {
+      GEOCODE_RATE_GATE: fakeGate(true), GEOCODE_UPSTREAM: upstream, GEOCODE_CACHE: fakeCache(),
+    });
+    expect(res.status).toBe(502);
+  });
+
+  it("returns 502 (not an uncaught throw) when the rate gate's stub fetch rejects", async () => {
+    const gate = {
+      idFromName: () => "gate",
+      get: () => ({
+        fetch: async () => {
+          throw new Error("DO unreachable");
+        },
+      }),
+    } as unknown as GeocodeEnv["GEOCODE_RATE_GATE"];
+    const upstream = vi.fn();
+    const res = await handleGeocode(req("q=Gironde"), {
+      GEOCODE_RATE_GATE: gate, GEOCODE_UPSTREAM: upstream, GEOCODE_CACHE: fakeCache(),
+    });
+    expect(res.status).toBe(502);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 (not an uncaught throw) when the rate gate's response body isn't valid JSON", async () => {
+    const gate = {
+      idFromName: () => "gate",
+      get: () => ({
+        fetch: async () => new Response("not json"),
+      }),
+    } as unknown as GeocodeEnv["GEOCODE_RATE_GATE"];
+    const upstream = vi.fn();
+    const res = await handleGeocode(req("q=Gironde"), {
+      GEOCODE_RATE_GATE: gate, GEOCODE_UPSTREAM: upstream, GEOCODE_CACHE: fakeCache(),
+    });
+    expect(res.status).toBe(502);
+    expect(upstream).not.toHaveBeenCalled();
+  });
 });

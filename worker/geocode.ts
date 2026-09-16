@@ -76,26 +76,34 @@ export async function handleGeocode(request: Request, env: GeocodeEnv): Promise<
   }
 
   if (env.GEOCODE_RATE_GATE) {
-    const stub = env.GEOCODE_RATE_GATE.get(env.GEOCODE_RATE_GATE.idFromName("global"));
-    const gateRes = await stub.fetch("https://gate.internal/acquire");
-    const gate = (await gateRes.json()) as { allowed: boolean; retryAfterMs?: number };
-    if (!gate.allowed) {
-      return new Response("rate limited — try again shortly", {
-        status: 429,
-        headers: { "retry-after": String(Math.ceil((gate.retryAfterMs ?? 1000) / 1000)) },
-      });
+    try {
+      const stub = env.GEOCODE_RATE_GATE.get(env.GEOCODE_RATE_GATE.idFromName("global"));
+      const gateRes = await stub.fetch("https://gate.internal/acquire");
+      const gate = (await gateRes.json()) as { allowed: boolean; retryAfterMs?: number };
+      if (!gate.allowed) {
+        return new Response("rate limited — try again shortly", {
+          status: 429,
+          headers: { "retry-after": String(Math.ceil((gate.retryAfterMs ?? 1000) / 1000)) },
+        });
+      }
+    } catch {
+      return new Response("geocoding upstream failure", { status: 502 });
     }
   }
 
   const upstreamUrl = `${NOMINATIM_BASE}?q=${encodeURIComponent(query)}&format=jsonv2&limit=1`;
   const fetcher = env.GEOCODE_UPSTREAM ?? ((r: Request) => fetch(r));
   const upstreamRequest = new Request(upstreamUrl, { headers: { "user-agent": USER_AGENT } });
-  const upstreamResponse = await fetcher(upstreamRequest);
-  if (!upstreamResponse.ok) {
+  let body: string;
+  try {
+    const upstreamResponse = await fetcher(upstreamRequest);
+    if (!upstreamResponse.ok) {
+      return new Response("geocoding upstream failure", { status: 502 });
+    }
+    body = await upstreamResponse.text();
+  } catch {
     return new Response("geocoding upstream failure", { status: 502 });
   }
-
-  const body = await upstreamResponse.text();
   const response = new Response(body, {
     status: 200,
     headers: { "content-type": "application/json", "cache-control": `public, max-age=${CACHE_TTL_S}` },
