@@ -689,9 +689,22 @@ export function wireScaleBlobToggle(
     reset();
   });
 
+  // Opening any fire's card (a fresh fire, a past scar, or a historical
+  // lookup — open() in firecard.ts fires this event for all three) flies the
+  // camera in to that one fire. The blob is a real geographic shape sized in
+  // km2, not a screen-space overlay, so left active it keeps painting at its
+  // fixed location — and grows to dominate the view — as the map zooms in
+  // underneath it, exactly the same problem compare:enter already guards
+  // against above.
+  const offDetail = onUi("detail:open", () => {
+    deactivateScaleBlob(map);
+    reset();
+  });
+
   return () => {
     button.removeEventListener("click", onClick);
     offCompare();
+    offDetail();
   };
 }
 
