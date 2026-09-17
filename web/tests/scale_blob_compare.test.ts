@@ -187,3 +187,71 @@ describe("scale blob vs compare mode", () => {
     expect(uiSubscriberCount("compare:enter")).toBe(before);
   });
 });
+
+/**
+ * Opening a fire's card (fireCardHtml, scarCardHtml, or the historical-lookup
+ * card — open() in firecard.ts fires "detail:open" for all three) flies the
+ * camera in to that one fire. The scale blob is a REAL geographic shape sized
+ * in km², not a screen-space overlay, so left active it keeps painting at its
+ * fixed location — and grows to dominate the view — as the map zooms in
+ * underneath it. Only compare:enter turned the blob off before this fix;
+ * opening a card did not, even though it is exactly the same "the reader is no
+ * longer looking at the overview" transition.
+ */
+describe("scale blob vs opening a fire card", () => {
+  it("detail:open deactivates the layer, resets the button, and clears the breakdown panel", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const fetchSpy = vi.fn((url: string) =>
+      Promise.resolve(
+        url.includes("_fires.json")
+          ? { ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) }
+          : { ok: true, json: async () => sampleBlob },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const off = wireScaleBlobToggle(map, btn, breakdown);
+    btn.click();
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
+    expect(map._layers).toContain("scale-blob-fill");
+
+    emitUi("detail:open");
+
+    expect(isScaleBlobActive()).toBe(false);
+    expect(map._layers).not.toContain("scale-blob-fill");
+    expect(map._sources["scale-blob"]).toBeUndefined();
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    expect(btn.textContent).toBe("Compare fire scale");
+    expect(breakdown.innerHTML).toBe("");
+
+    off();
+    vi.unstubAllGlobals();
+  });
+
+  it("detail:open is harmless when the blob was never activated", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const btn = button();
+
+    const off = wireScaleBlobToggle(stubMap(), btn, breakdownEl());
+    expect(() => emitUi("detail:open")).not.toThrow();
+    expect(isScaleBlobActive()).toBe(false);
+
+    off();
+  });
+
+  it("the returned teardown unsubscribes from detail:open", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const { uiSubscriberCount } = await import("../src/ui_events");
+    const before = uiSubscriberCount("detail:open");
+
+    const btn = button();
+    const off = wireScaleBlobToggle(stubMap(), btn, breakdownEl());
+    expect(uiSubscriberCount("detail:open")).toBe(before + 1);
+    off();
+    expect(uiSubscriberCount("detail:open")).toBe(before);
+  });
+});
