@@ -74,3 +74,11 @@ def test_true_area_km2_does_not_double_count_nested_cells():
     child = h3.latlng_to_cell(45.0, 5.0, 8)
     parent = h3.cell_to_parent(child, 7)
     assert true_area_km2([parent, child]) == round(h3.cell_area(child, unit="km^2"), 1)
+
+
+def test_dedup_nested_cells_keeps_a_coarser_cell_that_is_not_an_ancestor():
+    # A res-7 cell far away (20, 20) and a res-8 cell far away (45, 5)
+    # should both be kept because the res-7 is not an ancestor of the res-8
+    far_res7 = h3.latlng_to_cell(20.0, 20.0, 7)
+    unrelated_res8 = h3.latlng_to_cell(45.0, 5.0, 8)
+    assert dedup_nested_cells([far_res7, unrelated_res8]) == sorted([far_res7, unrelated_res8])

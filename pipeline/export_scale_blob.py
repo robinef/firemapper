@@ -11,8 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-import h3
-
 from .config import (
     ARCHIVE_TRACKS_INDEX,
     SCALE_BLOB_STATE_KEY,
