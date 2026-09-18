@@ -238,6 +238,36 @@ request cap. The proxy pins `service=WMS&request=GetMap` and forwards only
 recognised tile parameters, so it cannot be used to enumerate or mine the
 configuration; the cap is the backstop for plain tile-scraping.
 
+## Historical fire lookup (`/api/historical-hotspots`, `/api/geocode`)
+
+**Not yet provisioned as of 2026-09-17.** Both routes are deployed and live,
+but incomplete without two manual steps only a Cloudflare dashboard login can
+do — `wrangler` has no API scope for either.
+
+**`FIRMS_HISTORICAL_MAP_KEY`** (Worker secret) — a NASA FIRMS map key for the
+Standard Processing archive (`worker/historical_hotspots.ts`), separate from
+the pipeline's own `FIRMS_MAP_KEY` (NRT). Without it, `/api/historical-hotspots`
+returns 503 and the "find a past fire" panel's search always fails with
+"historical lookup failed" — the same keyless-degrade pattern
+`SENTINELHUB_INSTANCE_ID` above uses, not a bug.
+
+```sh
+wrangler secret put FIRMS_HISTORICAL_MAP_KEY
+```
+
+**Per-visitor rate-limit rules** (Security → WAF → Rate limiting rules, on the
+Cloudflare dashboard) — defense-in-depth on top of code-level protections that
+are already live:
+
+| Route | Existing code-level protection | Dashboard rule needed |
+|---|---|---|
+| `/api/historical-hotspots` | none (relies on the map key + FIRMS's own limits) | match `URI Path equals /api/historical-hotspots`, count per visitor, a few requests/minute |
+| `/api/geocode` | a `GeocodeRateGate` Durable Object enforces a **global** 1 req/sec cap across all visitors (Nominatim's usage policy requires this) | match `URI Path equals /api/geocode`, count per visitor, ~5 requests/minute — stops one visitor from starving the shared global budget for everyone else |
+
+Neither route works end-to-end for a real user until both the key and the
+`/api/geocode` rate-limit rule exist; the historical-hotspots rule is
+lower-stakes (no shared global budget to protect) but still recommended.
+
 ## Running the whole thing somewhere else
 
 Nothing here is Cloudflare-specific except the Worker. The published bucket is
