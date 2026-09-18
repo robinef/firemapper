@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pipeline.config import Settings, load_settings
 from pipeline.export_scale_blob import run_export
+from pipeline.export_season import run_export_season
 from pipeline.remote import hydrate, make_client, publish
 from pipeline.run import _safe, refresh
 
@@ -88,6 +89,24 @@ def main(argv: list[str], client=None) -> int:
             ),
             default=None,
             label="export-scale-blob",
+        ),
+    )
+    # Same _safe contract as the scale blob above: a broken season export
+    # must never block publish(). 300 s: the job already spends up to 900 s
+    # in the scale blob, and the season export's threaded body fetch
+    # converges a cold start in one or two cycles anyway.
+    _timed(
+        "export_season",
+        lambda: _safe(
+            lambda: run_export_season(
+                settings,
+                target_year=datetime.now(timezone.utc).year,
+                client=client,
+                r2_bucket=settings.r2_bucket,
+                time_budget_s=300.0,
+            ),
+            default=None,
+            label="export-season",
         ),
     )
     _timed("publish", lambda: publish(settings, _latest_generation(settings), client))

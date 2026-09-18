@@ -187,3 +187,123 @@ def test_a_malformed_track_is_skipped_and_recorded_without_poisoning_the_run(tmp
     state = _read(settings, SEASON_STATE_KEY)
     assert state["good"] == {"digest": index["good"], "year": 2026}
     assert state["bad"] == {"digest": index["bad"], "year": None}
+
+
+def test_a_non_dict_track_body_is_skipped_like_any_malformed_body(tmp_path):
+    settings = _settings(tmp_path)
+    good = _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    index = _make_local_archive(settings.out_dir, {"good": good, "list-body": ["not", "a", "dict"]})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert _read(settings, SEASON_STATE_KEY)["list-body"] == {"digest": index["list-body"], "year": None}
+
+
+def test_self_heal_reprocesses_a_fire_missing_from_the_cells_file(tmp_path):
+    settings = _settings(tmp_path)
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    # A state that claims fire-a is done, with no cells file at all (the
+    # partial-publish shape: state landed in R2, cells did not).
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"fire-a": {"digest": index["fire-a"], "year": 2026}}))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert "fire-a" in _read(settings, season_cells_key(2026))
+
+
+def test_self_heal_reprocesses_a_fire_whose_cells_entry_has_a_stale_digest(tmp_path):
+    settings = _settings(tmp_path)
+    cells = _two_cells()
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    # New state + OLD cells entry for the same id: the unordered-upload race.
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"fire-a": {"digest": index["fire-a"], "year": 2026}}))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "fire-a": {"digest": "stale-digest", "first": "2026-01-01", "cells": cells[:1]},
+    }))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    stored = _read(settings, season_cells_key(2026))["fire-a"]
+    assert stored["digest"] == index["fire-a"]
+    assert stored["cells"] == cells
+    assert stored["first"] == "2026-07-01"
+
+
+def test_crash_between_cells_and_state_write_recovers_on_the_next_run(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    import pipeline.export_season as mod
+    original = mod._save_json
+
+    def crash_on_state(path, data):
+        if path.name == Path(SEASON_STATE_KEY).name:
+            raise RuntimeError("simulated crash")
+        original(path, data)
+
+    monkeypatch.setattr(mod, "_save_json", crash_on_state)
+    try:
+        run_export_season(settings, target_year=2026, now=NOW)
+    except RuntimeError:
+        pass
+    monkeypatch.setattr(mod, "_save_json", original)
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert "fire-a" in _read(settings, season_cells_key(2026))
+    assert "fire-a" in _read(settings, SEASON_STATE_KEY)
+
+
+def test_time_budget_stops_early_and_the_rest_is_processed_next_run(tmp_path, monkeypatch):
+    import pipeline.export_season as mod
+
+    monkeypatch.setattr(mod, "FETCH_BATCH", 1)
+    settings = _settings(tmp_path)
+    cells = _two_cells()
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells[:1], "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+        "fire-b": _track_body("fire-b", cells[1:], "2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00"),
+    })
+    ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0])  # deadline check passes once, then fails
+
+    run_export_season(settings, target_year=2026, now=NOW, time_budget_s=10.0, clock=lambda: next(ticks))
+
+    first = _read(settings, season_cells_key(2026))
+    assert len(first) == 1
+
+    run_export_season(settings, target_year=2026, now=NOW)
+    assert set(_read(settings, season_cells_key(2026))) == {"fire-a", "fire-b"}
+
+
+def test_bodies_are_fetched_from_r2_when_not_local(tmp_path):
+    """A fresh runner has the index but no track bodies; they come from R2
+    (export_scale_blob._load_track_body), through the thread pool."""
+    settings = _settings(tmp_path)
+    body = _track_body("fire-r2", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    text = json.dumps(body, sort_keys=True)
+    index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps({"fire-r2": hashlib.sha256(text.encode()).hexdigest()}))
+
+    class _Body:
+        def __init__(self, data): self._data = data
+        def read(self): return self._data
+
+    class FakeS3:
+        def get_object(self, Bucket, Key):
+            assert Key == "data/archive/tracks/fire-r2.json"
+            return {"Body": _Body(text.encode())}
+
+    run_export_season(settings, target_year=2026, client=FakeS3(), r2_bucket="b", now=NOW)
+
+    assert "fire-r2" in _read(settings, season_cells_key(2026))

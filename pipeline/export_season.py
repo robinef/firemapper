@@ -150,7 +150,7 @@ def run_export_season(
                     year = year_of_track(body)
                     first = first_bin_date(body)
                     cells = body["cells"]
-                except (ValueError, KeyError, TypeError):
+                except (ValueError, KeyError, TypeError, AttributeError):
                     # A body with no series or no cells can never contribute;
                     # record its digest so it is not re-fetched every run
                     # (a changed digest still brings it back), and move on
