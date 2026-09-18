@@ -39,3 +39,30 @@ def centroid_of_cells(cell_ids: list[str]) -> tuple[float, float]:
     lat = sum(p[0] for p in positions) / len(positions)
     lon = sum(p[1] for p in positions) / len(positions)
     return lat, lon
+
+
+def dedup_nested_cells(cells: list[str]) -> list[str]:
+    """Cells with any H3 parent-of-another-member dropped, sorted.
+
+    A track's cells can legitimately include both a coarse Meteosat res-7
+    cell and the finer res-8 VIIRS cells nested inside it. The children
+    exactly tile the parent, so counting both double-counts that ground.
+    Drop any cell that is the parent of another cell in the set; its area is
+    already accounted for by its children. (If only some children are
+    present this slightly undercounts the parent's remainder — an accepted
+    trade against the double-counting this exists to fix.)"""
+    cell_set = set(cells)
+    return sorted(
+        c
+        for c in cell_set
+        if not any(
+            h3.get_resolution(other) > h3.get_resolution(c)
+            and h3.cell_to_parent(other, h3.get_resolution(c)) == c
+            for other in cell_set
+        )
+    )
+
+
+def true_area_km2(cells: list[str]) -> float:
+    """Sum of each cell's real area without double-counting nested cells."""
+    return round(sum(h3.cell_area(c, unit="km^2") for c in dedup_nested_cells(cells)), 1)
