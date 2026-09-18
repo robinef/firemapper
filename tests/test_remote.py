@@ -16,9 +16,12 @@ from pipeline.config import (
     ARCHIVE_FOOTPRINTS_INDEX,
     ARCHIVE_TRACKS_INDEX,
     SCALE_BLOB_STATE_KEY,
+    SEASON_STATE_KEY,
     load_settings,
     scale_blob_fires_key,
     scale_blob_key,
+    season_cells_key,
+    season_key,
 )
 from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
 
@@ -580,6 +583,33 @@ def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
     assert (settings.out_dir / SCALE_BLOB_STATE_KEY).read_bytes() == state_body
     assert (settings.out_dir / scale_blob_key(year)).read_bytes() == blob_body
     assert (settings.out_dir / scale_blob_fires_key(year)).read_bytes() == fires_body
+
+
+def test_hydrate_restores_season_state_summary_and_cells(tmp_path):
+    """The "Burned this year" season files (pipeline/export_season.py) need
+    the same explicit-restore hydrate does for the scale blob just above:
+    publish()'s archive/ walk uploads them, but only a named fetch brings
+    them back on a fresh runner — without it every CI run cold-starts the
+    export and progress never accumulates."""
+    gen = "gen-20260918T000000Z"
+    year = datetime.now(timezone.utc).year
+    state_body = json.dumps({"fire-1": {"digest": "abc", "year": year}}).encode()
+    summary_body = json.dumps({"year": year, "floor": "2026-07-13", "fires": 1, "km2": 1.4, "r6": []}).encode()
+    cells_body = json.dumps({"fire-1": {"digest": "abc", "first": "2026-07-13", "cells": ["x"]}}).encode()
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        f"data/{SEASON_STATE_KEY}": state_body,
+        f"data/{season_key(year)}": summary_body,
+        f"data/{season_cells_key(year)}": cells_body,
+    }
+    settings = _settings(tmp_path)
+
+    hydrate(settings, FakeS3(objects))
+
+    assert (settings.out_dir / SEASON_STATE_KEY).read_bytes() == state_body
+    assert (settings.out_dir / season_key(year)).read_bytes() == summary_body
+    assert (settings.out_dir / season_cells_key(year)).read_bytes() == cells_body
 
 
 def test_publish_uploads_the_permanent_archive(tmp_path):
