@@ -1,174 +1,230 @@
-import hashlib
+"""What export writes for the season layer.
+
+Three things here are the point and each one is a defect that has already been
+drafted at least once:
+
+1. `observed_at` is NULL. `fetch_result.py` reserves that field for the newest
+   observation INSIDE a payload, and EFFIS publishes no such timestamp, so the
+   page's "as of" date can only come from `fetched_at`. An early spec had the
+   two inverted, which would have dated the archive by when we polled it.
+2. `min_fire_ha` travels as DATA. The page's "fires larger than 30 ha only"
+   caveat must be able to drift only when the source's mapping unit does.
+3. A missing `season.json` never blocks publication. The season page is
+   educational; the map carries live fire data. See `freshness.py` for the run
+   where one upstream 400 froze the whole map.
+
+`event_count`/countries' `events` replace the old `area_count`/`areas`: the
+api2 stats source (pipeline/fetch_effis_stats.py) counts distinct fire
+events, not mapped perimeters, so there is no honest "mapped burn areas"
+figure left to publish. `unassigned_count`/`undated_count` are gone outright
+— those measured rows the old per-fire WFS source couldn't parse a
+country/date for; api2 is pre-aggregated per EU country, so there is no
+unparsed-row step left to count.
+"""
 import json
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import date, datetime, timedelta, timezone
 
-import h3
-
-from pipeline.config import (
-    ARCHIVE_TRACKS_INDEX,
-    SEASON_STATE_KEY,
-    Settings,
-    season_cells_key,
-    season_key,
-)
-from pipeline.export_season import aggregate_r6, first_bin_date, run_export_season
-
-NOW = datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc)
+SEASON = {
+    "season_year": 2026, "total_km2": 10240.3, "event_count": 1184,
+    "unit": {"name": "Greater London", "km2": 1572.0, "count": 6.5},
+    "countries": [
+        {"name": "Spain", "km2": 2940.1, "events": 402,
+         "unit": {"name": "Paris", "km2": 105.4, "count": 27.9}},
+    ],
+}
+NOW = datetime(2026, 7, 12, 4, 11, tzinfo=timezone.utc)
 
 
-def _track_body(track_id: str, cells: list[str], first_bin: str, last_bin: str) -> dict:
-    return {
-        "id": track_id,
-        "series": [
-            {"bin": first_bin, "centroid": [45.0, 5.0], "new_cells": 1, "cum_cells": 1, "frp_sum": 1.0},
-            {"bin": last_bin, "centroid": [45.0, 5.0], "new_cells": 0, "cum_cells": len(cells), "frp_sum": 1.0},
-        ],
-        "cells": cells,
-        "cell_bins": [[last_bin, cells]],
-        "frp_live": [],
-    }
+def test_season_json_is_written(export_gen):
+    gen = export_gen(season=SEASON, season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["total_km2"] == 10240.3
+    assert payload["event_count"] == 1184
+    assert payload["season_year"] == 2026
+    assert payload["status"] == "fresh"
+    assert payload["unit"]["name"] == "Greater London"
+    assert payload["countries"][0]["unit"]["name"] == "Paris"
 
 
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        firms_map_key=None, eumetsat_key=None, eumetsat_secret=None,
-        sh_client_id=None, sh_client_secret=None, sh_proxy=False, sh_layer=None,
-        data_dir=tmp_path / "data", out_dir=tmp_path / "out",
+def test_the_mapping_unit_travels_as_data_not_as_page_copy(export_gen):
+    """EFFIS maps burns above 30 ha. The caveat on the page renders from this
+    field, so it cannot drift away from the source it describes."""
+    from pipeline.export import EFFIS_MIN_FIRE_HA
+
+    gen = export_gen(season=SEASON, season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["min_fire_ha"] == 30
+    assert payload["min_fire_ha"] == EFFIS_MIN_FIRE_HA
+
+
+def test_observed_at_is_null_and_fetched_at_carries_the_date(export_gen):
+    gen = export_gen(season=SEASON, season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["observed_at"] is None
+    assert payload["fetched_at"] == "2026-07-12T04:11:00+00:00"
+
+
+def test_status_travels_into_the_manifest(export_gen):
+    gen = export_gen(season=SEASON, season_status="stale", now=NOW)
+    manifest = json.loads((gen.parent / "manifest.json").read_text())
+    assert manifest["layers"]["season"]["status"] == "stale"
+    assert manifest["layers"]["season"]["fetched_at"] == "2026-07-12T04:11:00+00:00"
+
+
+def test_the_manifest_states_the_null_observed_at_rather_than_omitting_it(export_gen):
+    """Same reason the artifact states it: EFFIS has no currency timestamp, so
+    this layer HAS no observation time. Absent would read as an export gap."""
+    # Distinct `now` per case: the generation dir is named from it, so reusing
+    # one would leave the first case's season.json sitting in the second's.
+    for offset, (season, status) in enumerate(((SEASON, "fresh"), (None, "unavailable"))):
+        gen = export_gen(
+            season=season, season_status=status, now=NOW + timedelta(hours=offset)
+        )
+        entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+        assert "observed_at" in entry and entry["observed_at"] is None
+
+
+def test_no_season_means_no_file_and_unavailable_status(export_gen):
+    gen = export_gen(season=None, season_status="unavailable", now=NOW)
+    assert not (gen / "season.json").exists()
+    manifest = json.loads((gen.parent / "manifest.json").read_text())
+    assert manifest["layers"]["season"]["status"] == "unavailable"
+    # No payload, so no moment at which we held one. Never `now`: that would
+    # date an artifact that does not exist.
+    assert manifest["layers"]["season"]["fetched_at"] is None
+
+
+def test_a_status_without_a_payload_still_reports_the_null_fetch(export_gen):
+    """The snapshot can be fresh while the aggregation over it fails. The status
+    is the orchestrator's to report and travels unaltered; `fetched_at: null` is
+    what tells a client there is no season.json to go and read."""
+    gen = export_gen(season=None, season_status="fresh", now=NOW)
+    manifest = json.loads((gen.parent / "manifest.json").read_text())
+    assert not (gen / "season.json").exists()
+    assert manifest["layers"]["season"]["status"] == "fresh"
+    assert manifest["layers"]["season"]["fetched_at"] is None
+
+
+def test_zero_total_is_written_without_a_unit(export_gen):
+    """A season that burned nothing is a real state, distinct from no data at
+    all: the file is written, and `unit` is null because `pick_unit` refuses a
+    non-positive total rather than drawing a grid of no tiles."""
+    zero = {**SEASON, "total_km2": 0.0, "event_count": 0, "countries": []}
+    zero.pop("unit")
+    gen = export_gen(season=zero, season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["total_km2"] == 0.0
+    assert payload["event_count"] == 0
+    assert "unit" in payload and payload["unit"] is None
+    assert payload["countries"] == []
+
+
+def test_a_country_without_an_honest_unit_keeps_a_null(export_gen):
+    """Country km2 rounds independently of the season total, so a small
+    country's tally is 0.0 km2 under a healthy total and gets no unit key.
+    The artifact must still carry the country."""
+    season = {**SEASON, "countries": [{"name": "Malta", "km2": 0.0, "events": 1}]}
+    gen = export_gen(season=season, season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["countries"] == [{"name": "Malta", "km2": 0.0, "events": 1}]
+
+
+def test_validate_generation_passes_without_season_json(export_gen):
+    """The guard on requirement 3. A generation carrying live fire data must
+    publish whether or not the educational season page has anything to say."""
+    from pipeline.export import validate_generation
+
+    gen = export_gen(season=None, season_status="unavailable", now=NOW)
+    assert not (gen / "season.json").exists()
+    assert validate_generation(gen) == []
+
+
+# The "as of" date is the snapshot's poll time, never this export's clock. The
+# pipeline runs every 15 minutes; dating the archive by the run would tick the
+# published date forward forever over a snapshot that had not moved in weeks,
+# so the page would present a three-week-old figure as today's.
+
+POLLED = datetime(2026, 6, 20, 9, 30, tzinfo=timezone.utc)  # three weeks before NOW
+
+
+def seasoned(**over):
+    """SEASON as season_totals actually returns it — carrying the poll time."""
+    return {**SEASON, "fetched_at": POLLED, **over}
+
+
+def test_the_artifact_is_dated_by_the_snapshot_not_by_the_export_clock(export_gen):
+    gen = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert payload["fetched_at"] != NOW.isoformat()
+
+
+def test_the_manifest_is_dated_by_the_snapshot_too(export_gen):
+    """One generation must not carry two different answers to "when was EFFIS
+    last polled" — the client reads the manifest, the page reads the artifact."""
+    gen = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+    payload = json.loads((gen / "season.json").read_text())
+    assert entry["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert entry["fetched_at"] == payload["fetched_at"]
+
+
+def test_a_frozen_snapshot_does_not_re_date_itself_on_every_run(export_gen):
+    """The guarantee, stated as the thing a user would notice: two exports an
+    hour apart over the SAME snapshot publish the same date. Dating by `now`
+    gives two different dates for a figure that never moved."""
+    first = export_gen(season=seasoned(), season_status="reused", now=NOW)
+    later = export_gen(
+        season=seasoned(), season_status="reused", now=NOW + timedelta(hours=1)
+    )
+    assert (
+        json.loads((first / "season.json").read_text())["fetched_at"]
+        == json.loads((later / "season.json").read_text())["fetched_at"]
+        == "2026-06-20T09:30:00+00:00"
     )
 
 
-def _make_local_archive(out_dir: Path, tracks: dict[str, dict]) -> dict[str, str]:
-    index = {}
-    for track_id, body in tracks.items():
-        path = out_dir / "archive" / "tracks" / f"{track_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(body, sort_keys=True)
-        path.write_text(text)
-        index[track_id] = hashlib.sha256(text.encode()).hexdigest()
-    index_path = out_dir / ARCHIVE_TRACKS_INDEX
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(index))
-    return index
+def test_a_snapshot_that_cannot_say_when_it_was_polled_falls_back_to_now(export_gen):
+    """An older writer left no `fetched_at` column, so season_totals reports
+    None. The page has to print something and a date is not optional, so the
+    fallback is the one instant we can vouch for — never null, never absent."""
+    gen = export_gen(season=seasoned(fetched_at=None), season_status="fresh", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    entry = json.loads((gen.parent / "manifest.json").read_text())["layers"]["season"]
+    assert payload["fetched_at"] == NOW.isoformat()
+    assert entry["fetched_at"] == NOW.isoformat()
 
 
-def _read(settings: Settings, key: str):
-    return json.loads((settings.out_dir / key).read_text())
+def test_end_to_end_the_page_date_comes_off_a_real_weeks_old_snapshot(export_gen, tmp_path):
+    """The whole chain, on a real api2 snapshot file: stamp a snapshot three
+    weeks before `now`, aggregate it, export it, and the artifact still says
+    three weeks ago. Under the export-clock version this read "2026-07-12" —
+    today — for a figure nobody had refreshed since June.
 
+    `fetched_at` is always written as an already-tz-aware ISO string by
+    fetch_effis_stats.py (`now.isoformat()`), so there is no naive-timestamp
+    reattachment step left to get wrong — the old parquet-backed version of
+    this test existed specifically to catch DuckDB's TIMESTAMP dropping the
+    UTC offset on the way in. This still asserts the offset survives, just
+    with nothing in this chain that could have dropped it.
+    """
+    from pipeline.season import season_totals
 
-def _two_cells() -> list[str]:
-    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
-    assert len(set(cells)) == 2
-    return cells
+    path = tmp_path / "snap" / "effis_season.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "fetched_at": POLLED.isoformat(),
+        "season_year": 2026,
+        "eu": {"mddate": "20260618", "events": 1, "area_ha": 10000.0},
+        "countries": {},
+    }))
 
+    season = season_totals(path, 2026)
+    assert season["total_km2"] == 100.0  # the snapshot really was aggregated
 
-def test_first_bin_date_reads_the_earliest_series_bin():
-    body = _track_body("a", ["x"], "2026-07-25T06:00:00+00:00", "2026-08-06T00:00:00+00:00")
-    assert first_bin_date(body) == "2026-07-25"
-
-
-def test_aggregate_r6_sums_real_cell_area_into_each_res6_parent():
-    # Two adjacent res-8 cells may or may not share a res-6 parent (a disk
-    # can straddle a parent boundary), so build the expectation by grouping
-    # rather than assuming one parent.
-    cells = _two_cells()
-    expected: dict[str, float] = {}
-    for c in cells:
-        p = h3.cell_to_parent(c, 6)
-        expected[p] = expected.get(p, 0.0) + h3.cell_area(c, unit="km^2")
-    r6 = aggregate_r6({"a": {"digest": "d", "first": "2026-07-01", "cells": cells}})
-    assert r6 == [[p, round(km2, 1)] for p, km2 in sorted(expected.items())]
-
-
-def test_aggregate_r6_does_not_double_count_a_meteosat_parent_and_its_viirs_children():
-    child = h3.latlng_to_cell(45.0, 5.0, 8)
-    parent7 = h3.cell_to_parent(child, 7)
-    r6 = aggregate_r6({"a": {"digest": "d", "first": "2026-07-01", "cells": [parent7, child]}})
-    assert r6 == [[h3.cell_to_parent(child, 6), round(h3.cell_area(child, unit="km^2"), 1)]]
-
-
-def test_run_export_season_writes_cells_summary_and_state_for_the_target_year(tmp_path):
-    settings = _settings(tmp_path)
-    cells = _two_cells()
-    index = _make_local_archive(settings.out_dir, {
-        "fire-2026": _track_body("fire-2026", cells, "2026-07-25T00:00:00+00:00", "2026-08-06T00:00:00+00:00"),
-    })
-
-    run_export_season(settings, target_year=2026, now=NOW)
-
-    stored = _read(settings, season_cells_key(2026))
-    assert stored == {"fire-2026": {"digest": index["fire-2026"], "first": "2026-07-25", "cells": cells}}
-    summary = _read(settings, season_key(2026))
-    assert summary["year"] == 2026
-    assert summary["generated_at"] == "2026-09-18T10:00:00Z"
-    assert summary["floor"] == "2026-07-25"
-    assert summary["fires"] == 1
-    assert summary["km2"] == round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
-    assert summary["r6"] == aggregate_r6(stored)
-    assert _read(settings, SEASON_STATE_KEY) == {"fire-2026": {"digest": index["fire-2026"], "year": 2026}}
-
-
-def test_run_export_season_skips_tracks_outside_the_target_year_but_records_them(tmp_path):
-    settings = _settings(tmp_path)
-    cells = _two_cells()
-    index = _make_local_archive(settings.out_dir, {
-        "fire-2025": _track_body("fire-2025", cells, "2025-08-01T00:00:00+00:00", "2025-08-10T00:00:00+00:00"),
-    })
-
-    run_export_season(settings, target_year=2026, now=NOW)
-
-    assert _read(settings, season_cells_key(2026)) == {}
-    summary = _read(settings, season_key(2026))
-    assert summary["fires"] == 0 and summary["km2"] == 0 and summary["r6"] == [] and summary["floor"] is None
-    # Recorded so the next run does not re-fetch it.
-    assert _read(settings, SEASON_STATE_KEY) == {"fire-2025": {"digest": index["fire-2025"], "year": 2025}}
-
-
-def test_run_export_season_does_not_reprocess_an_unchanged_digest(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    _make_local_archive(settings.out_dir, {
-        "fire-a": _track_body("fire-a", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
-    })
-    run_export_season(settings, target_year=2026, now=NOW)
-    floor_before = _read(settings, season_key(2026))["floor"]
-
-    import pipeline.export_season as mod
-    calls = []
-    original = mod._load_track_body
-
-    def spy(out_dir, track_id, client, r2_bucket):
-        calls.append(track_id)
-        return original(out_dir, track_id, client, r2_bucket)
-
-    monkeypatch.setattr(mod, "_load_track_body", spy)
-    run_export_season(settings, target_year=2026, now=NOW)
-
-    assert calls == []
-    # The floor survives a run that touched no track: it comes from the
-    # persisted per-fire `first`, not from bodies read this run.
-    assert _read(settings, season_key(2026))["floor"] == floor_before == "2026-07-01"
-
-
-def test_run_export_season_floor_moves_when_the_earliest_fire_is_replaced(tmp_path):
-    settings = _settings(tmp_path)
-    cells = _two_cells()
-    _make_local_archive(settings.out_dir, {
-        "early": _track_body("early", cells[:1], "2026-06-01T00:00:00+00:00", "2026-06-03T00:00:00+00:00"),
-        "late": _track_body("late", cells[1:], "2026-08-01T00:00:00+00:00", "2026-08-03T00:00:00+00:00"),
-    })
-    run_export_season(settings, target_year=2026, now=NOW)
-    assert _read(settings, season_key(2026))["floor"] == "2026-06-01"
-
-    # "early" is re-archived with a later first bin (its digest changes).
-    _make_local_archive(settings.out_dir, {
-        "early": _track_body("early", cells[:1], "2026-07-15T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
-        "late": _track_body("late", cells[1:], "2026-08-01T00:00:00+00:00", "2026-08-03T00:00:00+00:00"),
-    })
-    run_export_season(settings, target_year=2026, now=NOW)
-    assert _read(settings, season_key(2026))["floor"] == "2026-07-15"
-
-
-def test_run_export_season_is_a_noop_without_an_archive_index(tmp_path):
-    settings = _settings(tmp_path)
-    run_export_season(settings, target_year=2026, now=NOW)
-    assert not (settings.out_dir / season_key(2026)).exists()
+    gen = export_gen(season=season, season_status="reused", now=NOW)
+    payload = json.loads((gen / "season.json").read_text())
+    assert payload["fetched_at"] == "2026-06-20T09:30:00+00:00"
+    assert not payload["fetched_at"].startswith("2026-07-12")
+    assert payload["fetched_at"].endswith("+00:00")
+    assert datetime.fromisoformat(payload["fetched_at"]).utcoffset() == timedelta(0)

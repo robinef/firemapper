@@ -133,7 +133,7 @@ def run_export_season(
 
     to_process = [(tid, digest) for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest]
     deadline = clock() + time_budget_s
-    processed = long_span = long_span_small = 0
+    processed = long_span = long_span_small = malformed = 0
 
     def load(item: tuple[str, str]):
         tid, digest = item
@@ -146,22 +146,34 @@ def run_export_season(
             for tid, digest, body in pool.map(load, to_process[start:start + FETCH_BATCH]):
                 if body is None:
                     continue  # transient fetch failure — retried next run
-                year = year_of_track(body)
+                try:
+                    year = year_of_track(body)
+                    first = first_bin_date(body)
+                    cells = body["cells"]
+                except (ValueError, KeyError, TypeError):
+                    # A body with no series or no cells can never contribute;
+                    # record its digest so it is not re-fetched every run
+                    # (a changed digest still brings it back), and move on
+                    # rather than discarding the whole run's work.
+                    state[tid] = {"digest": digest, "year": None}
+                    cells_by_fire.pop(tid, None)
+                    malformed += 1
+                    continue
                 state[tid] = {"digest": digest, "year": year}
                 cells_by_fire.pop(tid, None)  # drop a stale contribution if this id changed
                 processed += 1
                 if year != target_year:
                     continue
-                cells_by_fire[tid] = {"digest": digest, "first": first_bin_date(body), "cells": body["cells"]}
+                cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
                 if _span_days(body) > LONG_SPAN_DAYS:
                     long_span += 1
                     if len(body["cells"]) <= 10:
                         long_span_small += 1
 
-    if processed:
+    if processed or malformed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
-            f"of_which_<=10_cells={long_span_small}",
+            f"of_which_<=10_cells={long_span_small} malformed={malformed}",
             file=sys.stderr,
         )
     _save_json(cells_path, cells_by_fire)  # contributions first...
