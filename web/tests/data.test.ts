@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadEvents, loadFootprint, loadManifest, loadTrack, loadSeason } from "../src/data";
+import { loadEvents, loadFootprint, loadManifest, loadSeason, loadTrack } from "../src/data";
 import type { Manifest } from "../src/types";
 
 const manifest = {
@@ -111,13 +111,17 @@ describe("loadSeason", () => {
     expect(await loadSeason(2026, "/data", fetchFn as never)).toEqual(good);
   });
 
-  it("returns null on a non-ok response", async () => {
-    const fetchFn = async () => ({ ok: false, json: async () => ({}) });
+  it("returns null on a non-ok response even when the body is well-formed", async () => {
+    const fetchFn = async () => ({ ok: false, json: async () => good });
     expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
   });
 
-  it("returns null on a malformed body", async () => {
-    const fetchFn = async () => ({ ok: true, json: async () => ({ year: 2026 }) });
+  it.each([
+    ["year", { ...good, year: "2026" }],
+    ["r6", { ...good, r6: "nope" }],
+    ["fires", { ...good, fires: null }],
+  ])("returns null when %s is malformed", async (_field, body) => {
+    const fetchFn = async () => ({ ok: true, json: async () => body });
     expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
   });
 
