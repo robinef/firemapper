@@ -55,6 +55,21 @@ def scale_blob_fires_key(year: int) -> str:
     return f"archive/blob_{year}_fires.json"
 
 
+# "Burned this year" season layer (pipeline/export_season.py). Same permanent
+# archive/ namespace and the same hydrate-by-name contract as the scale blob
+# above: publish() uploads anything under archive/, hydrate() only restores
+# what it is told to.
+SEASON_STATE_KEY = "archive/season_state.json"
+
+
+def season_key(year: int) -> str:
+    return f"archive/season_{year}.json"
+
+
+def season_cells_key(year: int) -> str:
+    return f"archive/season_{year}_cells.json"
+
+
 # Cluster over a longer window than the live layer so fires that have gone quiet
 # still surface as historical ("past") scars. Lives here (not run.py, which
 # uses it) so export.py's coverage.py can read it too without run.py <-> export.py

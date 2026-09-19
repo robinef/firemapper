@@ -57,6 +57,25 @@ describe("level-aware layer switcher", () => {
     expect(map.vis["scars-dot"]).toBe("visible");
     expect(map.vis["arrival-x"]).toBe("none");
   });
+
+  it("calls a module's onToggle with the new state after the checkbox changes", () => {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const seen: { on: boolean; vis: string | undefined }[] = [];
+    const map = stubMap();
+    const modules: LayerModule[] = [
+      { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        onToggle: (on) => seen.push({ on, vis: map.vis["season-heat"] }) },
+    ];
+    mountSwitcher(L, document.getElementById("lg")!, modules, map as never);
+    const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    cb.checked = false;
+    cb.dispatchEvent(new Event("change"));
+    cb.checked = true;
+    cb.dispatchEvent(new Event("change"));
+    // Visibility is already applied when the hook runs: off → "none", on → "visible".
+    expect(seen).toEqual([{ on: false, vis: "none" }, { on: true, vis: "visible" }]);
+  });
 });
 
 // A historical fire (a settled past scar, or a closed live fire) has no

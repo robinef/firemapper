@@ -6,6 +6,7 @@ import {
   loadFrp,
   loadIsochrones,
   loadManifest,
+  loadSeason,
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
@@ -35,6 +36,13 @@ import {
   hideDaySlice,
   setDaySlice,
 } from "./layer_dayslice";
+import {
+  SEASON_LAYER_IDS,
+  addSeason,
+  createSeasonCellsLoader,
+  seasonLegend,
+  seasonStatus,
+} from "./layer_season";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -125,11 +133,25 @@ async function boot() {
       ),
     };
 
+    // Started here, awaited just before addSeason: draw order forces the season
+    // layers to be added before the day slice and the fires, but nothing forces
+    // its *fetch* to be serial, and awaiting it in place delayed the first fire
+    // paint by a whole round-trip (a 404 on every boot while no season file is
+    // published). loadSeason resolves null on any failure, so this promise can
+    // never reject while it sits unawaited.
+    const seasonYear = Number(manifest.generated_at.slice(0, 4));
+    const seasonP = loadSeason(seasonYear, BASE);
+
     const frp =
       manifest.frp_points != null
         ? await loadFrp(manifest, BASE).catch(() => null)
         : null;
 
+    // Season (whole-year burned cells) sits under everything: the day slice
+    // paints on top of it when a histogram day is clicked, live fires on top
+    // of that. Null when the pipeline has not published a season file yet.
+    const season = await seasonP;
+    if (season) addSeason(map, season);
     addDaySlice(map); // under the fires: painted when a histogram day is clicked
     addActiveFires(map, events, footprint);
     addClosedFires(map);
@@ -144,6 +166,9 @@ async function boot() {
     // Mirrors the size filter below, so the counter describes the map as it
     // actually is rather than as the default gates would have it.
     let showAllSizes = false;
+    // Assigned right after mountSwitcher (it needs switcher.isOn); the
+    // module's onToggle closes over the variable, not the value.
+    let seasonLoader: ReturnType<typeof createSeasonCellsLoader> | null = null;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -263,6 +288,19 @@ async function boot() {
         defaultOn: true,
         legend: SCAR_LEGEND,
       },
+      ...(season
+        ? [{
+            key: "season",
+            levels: [1] as (1|2)[],
+            label: "Burned this year",
+            question: `Where did ${season.year} burn?`,
+            layerIds: SEASON_LAYER_IDS,
+            defaultOn: true,
+            status: () => seasonStatus(season),
+            legend: seasonLegend(season.floor, season.year),
+            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure(); },
+          } as LayerModule]
+        : []),
     ];
     const switcher = mountSwitcher(
       document.getElementById("layers")!,
@@ -271,6 +309,10 @@ async function boot() {
       map,
       manifest,
     );
+    if (season) {
+      seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"));
+      void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
+    }
     wireScaleBlobToggle(
       map,
       document.getElementById("scale-blob-toggle") as HTMLButtonElement,
@@ -756,7 +798,7 @@ export function setupCompareMode(map: maplibregl.Map, manifest: Manifest): Compa
     ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill", "fire-footprint-line", "fire-labels",
     "fire-bin-fill", "fire-bin-line", "day-slice-fill", "day-slice-line",
     ...INTENSITY_LAYER_IDS, ...SPREAD_LAYER_IDS, ...WIND_LAYER_IDS, ...FIRE_WIND_LAYER_IDS,
-    ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS,
+    ...VIIRS_LAYER_IDS, ...SCAR_LAYER_IDS, ...SEASON_LAYER_IDS,
   ];
   // Not Record<string, string>: maplibre 6 types `visibility` as a union, and
   // it was only ever these two values — the wider type just deferred the error.

@@ -11,8 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-import h3
-
 from .config import (
     ARCHIVE_TRACKS_INDEX,
     SCALE_BLOB_STATE_KEY,
@@ -21,7 +19,7 @@ from .config import (
     scale_blob_key,
 )
 from .enrich import Places, load_places, nearest_place
-from .geo_local import centroid_of_cells
+from .geo_local import centroid_of_cells, true_area_km2
 from .pack_blob import hex_count_for_area, pack_fires_as_blob
 
 
@@ -77,28 +75,9 @@ def _save_json(path: Path, data) -> None:
 
 
 def _true_area_km2(cells: list[str]) -> float:
-    """Sum of each cell's real area, without double-counting.
-
-    A track's cells can legitimately include both a coarse Meteosat cell and
-    the several finer VIIRS cells nested inside it (design spec: "a coarse
-    res-7 Meteosat cell spatially containing several res-8 VIIRS cells" is an
-    expected occurrence, not a bug). The children exactly tile the parent, so
-    summing every cell's area double-counts that ground. Drop any cell that
-    is the H3 parent of another cell already in the set — its area is
-    already accounted for by its children. (If only some of a parent's
-    children are present, this slightly undercounts the parent's uncovered
-    remainder — an acceptable trade against the double-counting this exists
-    to fix.)"""
-    cell_set = set(cells)
-    kept = [
-        c
-        for c in cell_set
-        if not any(
-            h3.get_resolution(other) > h3.get_resolution(c) and h3.cell_to_parent(other, h3.get_resolution(c)) == c
-            for other in cell_set
-        )
-    ]
-    return round(sum(h3.cell_area(c, unit="km^2") for c in kept), 1)
+    """Sum of each cell's real area, without double-counting — see
+    geo_local.true_area_km2, shared with export_season.py."""
+    return true_area_km2(cells)
 
 
 def _load_track_body(out_dir: Path, track_id: str, client, r2_bucket: str | None) -> dict | None:

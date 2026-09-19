@@ -34,6 +34,11 @@ export interface LayerModule {
   /** An extra control inside the row: a filter the layer owns. `onChange` is
    *  called with the new state; the switcher only renders and remembers it. */
   filter?: { label: string; defaultOn: boolean; onChange: (on: boolean) => void };
+  /** Called after the reader flips this layer's checkbox, with the new state,
+   *  once visibility has been applied. A module that lazy-loads data on
+   *  demand (layer_season.ts's cells) needs this: a zoom event alone never
+   *  fires when the layer is switched on while already zoomed in. */
+  onToggle?: (on: boolean) => void;
   /** Manifest `layers` keys this module draws from. A module is greyed when any
    *  of them is past its age budget — derived layers (spread, isochrones) name
    *  the source they were computed from, not themselves. */
@@ -135,6 +140,7 @@ export function mountSwitcher(
         state.set(m.key, cb.checked);
         applyVis(m);
         renderLegends();
+        m.onToggle?.(cb.checked);
       });
       const text = document.createElement("span");
       text.className = "layer-text";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadEvents, loadFootprint, loadManifest, loadTrack } from "../src/data";
+import { loadEvents, loadFootprint, loadManifest, loadSeason, loadTrack } from "../src/data";
 import type { Manifest } from "../src/types";
 
 const manifest = {
@@ -97,5 +97,36 @@ describe("loadFootprint", () => {
 
     expect(seen).toEqual(["/data/archive/footprints/562583.json"]);
     expect(footprint.type).toBe("Feature");
+  });
+});
+
+describe("loadSeason", () => {
+  const good = { year: 2026, generated_at: "2026-09-18T10:00:00Z", floor: "2026-07-13", fires: 2, km2: 3.4, r6: [["861e8d5afffffff", 3.4]] };
+
+  it("returns the summary when the file is well-formed", async () => {
+    const fetchFn = async (url: string) => {
+      expect(url).toBe("/data/archive/season_2026.json");
+      return { ok: true, json: async () => good };
+    };
+    expect(await loadSeason(2026, "/data", fetchFn as never)).toEqual(good);
+  });
+
+  it("returns null on a non-ok response even when the body is well-formed", async () => {
+    const fetchFn = async () => ({ ok: false, json: async () => good });
+    expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it.each([
+    ["year", { ...good, year: "2026" }],
+    ["r6", { ...good, r6: "nope" }],
+    ["fires", { ...good, fires: null }],
+  ])("returns null when %s is malformed", async (_field, body) => {
+    const fetchFn = async () => ({ ok: true, json: async () => body });
+    expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it("returns null when the fetch throws", async () => {
+    const fetchFn = async () => { throw new Error("offline"); };
+    expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
   });
 });

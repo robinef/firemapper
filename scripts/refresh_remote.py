@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pipeline.config import Settings, load_settings
 from pipeline.export_scale_blob import run_export
+from pipeline.export_season import run_export_season
 from pipeline.remote import hydrate, make_client, publish
 from pipeline.run import _safe, refresh
 
@@ -90,6 +91,30 @@ def main(argv: list[str], client=None) -> int:
             label="export-scale-blob",
         ),
     )
+    # Full tier only. The fast tier's job has a 30-minute ceiling that a
+    # cold scale-blob export (900 s) plus the ~3 min of pipeline work before
+    # it already brings within ~12 min of, and that ceiling has killed this
+    # process before publish() once already (see the scale-blob comment
+    # above). The full tier runs hourly under a 40-minute ceiling, which
+    # leaves the season export's 300 s a real margin; the layer is a
+    # whole-season aggregate, so an hourly refresh loses nothing visible.
+    # Same _safe contract as the scale blob: a broken season export must
+    # never block publish().
+    if tier == "full":
+        _timed(
+            "export_season",
+            lambda: _safe(
+                lambda: run_export_season(
+                    settings,
+                    target_year=datetime.now(timezone.utc).year,
+                    client=client,
+                    r2_bucket=settings.r2_bucket,
+                    time_budget_s=300.0,
+                ),
+                default=None,
+                label="export-season",
+            ),
+        )
     _timed("publish", lambda: publish(settings, _latest_generation(settings), client))
     return 0
 

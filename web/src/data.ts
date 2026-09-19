@@ -1,4 +1,4 @@
-import type { Manifest, Slice, Stats, Track } from "./types";
+import type { Manifest, SeasonSummary, Slice, Stats, Track } from "./types";
 
 export const SCHEMA_MAJOR = 1;
 // Minimal shape we depend on — lets tests inject a simple fake.
@@ -115,4 +115,24 @@ export async function loadSlice(
 ): Promise<Slice> {
   const r = await fetchFn(`${base}/${m.generation}/slices/${key}.json`);
   return (await r.json()) as Slice;
+}
+
+/** The "Burned this year" summary (pipeline/export_season.py). Null on any
+ * failure — a missing season file means the module is simply not offered,
+ * the same way a missing frp file means no intensity layer. Uses `ok`, so
+ * the injected fetch must expose it (unlike loadTrack's minimal shape). */
+export async function loadSeason(
+  year: number,
+  base = "/data",
+  fetchFn: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
+): Promise<SeasonSummary | null> {
+  try {
+    const r = await fetchFn(`${base}/archive/season_${year}.json`);
+    if (!r.ok) return null;
+    const s = (await r.json()) as Partial<SeasonSummary> | null;
+    if (!s || typeof s.year !== "number" || !Array.isArray(s.r6) || typeof s.fires !== "number") return null;
+    return s as SeasonSummary;
+  } catch {
+    return null;
+  }
 }

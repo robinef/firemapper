@@ -1,11 +1,15 @@
 import math
 
+import h3
+
 from pipeline.geo_local import (
     R_EARTH_M,
     cell_boundary_local_m,
     centroid_of_cells,
+    dedup_nested_cells,
     latlon_to_local_m,
     local_m_to_latlon,
+    true_area_km2,
 )
 
 
@@ -47,10 +51,34 @@ def test_cell_boundary_local_m_returns_hexagon_ish_polygon():
 def test_centroid_of_cells_averages_positions():
     # Two cells straddling a point should centroid near that point; use real cell ids
     # from h3 at res 8 around a known lat/lon.
-    import h3
-
     a = h3.latlng_to_cell(45.0, 5.0, 8)
     b = h3.latlng_to_cell(45.01, 5.01, 8)
     lat, lon = centroid_of_cells([a, b])
     assert 44.99 < lat < 45.02
     assert 4.99 < lon < 5.02
+
+
+def test_dedup_nested_cells_drops_a_parent_whose_child_is_present():
+    child = h3.latlng_to_cell(45.0, 5.0, 8)
+    parent = h3.cell_to_parent(child, 7)
+    other = h3.latlng_to_cell(46.0, 6.0, 8)
+    assert dedup_nested_cells([parent, child, other]) == sorted([child, other])
+
+
+def test_dedup_nested_cells_keeps_a_parent_with_no_child_present():
+    lone = h3.latlng_to_cell(45.0, 5.0, 7)
+    assert dedup_nested_cells([lone]) == [lone]
+
+
+def test_true_area_km2_does_not_double_count_nested_cells():
+    child = h3.latlng_to_cell(45.0, 5.0, 8)
+    parent = h3.cell_to_parent(child, 7)
+    assert true_area_km2([parent, child]) == round(h3.cell_area(child, unit="km^2"), 1)
+
+
+def test_dedup_nested_cells_keeps_a_coarser_cell_that_is_not_an_ancestor():
+    # A res-7 cell far away (20, 20) and a res-8 cell far away (45, 5)
+    # should both be kept because the res-7 is not an ancestor of the res-8
+    far_res7 = h3.latlng_to_cell(20.0, 20.0, 7)
+    unrelated_res8 = h3.latlng_to_cell(45.0, 5.0, 8)
+    assert dedup_nested_cells([far_res7, unrelated_res8]) == sorted([far_res7, unrelated_res8])
