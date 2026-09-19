@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { cellToLatLng, latLngToCell } from "h3-js";
 import {
   HEX_OPACITY_PENDING,
+  HEX_OPACITY_INSTALLED,
   SEASON_CELLS_SOURCE,
+  SEASON_HEAT_SOURCE,
   SEASON_HEX_SOURCE,
   SEASON_LAYER_IDS,
   addSeason,
   cellFeatures,
+  createSeasonCellsLoader,
   formatFloor,
   heatPointFeatures,
   seasonLegend,
@@ -80,6 +83,7 @@ describe("addSeason", () => {
     expect(map._layers).toEqual(SEASON_LAYER_IDS);
     expect(map._sources[SEASON_HEX_SOURCE].data.features).toHaveLength(1);
     expect(map._sources[SEASON_CELLS_SOURCE].data).toEqual({ type: "FeatureCollection", features: [] });
+    expect(map._sources[SEASON_HEAT_SOURCE].data.features).toHaveLength(1);
     expect(map.getLayerDef("season-hex-fill").maxzoom).toBeUndefined();
     expect(map.getLayerDef("season-hex-line").maxzoom).toBeUndefined();
     expect(map.getLayerDef("season-heat").maxzoom).toBe(6.5);
@@ -92,6 +96,7 @@ describe("addSeason", () => {
     addSeason(map as never, { ...SUMMARY, r6: [] });
     expect(map._layers).toEqual(SEASON_LAYER_IDS);
     expect(map._sources[SEASON_HEX_SOURCE].data.features).toHaveLength(0);
+    expect(map._sources[SEASON_HEAT_SOURCE].data.features).toHaveLength(0);
   });
 });
 
@@ -114,5 +119,95 @@ describe("legend + status", () => {
     expect(legend.entries).toHaveLength(4);
     expect(legend.note).toContain("since 13 Jul 2026");
     expect(legend.note).toContain("not yet archived");
+  });
+});
+
+describe("createSeasonCellsLoader", () => {
+  const a = latLngToCell(45.0, 5.0, 8);
+  const body = { "fire-1": { digest: "d", first: "2026-07-01", cells: [a] } };
+  const okFetch = () => {
+    const fn = vi.fn(async () => ({ ok: true, json: async () => body }));
+    return fn;
+  };
+
+  function mounted(zoom: number) {
+    const map = stubMap(zoom);
+    addSeason(map as never, SUMMARY);
+    return map;
+  }
+
+  it("does not fetch below the prefetch zoom", async () => {
+    const map = mounted(7);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure();
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(loader.state()).toBe("idle");
+  });
+
+  it("does not fetch while the layer is off", async () => {
+    const map = mounted(10);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => false, fetchFn as never);
+    await loader.ensure();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("fetches once at z10, installs cells, swaps the hex fade in, never refetches", async () => {
+    const map = mounted(10);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure();
+    await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect((fetchFn.mock.calls as unknown as Array<[string]>)[0][0]).toBe("/data/archive/season_2026_cells.json");
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(1);
+    expect(map._paint["season-hex-fill"]["fill-opacity"]).toEqual(HEX_OPACITY_INSTALLED);
+    expect(loader.state()).toBe("loaded");
+  });
+
+  it("a failed fetch leaves hexes pending and allows a retry", async () => {
+    const map = mounted(10);
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return { ok: false, json: async () => ({}) };
+      return { ok: true, json: async () => body };
+    });
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure();
+    expect(loader.state()).toBe("idle");
+    expect(map._paint["season-hex-fill"]).toBeUndefined();
+    await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(loader.state()).toBe("loaded");
+  });
+
+  it("collapses overlapping calls into one fetch", async () => {
+    const map = mounted(10);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await Promise.all([loader.ensure(), loader.ensure()]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("wires zoomend and moveend to ensure()", async () => {
+    const map = mounted(10);
+    const fetchFn = okFetch();
+    createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    map.fire("zoomend");
+    await Promise.resolve();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(Object.keys(map._handlers).sort()).toEqual(["moveend", "zoomend"]);
+  });
+
+  it("a later addSeason refresh leaves installed cells in place", async () => {
+    const map = mounted(10);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure();
+    addSeason(map as never, { ...SUMMARY, r6: [] });
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(1);
+    expect(map._layers).toEqual(SEASON_LAYER_IDS);
   });
 });

@@ -198,3 +198,56 @@ export function seasonLegend(floor: string | null, year = new Date().getUTCFullY
       "are not yet archived. Zoom in for the real burned ground.",
   };
 }
+
+export const CELLS_PREFETCH_ZOOM = 7.5;
+
+type CellsState = "idle" | "loading" | "loaded";
+
+/**
+ * Lazy loader for the per-fire cells file. `ensure()` is idempotent and
+ * cheap: it returns immediately unless the reader is close enough
+ * (zoom ≥ CELLS_PREFETCH_ZOOM, so the band is painted before its opacity
+ * starts rising at z8), the layer is on, and nothing is loaded or in flight.
+ *
+ * Wired to zoomend/moveend here, but a zoom event alone misses the common
+ * cases — the layer toggled on while already at z10, a `?fire=` deep link
+ * booting past the threshold, returning from a fire card at the same zoom —
+ * so main.ts also calls ensure() at boot and from the module's onToggle.
+ *
+ * Failure keeps the hex band at its pending opacity (it has no maxzoom, so
+ * it still renders past z8.5) and resets to idle so the next trigger retries.
+ */
+export function createSeasonCellsLoader(
+  map: maplibregl.Map,
+  year: number,
+  isOn: () => boolean,
+  fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
+): { ensure(): Promise<void>; state(): CellsState } {
+  let state: CellsState = "idle";
+
+  const ensure = async (): Promise<void> => {
+    if (state !== "idle") return;
+    if (!isOn()) return;
+    if (map.getZoom() < CELLS_PREFETCH_ZOOM) return;
+    state = "loading";
+    try {
+      const r = await fetchImpl(`/data/archive/season_${year}_cells.json`);
+      if (!r.ok) throw new Error(`season cells ${r.ok}`);
+      const cells = (await r.json()) as SeasonCells;
+      const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
+      if (!source) throw new Error("season cells source missing");
+      source.setData(fc(cellFeatures(cells)));
+      if (map.getLayer("season-hex-fill")) {
+        map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
+      }
+      state = "loaded";
+    } catch (err) {
+      console.warn("layer_season: cells load failed, hex band stays", err);
+      state = "idle";
+    }
+  };
+
+  map.on("zoomend", () => { void ensure(); });
+  map.on("moveend", () => { void ensure(); });
+  return { ensure, state: () => state };
+}
