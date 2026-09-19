@@ -55,9 +55,10 @@ const EMBER_PALE = "#f5c98a";
 const SEASON_HEX_BREAKS = [0, 2, 12, 60];
 
 /** The density ramp is deliberately bottom-heavy: the first visible stop sits
- * at 0.08 so a lone res-6 hex in Portugal still paints, and the top two are
- * pushed out to 0.75/1 so only the very densest cores reach the pale end.
- * Alphas stay below 1 — a live fire dot must out-contrast this everywhere. */
+ * at 0.08 so a lone res-6 hex in Portugal still paints, and the stops were
+ * adjusted (0.45→0.35 inward, 0.7→0.75 outward) so only the very densest cores
+ * reach the pale end. Alphas stay below 1 — a live fire dot must out-contrast
+ * this everywhere. */
 export const SEASON_HEAT_COLORS = [
   0, "rgba(0,0,0,0)",
   0.08, "rgba(90,42,20,0.5)",
@@ -136,7 +137,7 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
       // the season is a scatter of single hexes, and a scale that only lights
       // up where hexes pile up shows one blob and calls Europe unburnt.
       "heatmap-weight":
-        ["interpolate", ["linear"], ["get", "km2"], 0, 0.05, 2, 0.2, 12, 0.5, 60, 1] as never,
+        ["interpolate", ["linear"], ["get", "km2"], SEASON_HEX_BREAKS[0], 0.05, SEASON_HEX_BREAKS[1], 0.2, SEASON_HEX_BREAKS[2], 0.5, SEASON_HEX_BREAKS[3], 1] as never,
       "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 3, 0.6, 6.5, 1.0] as never,
       "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], ...SEASON_HEAT_COLORS] as never,
       // A res-6 hex is sub-pixel at z4, so the kernel — not the geometry — is
