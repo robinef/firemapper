@@ -40,17 +40,30 @@ export const SEASON_LAYER_IDS = [
   "season-heat", "season-hex-fill", "season-hex-line", "season-cells-fill", "season-cells-line",
 ];
 
-const EMBER_DARK = "#3a1a10";
+const EMBER_DARK = "#5a2a14";
 const EMBER = "#8a3d1c";
 const EMBER_LIGHT = "#d1874f";
 const EMBER_PALE = "#f5c98a";
 
+/** km² breaks the hex fill (and the legend) ramp on. Tuned on a 3,000-track
+ * sample of the prod archive, whose res-6 hexes run min 0.5 · median 2.1 ·
+ * p90 6.6 · p99 27.6 · max 86.5 km². A linear 0→36 ramp put 93 % of hexes in
+ * its first segment (all one near-basemap brown) and clipped the top 0.5 %;
+ * these breaks put the median at EMBER, p90 halfway to EMBER_LIGHT and p99
+ * well into EMBER_PALE, so the spread a reader actually sees is the spread
+ * the data has. */
+const SEASON_HEX_BREAKS = [0, 2, 12, 60];
+
+/** The density ramp is deliberately bottom-heavy: the first visible stop sits
+ * at 0.08 so a lone res-6 hex in Portugal still paints, and the top two are
+ * pushed out to 0.75/1 so only the very densest cores reach the pale end.
+ * Alphas stay below 1 — a live fire dot must out-contrast this everywhere. */
 export const SEASON_HEAT_COLORS = [
   0, "rgba(0,0,0,0)",
-  0.2, "rgba(58,26,16,0.55)",
-  0.45, "rgba(138,61,28,0.7)",
-  0.7, "rgba(209,135,79,0.85)",
-  1, "rgba(245,201,138,0.95)",
+  0.08, "rgba(90,42,20,0.5)",
+  0.35, "rgba(138,61,28,0.68)",
+  0.75, "rgba(209,135,79,0.8)",
+  1, "rgba(245,201,138,0.88)",
 ];
 
 /** Hex opacity while the real cells are not installed (pending or failed):
@@ -118,13 +131,18 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
     source: SEASON_HEAT_SOURCE,
     maxzoom: 6.5,
     paint: {
-      // A ~36 km² res-6 hex fully burned is the top of the scale; most hold
-      // a few km².
-      "heatmap-weight": ["interpolate", ["linear"], ["get", "km2"], 0, 0.02, 10, 0.3, 36, 1] as never,
-      "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 3, 0.8, 6.5, 1.2] as never,
+      // Weighted on the same breaks as the hex fill: a median (~2 km²) hex has
+      // to carry real weight on its own, because outside the few hot regions
+      // the season is a scatter of single hexes, and a scale that only lights
+      // up where hexes pile up shows one blob and calls Europe unburnt.
+      "heatmap-weight":
+        ["interpolate", ["linear"], ["get", "km2"], 0, 0.05, 2, 0.2, 12, 0.5, 60, 1] as never,
+      "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 3, 0.6, 6.5, 1.0] as never,
       "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], ...SEASON_HEAT_COLORS] as never,
-      "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 3, 6, 6.5, 18] as never,
-      "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 5.5, 0.75, 6.5, 0] as never,
+      // A res-6 hex is sub-pixel at z4, so the kernel — not the geometry — is
+      // what a reader sees; small radii left isolated regions invisible.
+      "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 3, 10, 6.5, 24] as never,
+      "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 5.5, 0.65, 6.5, 0] as never,
     },
   });
   map.addLayer({
@@ -135,7 +153,10 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
     paint: {
       "fill-color": [
         "interpolate", ["linear"], ["get", "n"],
-        0, EMBER_DARK, 8, EMBER, 20, EMBER_LIGHT, 36, EMBER_PALE,
+        SEASON_HEX_BREAKS[0], EMBER_DARK,
+        SEASON_HEX_BREAKS[1], EMBER,
+        SEASON_HEX_BREAKS[2], EMBER_LIGHT,
+        SEASON_HEX_BREAKS[3], EMBER_PALE,
       ] as never,
       "fill-opacity": HEX_OPACITY_PENDING as never,
     },
@@ -145,7 +166,14 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
     type: "line",
     source: SEASON_HEX_SOURCE,
     minzoom: 5.5,
-    paint: { "line-color": EMBER_LIGHT, "line-width": 0.4, "line-opacity": 0.25 },
+    // Fades in on the same 5.5–6.5 ramp as the fill. A constant opacity here
+    // put a honeycomb of empty outlines over the heatmap at z5.5–6, where the
+    // fill is still 0 — a grid of rings reads as noise, not as burned ground.
+    paint: {
+      "line-color": EMBER_LIGHT,
+      "line-width": 0.4,
+      "line-opacity": ["interpolate", ["linear"], ["zoom"], 5.5, 0, 6.5, 0.25] as never,
+    },
   });
   map.addLayer({
     id: "season-cells-fill",

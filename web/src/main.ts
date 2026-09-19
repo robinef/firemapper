@@ -133,6 +133,15 @@ async function boot() {
       ),
     };
 
+    // Started here, awaited just before addSeason: draw order forces the season
+    // layers to be added before the day slice and the fires, but nothing forces
+    // its *fetch* to be serial, and awaiting it in place delayed the first fire
+    // paint by a whole round-trip (a 404 on every boot while no season file is
+    // published). loadSeason resolves null on any failure, so this promise can
+    // never reject while it sits unawaited.
+    const seasonYear = Number(manifest.generated_at.slice(0, 4));
+    const seasonP = loadSeason(seasonYear, BASE);
+
     const frp =
       manifest.frp_points != null
         ? await loadFrp(manifest, BASE).catch(() => null)
@@ -141,8 +150,7 @@ async function boot() {
     // Season (whole-year burned cells) sits under everything: the day slice
     // paints on top of it when a histogram day is clicked, live fires on top
     // of that. Null when the pipeline has not published a season file yet.
-    const seasonYear = Number(manifest.generated_at.slice(0, 4));
-    const season = await loadSeason(seasonYear, BASE);
+    const season = await seasonP;
     if (season) addSeason(map, season);
     addDaySlice(map); // under the fires: painted when a histogram day is clicked
     addActiveFires(map, events, footprint);
