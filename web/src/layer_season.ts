@@ -46,12 +46,16 @@ const EMBER_LIGHT = "#d1874f";
 const EMBER_PALE = "#f5c98a";
 
 /** km² breaks the hex fill (and the legend) ramp on. Tuned on a 3,000-track
- * sample of the prod archive, whose res-6 hexes run min 0.5 · median 2.1 ·
- * p90 6.6 · p99 27.6 · max 86.5 km². A linear 0→36 ramp put 93 % of hexes in
- * its first segment (all one near-basemap brown) and clipped the top 0.5 %;
- * these breaks put the median at EMBER, p90 halfway to EMBER_LIGHT and p99
- * well into EMBER_PALE, so the spread a reader actually sees is the spread
- * the data has. */
+ * sample of the prod archive, re-measured once cells stopped being counted
+ * once per fire: 3,593 hexes running min 0.5 · median 2.0 · p90 6.1 ·
+ * p99 19.5 · max 36.5 km². A linear 0→36 ramp put 93 % of hexes in its first
+ * segment (all one near-basemap brown) and clipped the top 0.5 %; these
+ * breaks put the median at EMBER, p90 halfway to EMBER_LIGHT and p99 into
+ * the EMBER_LIGHT→EMBER_PALE segment, so the spread a reader actually sees
+ * is the spread the data has. Note the 60 km² top stop is now unreachable:
+ * once ground is counted once, a res-6 hex cannot exceed its own area
+ * (~35 km² at 45°N), so a fully burned hex tops out around half of the
+ * EMBER_LIGHT→EMBER_PALE segment. Tightening it needs screenshots. */
 const SEASON_HEX_BREAKS = [0, 2, 12, 60];
 
 /** The density ramp is deliberately bottom-heavy: the first visible stop sits
@@ -90,11 +94,19 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
 }
 
 /** Every fire's cells as closed hex polygons, tagged with the fire id so a
- * later "click a burned cell → open that past fire" needs no data change. */
+ * later "click a burned cell → open that past fire" needs no data change.
+ *
+ * Fires overlap — the same cell is claimed by several archived fires — so a
+ * cell is emitted once, for the first fire that claims it. Stacking duplicate
+ * polygons darkened shared ground (semi-transparent fills compound) and paid
+ * for the extra geometry twice. */
 export function cellFeatures(cells: SeasonCells): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
+  const seen = new Set<string>();
   for (const [fireId, entry] of Object.entries(cells)) {
     for (const cell of entry.cells) {
+      if (seen.has(cell)) continue;
+      seen.add(cell);
       const ring = cellToBoundary(cell).map(([lat, lng]) => [lng, lat]);
       ring.push(ring[0]);
       out.push({
@@ -215,7 +227,10 @@ export function seasonStatus(summary: SeasonSummary): string {
 export function seasonLegend(floor: string | null, year = new Date().getUTCFullYear()) {
   const since = floor ? `since ${formatFloor(floor)} ${floor.slice(0, 4)}` : "this year";
   return {
-    title: `Burned this year · ${floor ? floor.slice(0, 4) : year}`,
+    // The title names the season being shown, never the floor's year: the
+    // earliest archived fire can sit in the previous year (a December start
+    // still burning in January), and the layer would then title itself 2025.
+    title: `Burned this year · ${year}`,
     entries: [
       { color: EMBER_DARK, label: "less burned", shape: "square" as const },
       { color: EMBER, label: "", shape: "square" as const },
@@ -229,6 +244,10 @@ export function seasonLegend(floor: string | null, year = new Date().getUTCFullY
 }
 
 export const CELLS_PREFETCH_ZOOM = 7.5;
+
+/** How many times a failing cells fetch is retried before the loader gives up
+ * for the session. Nothing resets it on success — a success ends the story. */
+export const MAX_CELLS_ATTEMPTS = 3;
 
 type CellsState = "idle" | "loading" | "loaded";
 
@@ -244,7 +263,9 @@ type CellsState = "idle" | "loading" | "loaded";
  * so main.ts also calls ensure() at boot and from the module's onToggle.
  *
  * Failure keeps the hex band at its pending opacity (it has no maxzoom, so
- * it still renders past z8.5) and resets to idle so the next trigger retries.
+ * it still renders past z8.5) and resets to idle so the next trigger retries —
+ * but only up to MAX_CELLS_ATTEMPTS: ensure() is wired to moveend, so an
+ * unbounded retry re-requests a multi-MB file on every pan, forever.
  */
 export function createSeasonCellsLoader(
   map: maplibregl.Map,
@@ -253,9 +274,11 @@ export function createSeasonCellsLoader(
   fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
 ): { ensure(): Promise<void>; state(): CellsState } {
   let state: CellsState = "idle";
+  let failures = 0;
 
   const ensure = async (): Promise<void> => {
     if (state !== "idle") return;
+    if (failures >= MAX_CELLS_ATTEMPTS) return;
     if (!isOn()) return;
     if (map.getZoom() < CELLS_PREFETCH_ZOOM) return;
     state = "loading";
@@ -271,6 +294,7 @@ export function createSeasonCellsLoader(
       }
       state = "loaded";
     } catch (err) {
+      failures += 1;
       console.warn("layer_season: cells load failed, hex band stays", err);
       state = "idle";
     }

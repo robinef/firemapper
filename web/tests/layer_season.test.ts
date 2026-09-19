@@ -4,6 +4,7 @@ import { cellToLatLng, latLngToCell } from "h3-js";
 import {
   HEX_OPACITY_PENDING,
   HEX_OPACITY_INSTALLED,
+  MAX_CELLS_ATTEMPTS,
   SEASON_CELLS_SOURCE,
   SEASON_HEAT_SOURCE,
   SEASON_HEX_SOURCE,
@@ -74,6 +75,19 @@ describe("season feature builders", () => {
     expect(ring.length).toBe(7);
     expect(ring[0]).toEqual(ring[6]);
   });
+
+  it("a cell two fires both burned yields one polygon, tagged with the first fire", () => {
+    const shared = latLngToCell(45.0, 5.0, 8);
+    const other = latLngToCell(46.0, 6.0, 8);
+    const feats = cellFeatures({
+      "fire-1": { digest: "d", first: "2026-07-01", cells: [shared] },
+      "fire-2": { digest: "e", first: "2026-07-02", cells: [shared, other] },
+    });
+    expect(feats.map((f) => f.properties)).toEqual([
+      { cell: shared, fire_id: "fire-1" },
+      { cell: other, fire_id: "fire-2" },
+    ]);
+  });
 });
 
 describe("addSeason", () => {
@@ -114,11 +128,17 @@ describe("legend + status", () => {
   });
 
   it("legend note discloses the floor", () => {
-    const legend = seasonLegend("2026-07-13");
+    const legend = seasonLegend("2026-07-13", 2026);
     expect(legend.title).toBe("Burned this year · 2026");
     expect(legend.entries).toHaveLength(4);
     expect(legend.note).toContain("since 13 Jul 2026");
     expect(legend.note).toContain("not yet archived");
+  });
+
+  it("the title names the season's year, not the floor's — a floor can sit in the year before", () => {
+    const legend = seasonLegend("2025-12-30", 2026);
+    expect(legend.title).toBe("Burned this year · 2026");
+    expect(legend.note).toContain("since 30 Dec 2025");
   });
 });
 
@@ -181,6 +201,18 @@ describe("createSeasonCellsLoader", () => {
     await loader.ensure();
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(loader.state()).toBe("loaded");
+  });
+
+  it("gives up after MAX_CELLS_ATTEMPTS failures instead of refetching megabytes on every pan", async () => {
+    const map = mounted(10);
+    const fetchFn = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    for (let i = 0; i < 5; i += 1) await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(MAX_CELLS_ATTEMPTS);
+    expect(MAX_CELLS_ATTEMPTS).toBe(3);
+    // The hex band keeps rendering at its pending opacity.
+    expect(loader.state()).toBe("idle");
+    expect(map._paint["season-hex-fill"]).toBeUndefined();
   });
 
   it("collapses overlapping calls into one fetch", async () => {
