@@ -81,3 +81,19 @@ export interface Slice {
 export interface Stats {
   detections: Record<string, number>;
 }
+
+/** archive/season_{year}.json — pipeline/export_season.py's boot-time summary. */
+export interface SeasonSummary {
+  year: number;
+  generated_at: string;
+  /** Earliest first-detection date across included fires, YYYY-MM-DD. Null
+   *  only when the file holds no fires at all. */
+  floor: string | null;
+  fires: number;
+  km2: number;
+  /** [res-6 H3 cell, km² burned inside it] */
+  r6: [string, number][];
+}
+
+/** archive/season_{year}_cells.json — one entry per settled fire. */
+export type SeasonCells = Record<string, { digest: string; first: string; cells: string[] }>;
