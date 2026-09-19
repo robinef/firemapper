@@ -87,6 +87,21 @@ def test_aggregate_r6_does_not_double_count_a_meteosat_parent_and_its_viirs_chil
     assert r6 == [[h3.cell_to_parent(child, 6), round(h3.cell_area(child, unit="km^2"), 1)]]
 
 
+def test_aggregate_r6_counts_shared_ground_once_across_fires():
+    # Two fires that burned the same cell: the ground burned once, so the
+    # published km2 must count that cell's area once, not once per fire.
+    shared, other = _two_cells()
+    r6 = aggregate_r6({
+        "a": {"digest": "d", "first": "2026-07-01", "cells": [shared]},
+        "b": {"digest": "e", "first": "2026-07-02", "cells": [shared, other]},
+    })
+    expected: dict[str, float] = {}
+    for c in (shared, other):
+        p = h3.cell_to_parent(c, 6)
+        expected[p] = expected.get(p, 0.0) + h3.cell_area(c, unit="km^2")
+    assert r6 == [[p, round(km2, 1)] for p, km2 in sorted(expected.items())]
+
+
 def test_run_export_season_writes_cells_summary_and_state_for_the_target_year(tmp_path):
     settings = _settings(tmp_path)
     cells = _two_cells()
@@ -200,6 +215,22 @@ def test_a_non_dict_track_body_is_skipped_like_any_malformed_body(tmp_path):
     assert _read(settings, SEASON_STATE_KEY)["list-body"] == {"digest": index["list-body"], "year": None}
 
 
+def test_a_track_body_whose_series_holds_non_dicts_is_skipped_like_any_malformed_body(tmp_path):
+    settings = _settings(tmp_path)
+    good = _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    # A dict body, so the isinstance guard lets it through — the TypeError
+    # raised by indexing a str with "bin" is what the except tuple must catch.
+    weird = {"id": "weird-series", "series": ["x"], "cells": _two_cells(), "cell_bins": [], "frp_live": []}
+    index = _make_local_archive(settings.out_dir, {"good": good, "weird-series": weird})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert _read(settings, SEASON_STATE_KEY)["weird-series"] == {
+        "digest": index["weird-series"], "year": None,
+    }
+
+
 def test_self_heal_reprocesses_a_fire_missing_from_the_cells_file(tmp_path):
     settings = _settings(tmp_path)
     index = _make_local_archive(settings.out_dir, {
@@ -236,6 +267,31 @@ def test_self_heal_reprocesses_a_fire_whose_cells_entry_has_a_stale_digest(tmp_p
     assert stored["digest"] == index["fire-a"]
     assert stored["cells"] == cells
     assert stored["first"] == "2026-07-01"
+
+
+def test_self_heal_drops_a_ghost_contribution_from_a_fire_demoted_out_of_the_target_year(tmp_path):
+    settings = _settings(tmp_path)
+    cells = _two_cells()
+    # fire-a is now a 2025 track, but the state still says 2025 with a
+    # matching digest while the cells file still holds its 2026-era
+    # contribution (state landed, cells did not). Nothing re-reads it unless
+    # the self-heal reconciles "wanted" against "stored".
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2025-08-01T00:00:00+00:00", "2025-08-03T00:00:00+00:00"),
+    })
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"fire-a": {"digest": index["fire-a"], "year": 2025}}))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "first": "2026-07-01", "cells": cells},
+    }))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_cells_key(2026)) == {}
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"] == {"digest": index["fire-a"], "year": 2025}
+    summary = _read(settings, season_key(2026))
+    assert summary["fires"] == 0 and summary["km2"] == 0
 
 
 def test_crash_between_cells_and_state_write_recovers_on_the_next_run(tmp_path, monkeypatch):

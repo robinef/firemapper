@@ -74,12 +74,19 @@ def _span_days(body: dict) -> int:
 
 def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
     """[[res-6 cell, km2], ...] sorted by cell: the real area of every
-    (nested-deduped) burned cell, rolled up to its res-6 parent."""
-    totals: dict[str, float] = {}
+    (nested-deduped) burned cell, rolled up to its res-6 parent — ground
+    burned once, however many fires touched it.
+
+    The union is taken across fires BEFORE the roll-up: fires overlap (the
+    same cell is claimed by up to 8 archived fires in the prod sample), and
+    summing per fire published a km2 that over-counted by ~10 %."""
+    seen: set[str] = set()
     for entry in cells_by_fire.values():
-        for cell in dedup_nested_cells(entry["cells"]):
-            parent = h3.cell_to_parent(cell, AGG_RES) if h3.get_resolution(cell) > AGG_RES else cell
-            totals[parent] = totals.get(parent, 0.0) + h3.cell_area(cell, unit="km^2")
+        seen.update(dedup_nested_cells(entry["cells"]))
+    totals: dict[str, float] = {}
+    for cell in seen:
+        parent = h3.cell_to_parent(cell, AGG_RES) if h3.get_resolution(cell) > AGG_RES else cell
+        totals[parent] = totals.get(parent, 0.0) + h3.cell_area(cell, unit="km^2")
     return [[cell, round(km2, 1)] for cell, km2 in sorted(totals.items())]
 
 
@@ -119,17 +126,23 @@ def run_export_season(
     state: dict[str, dict] = _load_json(state_path, {})
     cells_by_fire: dict[str, dict] = _load_json(cells_path, {})
 
-    # Self-heal a partial publish: a state entry for this year whose
-    # contribution is missing OR was built from a different digest is
-    # forgotten, which feeds it straight back into to_process below.
-    for track_id in [
-        tid
-        for tid, entry in state.items()
-        if entry.get("year") == target_year
-        and cells_by_fire.get(tid, {}).get("digest") != entry.get("digest")
-    ]:
-        del state[track_id]
-        cells_by_fire.pop(track_id, None)
+    # Self-heal a partial publish by reconciling what the state WANTS in the
+    # cells file (year == target) against what is STORED there. An entry is
+    # forgotten — which feeds it straight back into to_process below — when
+    # the two disagree in either direction:
+    #   wanted, not stored   → the contribution never landed;
+    #   stored, not wanted   → the track was re-archived into another year
+    #                          (or demoted to year=None) while its old
+    #                          contribution survived in the cells file;
+    #   both, digests differ → the contribution was built from another body.
+    # Only checking `year == target_year` left the demotion case invisible:
+    # nothing re-read the track, so the ghost stayed published forever.
+    for tid, entry in list(state.items()):
+        stored = cells_by_fire.get(tid)
+        wanted = entry.get("year") == target_year
+        if wanted != (stored is not None) or (stored is not None and stored.get("digest") != entry.get("digest")):
+            del state[tid]
+            cells_by_fire.pop(tid, None)
 
     to_process = [(tid, digest) for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest]
     deadline = clock() + time_budget_s
@@ -146,15 +159,26 @@ def run_export_season(
             for tid, digest, body in pool.map(load, to_process[start:start + FETCH_BATCH]):
                 if body is None:
                     continue  # transient fetch failure — retried next run
+                if not isinstance(body, dict):
+                    # A JSON body that is not an object is malformed by shape,
+                    # not by content — say so explicitly rather than leaning on
+                    # whichever AttributeError it happens to raise downstream.
+                    state[tid] = {"digest": digest, "year": None}
+                    cells_by_fire.pop(tid, None)
+                    malformed += 1
+                    continue
                 try:
                     year = year_of_track(body)
                     first = first_bin_date(body)
                     cells = body["cells"]
-                except (ValueError, KeyError, TypeError, AttributeError):
+                except (ValueError, KeyError, TypeError):
                     # A body with no series or no cells can never contribute;
                     # record its digest so it is not re-fetched every run
                     # (a changed digest still brings it back), and move on
-                    # rather than discarding the whole run's work.
+                    # rather than discarding the whole run's work. AttributeError
+                    # is deliberately NOT caught: it means our code called a
+                    # method that does not exist, and swallowing it would turn
+                    # any such fault into a permanent, digest-recorded skip.
                     state[tid] = {"digest": digest, "year": None}
                     cells_by_fire.pop(tid, None)
                     malformed += 1
