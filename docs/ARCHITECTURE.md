@@ -103,6 +103,17 @@ All reads and writes go through one place (`pipeline/store.py`), which owns the
 DuckDB connection and loads the `spatial` extension (plus the community `h3`
 extension when adjacency math is needed).
 
+Two things live outside the generation directories, under `archive/`, which
+generation pruning never touches: the permanent per-fire track archive
+(`pipeline/archive_tracks.py`, one JSON per settled fire) and the derived,
+incrementally-maintained year files built from it — the scale-comparison blob
+(`pipeline/export_scale_blob.py`) and the "Burned this year" season layer
+(`pipeline/export_season.py`: `season_{year}.json` with res-6 hex aggregates
+and the season floor date, `season_{year}_cells.json` with every fire's real
+cells). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
+not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
+restores these by name, so a fresh CI runner continues where the last left off.
+
 ## Turning detections into fires
 
 A satellite gives you isolated hot pixels, not fires. `pipeline/events.py` builds
@@ -143,7 +154,12 @@ it:
   rather than content: the icon rail, the `#view` container, the back bars and
   the map's camera padding.
 
-Layers live in `web/src/layer_*.ts`, one module per layer. The per-fire view is
+Layers live in `web/src/layer_*.ts`, one module per layer. The overview's
+"Burned this year" layer (`layer_season.ts`) is the one that renders a whole
+season rather than the last two days: a heatmap far out, res-6 hex bins in the
+middle, the real burned cells from zoom 8, all sources added at boot and the
+cells file fetched lazily on approach. The ramp breaks are tuned on real archive
+data (`SEASON_HEX_BREAKS` in `layer_season.ts` records the distribution). The per-fire view is
 `web/src/firecard.ts`; the bottom histogram is `web/src/timeline.ts`.
 
 ## Repository layout
