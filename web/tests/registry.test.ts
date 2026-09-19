@@ -61,11 +61,11 @@ describe("level-aware layer switcher", () => {
   it("calls a module's onToggle with the new state after the checkbox changes", () => {
     document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
     const L = document.getElementById("l")!;
-    const seen: boolean[] = [];
+    const seen: { on: boolean; vis: string | undefined }[] = [];
     const map = stubMap();
     const modules: LayerModule[] = [
       { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
-        onToggle: (on) => seen.push(on) },
+        onToggle: (on) => seen.push({ on, vis: map.vis["season-heat"] }) },
     ];
     mountSwitcher(L, document.getElementById("lg")!, modules, map as never);
     const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
@@ -73,9 +73,8 @@ describe("level-aware layer switcher", () => {
     cb.dispatchEvent(new Event("change"));
     cb.checked = true;
     cb.dispatchEvent(new Event("change"));
-    expect(seen).toEqual([false, true]);
-    // Visibility was applied before the hook ran: the hook can read the map.
-    expect(map.vis["season-heat"]).toBe("visible");
+    // Visibility is already applied when the hook runs: off → "none", on → "visible".
+    expect(seen).toEqual([{ on: false, vis: "none" }, { on: true, vis: "visible" }]);
   });
 });
 
