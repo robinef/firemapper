@@ -1,7 +1,7 @@
 import type * as maplibregl from "maplibre-gl";
 import { cellToBoundary, cellToLatLng } from "h3-js";
 import { sliceFeatures } from "./layer_dayslice";
-import { fireSizes } from "./season_filter";
+import { dedupNested, fireSizes } from "./season_filter";
 import type { SeasonCells, SeasonSummary } from "./types";
 
 /**
@@ -105,7 +105,13 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
  * `km2` = the LARGEST claiming fire's size, so a cell shared by a small and
  * a big fire stays visible at any threshold the big fire passes — the same
  * rule `aggregate()` applies to the hex band; `fire_id` is the first claimant,
- * for click-to-open. */
+ * for click-to-open.
+ *
+ * Nested cells are deduped INSIDE each fire (dedupNested, the same rule
+ * fireSizes and aggregate use): a fire holding a coarse Meteosat cell and its
+ * finer VIIRS children has one patch of ground, not two, and drawing the
+ * parent would blanket ground the hex band deliberately never counted.
+ * Across fires nothing is dropped — that is the pipeline's rule too. */
 export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
@@ -113,13 +119,13 @@ export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): G
   const best = new Map<string, number>();
   for (const [fireId, entry] of Object.entries(cells)) {
     const km2 = sizes?.get(fireId) ?? 0;
-    for (const cell of entry.cells) {
+    for (const cell of dedupNested(new Set(entry.cells))) {
       best.set(cell, Math.max(best.get(cell) ?? 0, km2));
     }
   }
   // Emit each cell once, tagged with the first claimant fire.
   for (const [fireId, entry] of Object.entries(cells)) {
-    for (const cell of entry.cells) {
+    for (const cell of dedupNested(new Set(entry.cells))) {
       if (seen.has(cell)) continue;
       seen.add(cell);
       const ring = cellToBoundary(cell).map(([lat, lng]) => [lng, lat]);
@@ -159,6 +165,10 @@ export function hexFeaturesCached(r6: [string, number][]): GeoJSON.Feature[] {
  * is deliberately untouched — its filtering is setCellsThreshold's job. */
 export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]): void {
   (map.getSource(SEASON_HEAT_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(heatPointFeatures(r6)));
+  // hexFeaturesCached hands out SHARED ring arrays (same object in every
+  // FeatureCollection built for a cell): read them, never mutate them in
+  // place — an edit here would silently rewrite every past and future
+  // aggregate's geometry for that hex.
   (map.getSource(SEASON_HEX_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(hexFeaturesCached(r6)));
 }
 

@@ -219,7 +219,15 @@ export function createSeasonFilter(opts: {
         // bar is a zero-height bar: nothing paints and the row reads as an
         // empty box under three orphan tick letters. Draw full-height bars and
         // let the CSS grey them — a skeleton, which is what those states mean.
-        const h = status === "ready" ? Math.round((n / max) * HIST_H) : HIST_H;
+        //
+        // Ready: a non-zero bin gets at least 1 px. The size distribution is a
+        // power law — thousands of fires in the first bin, a handful above
+        // 100 km² — and rounding the tail to 0 px would claim the big fires
+        // the slider exists to isolate do not exist. An empty bin still
+        // renders nothing: "rare" and "none" must stay distinguishable.
+        const h = status === "ready"
+          ? (n > 0 ? Math.max(1, Math.round((n / max) * HIST_H)) : 0)
+          : HIST_H;
         return `<rect x="${(i * BAR_W).toFixed(1)}" y="${HIST_H - h}" width="${(BAR_W - 1).toFixed(1)}" height="${h}"></rect>`;
       })
       .join("");

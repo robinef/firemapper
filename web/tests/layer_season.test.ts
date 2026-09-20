@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { cellToLatLng, latLngToCell } from "h3-js";
+import { cellToLatLng, cellToParent, latLngToCell } from "h3-js";
 import {
   HEX_OPACITY_PENDING,
   HEX_OPACITY_INSTALLED,
@@ -94,6 +94,29 @@ describe("season feature builders", () => {
     ]);
   });
 
+  // Same rule as fireSizes/aggregate, applied per fire: a coarse Meteosat
+  // cell whose finer VIIRS children the SAME fire also has is not extra
+  // ground, it is the same ground twice. Drawing it would paint a res-7
+  // blanket the hex band (which dedups) never counted.
+  it("a fire's coarse cell is dropped when that fire also holds its finer children", () => {
+    const child = latLngToCell(45.0, 5.0, 8);
+    const parent = cellToParent(child, 7);
+    const feats = cellFeatures({
+      "fire-1": { digest: "d", first: "2026-07-01", cells: [parent, child] },
+    });
+    expect(feats).toHaveLength(1);
+    expect(feats[0].properties).toEqual({ cell: child, fire_id: "fire-1", km2: 0 });
+  });
+
+  it("another fire's independent coarse cell survives — dedup is per fire, as the pipeline does it", () => {
+    const child = latLngToCell(45.0, 5.0, 8);
+    const parent = cellToParent(child, 7);
+    const feats = cellFeatures({
+      "fire-1": { digest: "d", first: "2026-07-01", cells: [child] },
+      "fire-2": { digest: "e", first: "2026-07-02", cells: [parent] },
+    });
+    expect(feats.map((f) => f.properties?.cell)).toEqual([child, parent]);
+  });
 });
 
 describe("addSeason", () => {

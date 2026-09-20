@@ -24,6 +24,16 @@ const b = latLngToCell(45.0, 5.02, 8);
 const far = latLngToCell(52.0, 13.0, 8);
 const entry = (cells: string[]) => ({ digest: "d", first: "2026-07-01", cells });
 
+/** Stands in for the control's debounce: holds the pending aggregation so a
+ * test decides when it runs, with no real timer anywhere near the suite. */
+function manualScheduler() {
+  let pending: (() => void) | null = null;
+  return {
+    schedule: (fn: () => void) => { pending = fn; },
+    flush: () => { const f = pending; pending = null; f?.(); },
+  };
+}
+
 describe("fireSizes", () => {
   it("sums the real area of each fire's unique cells", () => {
     const sizes = fireSizes({ f1: entry([a, b]), f2: entry([far]) });
@@ -149,10 +159,6 @@ describe("tickPos", () => {
     expect(tickPos(20)).toBeCloseTo(10 / 15, 9);
   });
   it("in the rendered control, tick style.left matches tickPos computation", () => {
-    function manualScheduler() {
-      let pending: (() => void) | null = null;
-      return { schedule: (fn: () => void) => { pending = fn; }, flush: () => { const f = pending; pending = null; f?.(); }, has: () => pending !== null };
-    }
     const sched = manualScheduler();
     const el = document.createElement("div");
     const filter = createSeasonFilter({ onAggregate: vi.fn(), schedule: sched.schedule });
@@ -172,11 +178,6 @@ describe("createSeasonFilter control", () => {
     l: entry([...gridDisk(far, 2)]), // 19 cells ≈ 13 km²
   };
   const sizes = fireSizes(cells);
-
-  function manualScheduler() {
-    let pending: (() => void) | null = null;
-    return { schedule: (fn: () => void) => { pending = fn; }, flush: () => { const f = pending; pending = null; f?.(); }, has: () => pending !== null };
-  }
 
   function mount(schedule?: (fn: () => void) => void) {
     const onAggregate = vi.fn();
@@ -281,6 +282,26 @@ describe("createSeasonFilter control", () => {
     const heights = rects.map((r) => Number(r.getAttribute("height")));
     expect(Math.max(...heights)).toBe(40);
     expect(heights.filter((h) => h > 0)).toHaveLength(3); // three fires in three bins
+  });
+
+  // The distribution is a power law: the 0.5–0.7 km² bin holds thousands of
+  // fires and the 200 km²+ bin holds a handful. Rounded against that maximum
+  // the tail is 0 px — the histogram would tell the reader no fire above
+  // 100 km² burned, while the slider's whole point is to isolate those. A
+  // non-zero count always gets at least one pixel; an EMPTY bin stays empty,
+  // because "rare" and "none" must not look the same either.
+  it("a rare bin beside a huge one still paints a pixel, an empty bin still paints nothing", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    const many = new Map<string, number>();
+    for (let i = 0; i < 1000; i += 1) many.set(`small-${i}`, 0.6); // bin 0
+    many.set("huge", 300); // bin 13 (200–600 km²)
+    filter.setCells({}, many);
+    const heights = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")]
+      .map((r) => Number(r.getAttribute("height")));
+    expect(heights[0]).toBe(40);
+    expect(heights[binIndex(300)]).toBeGreaterThanOrEqual(1);
+    expect(heights[binIndex(3)]).toBe(0); // nothing in 3–4 km²
   });
 
   // The bug this pins: once a first aggregate exists, labelText() used to fall
