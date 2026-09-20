@@ -102,12 +102,23 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
  * polygons darkened shared ground (semi-transparent fills compound) and paid
  * for the extra geometry twice.
  *
- * `km2` = the owning fire's size, for `setCellsThreshold`. */
+ * `km2` = the LARGEST claiming fire's size, so a cell shared by a small and
+ * a big fire stays visible at any threshold the big fire passes — the same
+ * rule `aggregate()` applies to the hex band; `fire_id` is the first claimant,
+ * for click-to-open. */
 export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
+  // Compute the largest claiming fire's size for each cell.
+  const best = new Map<string, number>();
   for (const [fireId, entry] of Object.entries(cells)) {
     const km2 = sizes?.get(fireId) ?? 0;
+    for (const cell of entry.cells) {
+      best.set(cell, Math.max(best.get(cell) ?? 0, km2));
+    }
+  }
+  // Emit each cell once, tagged with the first claimant fire.
+  for (const [fireId, entry] of Object.entries(cells)) {
     for (const cell of entry.cells) {
       if (seen.has(cell)) continue;
       seen.add(cell);
@@ -116,9 +127,7 @@ export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): G
       out.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
-        // km2 is the OWNING fire's size, so the size filter can hide a cell
-        // GPU-side with setFilter instead of re-uploading ~160k polygons.
-        properties: { cell, fire_id: fireId, km2 },
+        properties: { cell, fire_id: fireId, km2: best.get(cell) ?? 0 },
       });
     }
   }
@@ -156,7 +165,7 @@ export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]):
 /** Hide cells whose owning fire is smaller than `threshold` km², on the GPU.
  * `null` clears the filter (threshold 0 = everything). */
 export function setCellsThreshold(map: maplibregl.Map, threshold: number): void {
-  const expr = threshold > 0 ? ([">=", ["get", "km2"], threshold] as never) : null;
+  const expr = threshold > 0 ? ([">=", ["get", "km2"], threshold] as maplibregl.FilterSpecification) : null;
   for (const id of ["season-cells-fill", "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
@@ -333,6 +342,8 @@ export function createSeasonCellsLoader(
     // size histogram needs the cells file regardless of where the camera is.
     if (!opts.force && map.getZoom() < CELLS_PREFETCH_ZOOM) return;
     state = "loading";
+    let loaded: { cells: SeasonCells; sizes: Map<string, number> } | null = null;
+    let gaveUp = false;
     try {
       const r = await fetchImpl(`/data/archive/season_${year}_cells.json`);
       if (!r.ok) throw new Error(`season cells ${r.ok}`);
@@ -346,12 +357,21 @@ export function createSeasonCellsLoader(
         map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
       }
       state = "loaded";
-      hooks.onLoaded?.(cells, sizes);
+      loaded = { cells, sizes };
     } catch (err) {
       failures += 1;
       console.warn("layer_season: cells load failed, hex band stays", err);
       state = "idle";
-      if (failures >= MAX_CELLS_ATTEMPTS) hooks.onGaveUp?.();
+      if (failures >= MAX_CELLS_ATTEMPTS) gaveUp = true;
+    }
+    // Hooks run OUTSIDE the try: a throwing histogram or DOM refresh must
+    // never be laundered into a fetch failure (refetch, repeat onLoaded,
+    // a false onGaveUp) nor escape as an unhandled rejection.
+    try {
+      if (loaded) hooks.onLoaded?.(loaded.cells, loaded.sizes);
+      if (gaveUp) hooks.onGaveUp?.();
+    } catch (err) {
+      console.warn("layer_season: cells hook threw", err);
     }
   };
 

@@ -270,6 +270,17 @@ describe("cells carry km2 and filter GPU-side", () => {
     expect(cellFeatures(cells)[0].properties).toEqual({ cell: a, fire_id: "fire-1", km2: 0 });
   });
 
+  it("cellFeatures carries the largest claimant's km2; fire_id is the first", () => {
+    const shared = latLngToCell(45.0, 5.0, 8);
+    const sizes = new Map([["fire-1", 0.6], ["fire-2", 50]]);
+    const feats = cellFeatures({
+      "fire-1": { digest: "d", first: "2026-07-01", cells: [shared] },
+      "fire-2": { digest: "e", first: "2026-07-02", cells: [shared] },
+    }, sizes);
+    expect(feats).toHaveLength(1);
+    expect(feats[0].properties).toEqual({ cell: shared, fire_id: "fire-1", km2: 50 });
+  });
+
   it("setCellsThreshold filters both cell layers and clears at 0", () => {
     const map = stubMap(10);
     addSeason(map as never, SUMMARY);
@@ -285,9 +296,13 @@ describe("cells carry km2 and filter GPU-side", () => {
     const map = stubMap(6);
     addSeason(map as never, SUMMARY);
     const cellsSetData = map._sources[SEASON_CELLS_SOURCE].setData;
-    setSeasonAggregate(map as never, []);
-    expect(map._sources[SEASON_HEAT_SOURCE].data.features).toHaveLength(0);
-    expect(map._sources[SEASON_HEX_SOURCE].data.features).toHaveLength(0);
+    setSeasonAggregate(map as never, SUMMARY.r6);
+    const heatFeats = map._sources[SEASON_HEAT_SOURCE].data.features;
+    const hexFeats = map._sources[SEASON_HEX_SOURCE].data.features;
+    expect(heatFeats).toHaveLength(1);
+    expect((heatFeats[0].geometry as GeoJSON.Point).type).toBe("Point");
+    expect(hexFeats).toHaveLength(1);
+    expect((hexFeats[0].geometry as GeoJSON.Polygon).type).toBe("Polygon");
     expect(cellsSetData).not.toHaveBeenCalled();
   });
 
@@ -344,5 +359,42 @@ describe("loader force + hooks", () => {
     for (let i = 0; i < 5; i += 1) await loader.ensure();
     expect(fetchFn).toHaveBeenCalledTimes(MAX_CELLS_ATTEMPTS);
     expect(onGaveUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("onLoaded throwing does not refetch or fire onGaveUp", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const onLoaded = vi.fn(() => { throw new Error("hook threw"); });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onLoaded });
+    await loader.ensure({ force: true });
+    expect(loader.state()).toBe("loaded");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    // Verify the hook's exception was logged and not treated as a fetch failure.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("cells hook threw"), expect.any(Error));
+    // A second ensure() should not refetch (state is still loaded).
+    await loader.ensure({ force: true });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it("malformed body (array instead of object) fails the load", async () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = vi.fn(async () => ({ ok: true, json: async () => [] }));
+    const onGaveUp = vi.fn();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onGaveUp });
+    // First attempt: fails, state resets to idle.
+    await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(loader.state()).toBe("idle");
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(0);
+    // Retries until cap.
+    for (let i = 0; i < 4; i += 1) await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(MAX_CELLS_ATTEMPTS);
+    expect(onGaveUp).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
