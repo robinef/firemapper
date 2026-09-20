@@ -157,6 +157,13 @@ export function mountSwitcher(
         applyVis(m);
         renderLegends();
         m.onToggle?.(cb.checked);
+        // Redraw the rows: a module's control (the season histogram + slider)
+        // only exists while its layer is on, and nothing else repaints the
+        // panel until the reader pans. Without this, toggling off strands the
+        // control under an unchecked row and toggling back on leaves the row
+        // bare. This replaces `cb` itself — which is why it runs LAST, once
+        // the handler has finished with it.
+        render(false);
       });
       const text = document.createElement("span");
       text.className = "layer-text";

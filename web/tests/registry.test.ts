@@ -149,6 +149,33 @@ describe("LayerModule.control hook", () => {
     expect(L.querySelector(".layer-control")).toBeNull();
     expect(containers).toHaveLength(2);
   });
+
+  // Nothing else repaints the panel between a toggle and the reader's next
+  // pan, so the toggle has to do it: otherwise the histogram and slider stay
+  // on screen under an unchecked row, and switching the layer back on leaves
+  // the row bare until a moveend happens to arrive.
+  it("a toggle alone removes and restores the control — no refresh(), no camera move", () => {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const modules: LayerModule[] = [
+      { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        control: (el) => { el.textContent = "ctl"; } },
+    ];
+    mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+    const off = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    off.checked = false;
+    off.dispatchEvent(new Event("change"));
+    expect(L.querySelector(".layer-control")).toBeNull();
+    // The re-render replaced the checkbox that dispatched the event — a held
+    // reference is a detached node from here on, so re-query it.
+    const on = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    expect(on).not.toBe(off);
+    expect(on.checked).toBe(false);
+    on.checked = true;
+    on.dispatchEvent(new Event("change"));
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+  });
 });
 
 // The season slider triggers an aggregation that wants to update the row's

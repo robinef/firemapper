@@ -360,7 +360,19 @@ async function boot() {
                 requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void;
               }).requestIdleCallback(fn, { timeout: 3000 })
           : (fn) => { setTimeout(fn, 1500); };
-      idle(() => { void seasonLoader?.ensure({ force: true }); });
+      // …but not on a connection the reader is rationing. Data-saver mode and
+      // 2g are an explicit "spend nothing you don't have to", and the cells
+      // file is megabytes for a histogram nobody asked for yet. Those readers
+      // get the cells — and with them the size filter — on approach to z7.5,
+      // exactly as they did before this feature existed. `connection` is not
+      // in lib.dom (Network Information API, Chromium-only), hence the local
+      // shape and the optional chaining.
+      const conn = (navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }).connection;
+      const constrained =
+        conn?.saveData === true || conn?.effectiveType === "2g" || conn?.effectiveType === "slow-2g";
+      if (!constrained) idle(() => { void seasonLoader?.ensure({ force: true }); });
     }
     wireScaleBlobToggle(
       map,

@@ -297,7 +297,10 @@ export const CELLS_PREFETCH_ZOOM = 7.5;
  * for the session. Nothing resets it on success — a success ends the story. */
 export const MAX_CELLS_ATTEMPTS = 3;
 
-type CellsState = "idle" | "loading" | "loaded";
+/** `fetched` = the file is parsed and its per-fire sizes are known (the size
+ * histogram is live), but the cell geometry has NOT been handed to the map
+ * yet. See createSeasonCellsLoader. */
+type CellsState = "idle" | "loading" | "fetched" | "loaded";
 
 export type SeasonCellsHooks = {
   /** Parsed cells + per-fire km², once, on the first successful load. */
@@ -323,6 +326,16 @@ export type SeasonCellsHooks = {
  * it still renders past z8.5) and resets to idle so the next trigger retries —
  * but only up to MAX_CELLS_ATTEMPTS: ensure() is wired to moveend, so an
  * unbounded retry re-requests a multi-MB file on every pan, forever.
+ *
+ * FETCH AND INSTALL ARE TWO STEPS. The histogram needs the FILE wherever the
+ * camera is; the map needs the GEOMETRY only from z8. Building ~160k hex
+ * polygons and handing maplibre the resulting tens-of-MB FeatureCollection is
+ * hundreds of milliseconds of main-thread work plus a GPU upload, and a reader
+ * who never leaves z4 must not pay it. So a forced fetch below
+ * CELLS_PREFETCH_ZOOM parks the parsed cells in memory ("fetched") and the
+ * first ensure() past the gate — from zoomend/moveend, a toggle, or a
+ * deep link — performs the install ("loaded"). Past the gate, fetch and
+ * install still happen in one go.
  */
 export function createSeasonCellsLoader(
   map: maplibregl.Map,
@@ -333,11 +346,40 @@ export function createSeasonCellsLoader(
 ): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState } {
   let state: CellsState = "idle";
   let failures = 0;
+  /** Parsed cells waiting for the reader to approach the cells band. */
+  let held: { cells: SeasonCells; sizes: Map<string, number> } | null = null;
+
+  /** The install has ONE gate, the camera: `force` waives the gate on the
+   * FETCH (the histogram needs the file at any zoom), never on the install.
+   * An unforced ensure() is not evidence of being past the gate either — a
+   * moveend at z4 is unforced too. */
+  const mayInstall = () => map.getZoom() >= CELLS_PREFETCH_ZOOM;
+
+  /** Hand the held geometry to the map and let the hex band fade out. Kept
+   * total: a missing source leaves the state at "fetched" (the hex band stays
+   * on its pending opacity) so the next trigger can try again — it must never
+   * throw out of a zoomend handler as an unhandled rejection. */
+  const install = (): void => {
+    const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (!held || !source) return;
+    source.setData(fc(cellFeatures(held.cells, held.sizes)));
+    if (map.getLayer("season-hex-fill")) {
+      map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
+    }
+    held = null;
+    state = "loaded";
+  };
 
   const ensure = async (opts: { force?: boolean } = {}): Promise<void> => {
+    if (!isOn()) return;
+    // Fetched but not installed: the only work left is the install, and only
+    // once the reader is close enough to see the cells.
+    if (state === "fetched") {
+      if (mayInstall()) install();
+      return;
+    }
     if (state !== "idle") return;
     if (failures >= MAX_CELLS_ATTEMPTS) return;
-    if (!isOn()) return;
     // `force` (the idle prefetch after boot) skips only the zoom gate: the
     // size histogram needs the cells file regardless of where the camera is.
     if (!opts.force && map.getZoom() < CELLS_PREFETCH_ZOOM) return;
@@ -350,17 +392,19 @@ export function createSeasonCellsLoader(
       const cells = (await r.json()) as SeasonCells;
       if (!cells || typeof cells !== "object" || Array.isArray(cells)) throw new Error("season cells malformed");
       const sizes = fireSizes(cells);
-      const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
-      if (!source) throw new Error("season cells source missing");
-      source.setData(fc(cellFeatures(cells, sizes)));
-      if (map.getLayer("season-hex-fill")) {
-        map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
-      }
-      state = "loaded";
+      if (!map.getSource(SEASON_CELLS_SOURCE)) throw new Error("season cells source missing");
+      held = { cells, sizes };
+      state = "fetched";
+      // Past the zoom gate the reader is about to see the cells: install now,
+      // in the same turn, exactly as before this split existed.
+      if (mayInstall()) install();
       loaded = { cells, sizes };
     } catch (err) {
       failures += 1;
       console.warn("layer_season: cells load failed, hex band stays", err);
+      // Back to idle means back to holding nothing: a half-installed load must
+      // not leave geometry parked where the next retry would not replace it.
+      held = null;
       state = "idle";
       if (failures >= MAX_CELLS_ATTEMPTS) gaveUp = true;
     }

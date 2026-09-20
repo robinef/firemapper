@@ -93,6 +93,7 @@ describe("season feature builders", () => {
       { cell: other, fire_id: "fire-2", km2: 0 },
     ]);
   });
+
 });
 
 describe("addSeason", () => {
@@ -338,7 +339,85 @@ describe("loader force + hooks", () => {
     const [cells, sizes] = onLoaded.mock.calls[0] as [unknown, Map<string, number>];
     expect(cells).toEqual(body);
     expect(sizes.get("fire-1")).toBeGreaterThan(0.5);
+  });
+
+  // The histogram needs the FILE at any zoom; the map needs the GEOMETRY only
+  // from z8. Building ~160k polygons and handing maplibre a 33 MB
+  // FeatureCollection is hundreds of ms of main-thread work plus a GPU upload
+  // — a reader who stays at z4 must never pay it.
+  it("a forced fetch below the prefetch zoom stops at 'fetched': sizes reported, nothing installed", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const onLoaded = vi.fn();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onLoaded });
+    await loader.ensure({ force: true });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(onLoaded).toHaveBeenCalledTimes(1);
+    expect(loader.state()).toBe("fetched");
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(0);
+    expect(map._paint["season-hex-fill"]).toBeUndefined();
+
+    // Approaching the cells band installs what is already in memory — no
+    // second request.
+    map.zoom = 8;
+    map.fire("zoomend");
+    await Promise.resolve();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(loader.state()).toBe("loaded");
+    const sizes = (onLoaded.mock.calls[0] as [unknown, Map<string, number>])[1];
     expect(map._sources[SEASON_CELLS_SOURCE].data.features[0].properties.km2).toBeCloseTo(sizes.get("fire-1")!, 6);
+    expect(map._paint["season-hex-fill"]["fill-opacity"]).toEqual(HEX_OPACITY_INSTALLED);
+  });
+
+  // Panning at z4 fires moveend → ensure() with no `force`. The zoom gate for
+  // a FETCH is below the fetched branch, so "unforced" cannot be read as
+  // "past the gate" here: only the zoom itself may release the install.
+  it("panning below the prefetch zoom does not install the held cells", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure({ force: true });
+    map.fire("moveend");
+    map.fire("zoomend");
+    await Promise.resolve();
+    expect(loader.state()).toBe("fetched");
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(0);
+    expect(map._paint["season-hex-fill"]).toBeUndefined();
+  });
+
+  it("a deferred install repeats neither the setData nor the fetch", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure({ force: true });
+    map.zoom = 10;
+    await loader.ensure();
+    await loader.ensure();
+    map.fire("moveend");
+    await Promise.resolve();
+    expect(map._sources[SEASON_CELLS_SOURCE].setData).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(loader.state()).toBe("loaded");
+  });
+
+  // The size slider is usable at z4, long before any cell geometry exists:
+  // the threshold is a LAYER filter, so it survives being set first.
+  it("a threshold set while the cells are only 'fetched' still applies after the install", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    await loader.ensure({ force: true });
+    setCellsThreshold(map as never, 4);
+    map.zoom = 8;
+    map.fire("zoomend");
+    await Promise.resolve();
+    expect(loader.state()).toBe("loaded");
+    expect(map._filters["season-cells-fill"]).toEqual([">=", ["get", "km2"], 4]);
+    expect(map._filters["season-cells-line"]).toEqual([">=", ["get", "km2"], 4]);
   });
 
   it("force still respects the layer being off", async () => {
@@ -369,7 +448,8 @@ describe("loader force + hooks", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onLoaded });
     await loader.ensure({ force: true });
-    expect(loader.state()).toBe("loaded");
+    // z4: the data is in memory, the install waits for the approach to z7.5.
+    expect(loader.state()).toBe("fetched");
     expect(fetchFn).toHaveBeenCalledTimes(1);
     // Verify the hook's exception was logged and not treated as a fetch failure.
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("cells hook threw"), expect.any(Error));
