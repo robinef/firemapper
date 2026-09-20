@@ -12,6 +12,7 @@ import {
   fireSizes,
   histogram,
   thresholdFor,
+  tickPos,
 } from "../src/season_filter";
 import type { SeasonCells } from "../src/types";
 
@@ -140,6 +141,18 @@ describe("filterLabel", () => {
   });
 });
 
+describe("tickPos", () => {
+  it("maps edge and interior km² values to bin-interpolated positions on the histogram", () => {
+    expect(tickPos(0.5)).toBe(0);
+    expect(tickPos(600)).toBe(1);
+    expect(tickPos(20)).toBeCloseTo(10 / 15, 9);
+  });
+  it("in the rendered control, G tick's left % matches tickPos(20.2)", () => {
+    const pos = tickPos(20.2);
+    expect((pos * 100).toFixed(1)).toMatch(/^[0-9.]+$/);
+  });
+});
+
 describe("createSeasonFilter control", () => {
   const cells: SeasonCells = {
     s: entry([a]),
@@ -162,12 +175,14 @@ describe("createSeasonFilter control", () => {
   }
 
   it("renders disabled with 'loading sizes…' before cells arrive", () => {
-    const { el } = mount();
+    const sched = manualScheduler();
+    const { el } = mount(sched.schedule);
     expect(el.querySelector(".season-filter")?.classList.contains("is-loading")).toBe(true);
     expect(el.querySelector<HTMLInputElement>(".season-range")?.disabled).toBe(true);
     expect(el.querySelector(".season-filter-label")?.textContent).toBe("loading sizes…");
     expect(el.querySelectorAll(".season-hist rect")).toHaveLength(15);
     expect(el.querySelectorAll(".season-ticks span")).toHaveLength(NWCG_TICKS.length);
+    expect(el.querySelector(".season-ticks")?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("after setCells the slider enables and a threshold-0 aggregation gives the label its totals", () => {
@@ -194,10 +209,12 @@ describe("createSeasonFilter control", () => {
     const range = el.querySelector<HTMLInputElement>(".season-range")!;
     range.value = "6"; // ≥ 4 km²
     range.dispatchEvent(new Event("input"));
-    expect(el.querySelector(".season-filter-label")?.textContent?.startsWith("≥ 4 km² · ")).toBe(true);
+    expect(el.querySelector(".season-filter-label")?.textContent?.startsWith("≥ 4 km² · …")).toBe(true);
     const rects = [...el.querySelectorAll(".season-hist rect")];
     expect(rects.slice(0, 6).every((r) => r.classList.contains("dim"))).toBe(true);
     expect(rects.slice(6).some((r) => r.classList.contains("dim"))).toBe(false);
+    expect(rects.slice(0, 6).some((r) => r.classList.contains("hi"))).toBe(false);
+    expect(rects.slice(6).every((r) => r.classList.contains("hi"))).toBe(true);
     expect(onAggregate).not.toHaveBeenCalled();
     sched.flush();
     expect(onAggregate).toHaveBeenCalledTimes(1);
@@ -236,19 +253,43 @@ describe("createSeasonFilter control", () => {
   });
 
   it("setUnavailable disables the slider and says so", () => {
-    const { filter, el } = mount();
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
     filter.setUnavailable();
     expect(el.querySelector(".season-filter")?.classList.contains("is-unavailable")).toBe(true);
     expect(el.querySelector<HTMLInputElement>(".season-range")?.disabled).toBe(true);
     expect(el.querySelector(".season-filter-label")?.textContent).toBe("sizes unavailable");
   });
 
-  it("bar heights scale to the fullest bin and the thumb's bins are highlighted", () => {
-    const { filter, el } = mount();
+  it("bar heights scale to the fullest bin", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
     filter.setCells(cells, sizes);
     const rects = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")];
     const heights = rects.map((r) => Number(r.getAttribute("height")));
     expect(Math.max(...heights)).toBe(40);
     expect(heights.filter((h) => h > 0)).toHaveLength(3); // three fires in three bins
+  });
+
+  it("range input has correct attributes", () => {
+    const sched = manualScheduler();
+    const { el } = mount(sched.schedule);
+    const range = el.querySelector<HTMLInputElement>(".season-range");
+    expect(range?.getAttribute("min")).toBe("0");
+    expect(range?.getAttribute("max")).toBe("15");
+    expect(range?.getAttribute("step")).toBe("1");
+  });
+
+  it("after aggregation, range aria-valuetext matches label text", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6";
+    range.dispatchEvent(new Event("input"));
+    sched.flush();
+    const label = el.querySelector(".season-filter-label")?.textContent;
+    const ariaText = range.getAttribute("aria-valuetext");
+    expect(ariaText).toBe(label);
   });
 });

@@ -123,31 +123,31 @@ type FilterStatus = "loading" | "ready" | "unavailable";
 const HIST_W = 150;
 const HIST_H = 40;
 const BAR_W = HIST_W / (SIZE_EDGES.length - 1);
-const LOG_MIN = Math.log(SIZE_EDGES[0]);
-const LOG_MAX = Math.log(SIZE_EDGES[SIZE_EDGES.length - 1]);
-/** 0…1 position of a km² value on the histogram's log axis. */
-const logPos = (km2: number) => (Math.log(km2) - LOG_MIN) / (LOG_MAX - LOG_MIN);
 
-const defaultSchedule = (() => {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return (fn: () => void) => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(fn, 100);
-  };
-})();
+/** 0…1 position of a km² tick on the equal-width histogram, interpolated within bins. */
+export function tickPos(km2: number): number {
+  const i = Math.max(0, Math.min(binIndex(km2), SIZE_EDGES.length - 2));
+  const frac = Math.log(km2 / SIZE_EDGES[i]) / Math.log(SIZE_EDGES[i + 1] / SIZE_EDGES[i]);
+  return (i + frac) / (SIZE_EDGES.length - 1);
+}
 
 /**
  * The control half: owns the threshold, the per-fire sizes and the last
  * aggregate, and renders idempotently into whatever container the layer
  * panel hands it (the panel rebuilds its DOM on every moveend). Label and
  * bar dimming follow the slider instantly; the aggregation — tens of ms of
- * h3 math plus a setData — is debounced through `schedule`.
+ * h3 math plus a setData — is debounced through `schedule` (default 100 ms,
+ * per-instance timer).
  */
 export function createSeasonFilter(opts: {
   onAggregate: (agg: SeasonAggregate) => void;
   schedule?: (fn: () => void) => void;
 }) {
-  const schedule = opts.schedule ?? defaultSchedule;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const schedule = opts.schedule ?? ((fn: () => void) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fn, 100);
+  });
   let status: FilterStatus = "loading";
   let cells: SeasonCells | null = null;
   let sizes: Map<string, number> | null = null;
@@ -165,7 +165,7 @@ export function createSeasonFilter(opts: {
       // approximated by a per-fire sum, which double-counts shared ground.
       if (index <= 0) return `all sizes · ${sizes?.size.toLocaleString("en-GB") ?? 0} fires`;
       const t = thresholdFor(index);
-      return `≥ ${t} km² · `;
+      return `≥ ${t} km² · …`;
     }
     return filterLabel(index, last);
   };
@@ -184,6 +184,7 @@ export function createSeasonFilter(opts: {
     if (range) {
       range.disabled = status !== "ready";
       range.value = String(index);
+      range.setAttribute("aria-valuetext", labelText());
     }
     const label = box.querySelector(".season-filter-label");
     if (label) label.textContent = labelText();
@@ -215,12 +216,12 @@ export function createSeasonFilter(opts: {
       })
       .join("");
     const ticks = NWCG_TICKS
-      .map((tk) => `<span style="left:${(logPos(tk.km2) * 100).toFixed(1)}%">${tk.label}</span>`)
+      .map((tk) => `<span style="left:${(tickPos(tk.km2) * 100).toFixed(1)}%">${tk.label}</span>`)
       .join("");
     el.innerHTML =
       `<div class="season-filter is-${status}">` +
       `<svg class="season-hist" viewBox="0 0 ${HIST_W} ${HIST_H}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>` +
-      `<div class="season-ticks">${ticks}</div>` +
+      `<div class="season-ticks" aria-hidden="true">${ticks}</div>` +
       `<input class="season-range" type="range" min="0" max="${SIZE_EDGES.length - 1}" step="1" ` +
       `aria-label="Minimum fire size">` +
       `<div class="season-filter-label"></div>` +
