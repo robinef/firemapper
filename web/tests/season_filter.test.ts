@@ -107,11 +107,21 @@ describe("aggregate", () => {
     expect(flat).toContain(cellToParent(far, 6));
   });
 
-  it("applies the nested-parent rule across fires", () => {
+  it("applies the nested-parent rule inside one fire", () => {
+    const parent = cellToParent(a, 7);
+    const one: SeasonCells = { p: entry([parent, a]) };
+    const agg = aggregate(one, fireSizes(one), 0);
+    expect(agg.r6).toEqual([[cellToParent(a, 6), r1(km2(a))]]);
+    expect(fireSizes(one).get("p")).toBeCloseTo(km2(a), 6);
+  });
+
+  it("does NOT dedup a parent from one fire against a child from another — pipeline parity", () => {
     const parent = cellToParent(a, 7);
     const two: SeasonCells = { p: entry([parent]), c: entry([a]) };
     const agg = aggregate(two, fireSizes(two), 0);
-    expect(agg.r6).toEqual([[cellToParent(a, 6), r1(km2(a))]]);
+    // pipeline/export_season.py::aggregate_r6 dedups per fire, then unions:
+    // both cells survive, so the hex carries parent + child area.
+    expect(agg.r6).toEqual([[cellToParent(a, 6), r1(km2(parent) + km2(a))]]);
   });
 
   it("empty selection yields no hexes and zero totals", () => {

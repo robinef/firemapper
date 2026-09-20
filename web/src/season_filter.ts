@@ -27,12 +27,13 @@ export type SeasonAggregate = { threshold: number; r6: [string, number][]; fires
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-/** Real km² of each fire's unique cells. */
+/** Real km² of each fire's unique cells, with nested-cell dedup applied per fire
+ * (matching pipeline/geo_local.py::true_area_km2). */
 export function fireSizes(cells: SeasonCells): Map<string, number> {
   const out = new Map<string, number>();
   for (const [id, entry] of Object.entries(cells)) {
     let sum = 0;
-    for (const c of new Set(entry.cells)) sum += cellArea(c, UNITS.km2);
+    for (const c of dedupNested(new Set(entry.cells))) sum += cellArea(c, UNITS.km2);
     out.set(id, sum);
   }
   return out;
@@ -86,18 +87,21 @@ export function dedupNested(cells: Set<string>): Set<string> {
 }
 
 /** Re-aggregate the kept fires (km² ≥ threshold) exactly as the pipeline
- * does: union of cells, nested dedup, roll-up to res 6, per-hex km² rounded
- * to 0.1, total = rounded sum of the rounded hexes. */
+ * does (pipeline/export_season.py::aggregate_r6): nested dedup runs INSIDE
+ * each fire, then the union across fires counts each cell once. A res-7 cell
+ * from one fire and its res-8 child from another BOTH survive — that is the
+ * pipeline's answer and the published numbers are the contract. Roll-up to res
+ * 6, per-hex km² rounded to 0.1, total = rounded sum of the rounded hexes. */
 export function aggregate(cells: SeasonCells, sizes: Map<string, number>, threshold: number): SeasonAggregate {
   const union = new Set<string>();
   let fires = 0;
   for (const [id, entry] of Object.entries(cells)) {
     if ((sizes.get(id) ?? 0) < threshold) continue;
     fires += 1;
-    for (const c of entry.cells) union.add(c);
+    for (const c of dedupNested(new Set(entry.cells))) union.add(c);
   }
   const totals = new Map<string, number>();
-  for (const c of dedupNested(union)) {
+  for (const c of union) {
     const parent = getResolution(c) > AGG_RES ? cellToParent(c, AGG_RES) : c;
     totals.set(parent, (totals.get(parent) ?? 0) + cellArea(c, UNITS.km2));
   }
@@ -109,7 +113,7 @@ export function aggregate(cells: SeasonCells, sizes: Map<string, number>, thresh
 }
 
 export function filterLabel(index: number, agg: { fires: number; km2: number }): string {
-  const n = (v: number) => Math.round(v).toLocaleString("en-US");
+  const n = (v: number) => Math.round(v).toLocaleString("en-GB");
   const head = index <= 0 ? "all sizes" : `≥ ${thresholdFor(index)} km²`;
   return `${head} · ${n(agg.fires)} fires · ${n(agg.km2)} km²`;
 }
