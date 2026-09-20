@@ -39,6 +39,11 @@ export interface LayerModule {
    *  demand (layer_season.ts's cells) needs this: a zoom event alone never
    *  fires when the layer is switched on while already zoomed in. */
   onToggle?: (on: boolean) => void;
+  /** Render a custom control under the row while the layer is on — e.g. the
+   *  season size slider. Called on EVERY panel render (the panel rebuilds its
+   *  DOM on moveend, toggles and level changes), so the module owns the
+   *  control's state and must render idempotently into the fresh container. */
+  control?: (container: HTMLElement) => void;
   /** Manifest `layers` keys this module draws from. A module is greyed when any
    *  of them is past its age budget — derived layers (spread, isochrones) name
    *  the source they were computed from, not themselves. */
@@ -175,6 +180,13 @@ export function mountSwitcher(
         span.textContent = m.filter.label;
         f.append(fcb, span);
         layersEl.append(f);
+      }
+
+      if (m.control && state.get(m.key)) {
+        const c = document.createElement("div");
+        c.className = "layer-control";
+        m.control(c);
+        layersEl.append(c);
       }
     }
     renderLegends();

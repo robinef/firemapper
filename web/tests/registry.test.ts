@@ -124,3 +124,29 @@ describe("liveOnly layers on a historical fire", () => {
     expect(map.vis["wind-arrows"]).toBe("visible");
   });
 });
+
+describe("LayerModule.control hook", () => {
+  it("renders a module's control under its row on every render while on, never while off", () => {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const containers: HTMLElement[] = [];
+    const modules: LayerModule[] = [
+      { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        control: (el) => { containers.push(el); el.textContent = "ctl"; } },
+    ];
+    const sw = mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    expect(containers).toHaveLength(1);
+    expect(containers[0].className).toBe("layer-control");
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+    // The control sits directly after its row.
+    expect(L.querySelector(".layer-row")?.nextElementSibling?.className).toBe("layer-control");
+    sw.refresh();
+    expect(containers).toHaveLength(2);
+    const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    cb.checked = false;
+    cb.dispatchEvent(new Event("change"));
+    sw.refresh();
+    expect(L.querySelector(".layer-control")).toBeNull();
+    expect(containers).toHaveLength(2);
+  });
+});
