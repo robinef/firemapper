@@ -39,6 +39,11 @@ export interface LayerModule {
    *  demand (layer_season.ts's cells) needs this: a zoom event alone never
    *  fires when the layer is switched on while already zoomed in. */
   onToggle?: (on: boolean) => void;
+  /** Render a custom control under the row while the layer is on — e.g. the
+   *  season size slider. Called on EVERY panel render (the panel rebuilds its
+   *  DOM on moveend, toggles and level changes), so the module owns the
+   *  control's state and must render idempotently into the fresh container. */
+  control?: (container: HTMLElement) => void;
   /** Manifest `layers` keys this module draws from. A module is greyed when any
    *  of them is past its age budget — derived layers (spread, isochrones) name
    *  the source they were computed from, not themselves. */
@@ -57,6 +62,12 @@ export interface Switcher {
   isOn(key: string): boolean;
   /** Re-render the rows, so camera-dependent status lines update. */
   refresh(): void;
+  /** Re-evaluate ONE module's status line in place, without rebuilding the
+   *  panel. A control that lives under the row (the season size slider)
+   *  must keep its DOM node — and therefore keyboard focus and pointer
+   *  capture — across the aggregation it triggers; a full render() would
+   *  replace it mid-drag. */
+  refreshStatus(key: string): void;
   /** Swap the panel between the overview (1) and per-fire detail (2) layer sets.
    *  `historical` force-hides `liveOnly` modules at level 2 — pass true for a
    *  settled past scar or a closed live fire, which have no current-moment
@@ -82,6 +93,10 @@ export function mountSwitcher(
   /** Filter state lives here, not in the module, so a re-render does not reset
    * a choice the reader made. */
   const filters = new Map<string, boolean>();
+  /** The `.layer-text` span of each row currently in the DOM, so one status
+   *  line can be rewritten without touching the rest of the panel. Rebuilt by
+   *  every render, so it never points at a detached node. */
+  const rowText = new Map<string, HTMLElement>();
   let level: Level = 1;
   let historical = false;
   const inLevel = (m: LayerModule) =>
@@ -128,6 +143,7 @@ export function mountSwitcher(
   const render = (reassertVis = true) => {
     const title = level === 2 ? "This fire · detail" : "Layers";
     layersEl.innerHTML = `<div class='layers-title'>${title}</div>`;
+    rowText.clear();
     for (const m of modules) {
       if (reassertVis) applyVis(m); // out-of-level hidden, in-level follow their toggle
       if (!inLevel(m)) continue;
@@ -141,6 +157,13 @@ export function mountSwitcher(
         applyVis(m);
         renderLegends();
         m.onToggle?.(cb.checked);
+        // Redraw the rows: a module's control (the season histogram + slider)
+        // only exists while its layer is on, and nothing else repaints the
+        // panel until the reader pans. Without this, toggling off strands the
+        // control under an unchecked row and toggling back on leaves the row
+        // bare. This replaces `cb` itself — which is why it runs LAST, once
+        // the handler has finished with it.
+        render(false);
       });
       const text = document.createElement("span");
       text.className = "layer-text";
@@ -158,6 +181,7 @@ export function mountSwitcher(
         (reason ? `<span class="layer-reason">⚠ ${reason}</span>` : "") +
         (status ? `<span class="layer-count">${status}</span>` : "");
       row.append(cb, text);
+      rowText.set(m.key, text);
       layersEl.append(row);
 
       if (m.filter && state.get(m.key)) {
@@ -176,8 +200,38 @@ export function mountSwitcher(
         f.append(fcb, span);
         layersEl.append(f);
       }
+
+      if (m.control && state.get(m.key)) {
+        const c = document.createElement("div");
+        c.className = "layer-control";
+        m.control(c);
+        layersEl.append(c);
+      }
     }
     renderLegends();
+  };
+
+  /** Rewrite one row's `.layer-count` and nothing else. Every other node in
+   *  the panel — including the module's control and whatever the reader is
+   *  holding focus or a pointer on inside it — is left exactly where it is. */
+  const refreshStatus = (key: string): void => {
+    const m = modules.find((x) => x.key === key);
+    const text = rowText.get(key);
+    if (!m || !text) return;
+    const status = inLevel(m) && state.get(m.key) ? (m.status?.() ?? null) : null;
+    const existing = text.querySelector(".layer-count");
+    if (status == null) {
+      existing?.remove();
+      return;
+    }
+    if (existing) {
+      existing.textContent = status;
+      return;
+    }
+    const span = document.createElement("span");
+    span.className = "layer-count";
+    span.textContent = status;
+    text.append(span);
   };
 
   render();
@@ -185,6 +239,7 @@ export function mountSwitcher(
   return {
     isOn: (k) => state.get(k) ?? false,
     refresh: () => render(false),
+    refreshStatus,
     setLevel: (l, opts) => {
       level = l;
       historical = !!opts?.historical;

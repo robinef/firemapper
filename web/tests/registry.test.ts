@@ -124,3 +124,133 @@ describe("liveOnly layers on a historical fire", () => {
     expect(map.vis["wind-arrows"]).toBe("visible");
   });
 });
+
+describe("LayerModule.control hook", () => {
+  it("renders a module's control under its row on every render while on, never while off", () => {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const containers: HTMLElement[] = [];
+    const modules: LayerModule[] = [
+      { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        control: (el) => { containers.push(el); el.textContent = "ctl"; } },
+    ];
+    const sw = mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    expect(containers).toHaveLength(1);
+    expect(containers[0].className).toBe("layer-control");
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+    // The control sits directly after its row.
+    expect(L.querySelector(".layer-row")?.nextElementSibling?.className).toBe("layer-control");
+    sw.refresh();
+    expect(containers).toHaveLength(2);
+    const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    cb.checked = false;
+    cb.dispatchEvent(new Event("change"));
+    sw.refresh();
+    expect(L.querySelector(".layer-control")).toBeNull();
+    expect(containers).toHaveLength(2);
+  });
+
+  // Nothing else repaints the panel between a toggle and the reader's next
+  // pan, so the toggle has to do it: otherwise the histogram and slider stay
+  // on screen under an unchecked row, and switching the layer back on leaves
+  // the row bare until a moveend happens to arrive.
+  it("a toggle alone removes and restores the control — no refresh(), no camera move", () => {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const modules: LayerModule[] = [
+      { key: "season", label: "Burned this year", question: "q", layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        control: (el) => { el.textContent = "ctl"; } },
+    ];
+    mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+    const off = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    off.checked = false;
+    off.dispatchEvent(new Event("change"));
+    expect(L.querySelector(".layer-control")).toBeNull();
+    // The re-render replaced the checkbox that dispatched the event — a held
+    // reference is a detached node from here on, so re-query it.
+    const on = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    expect(on).not.toBe(off);
+    expect(on.checked).toBe(false);
+    on.checked = true;
+    on.dispatchEvent(new Event("change"));
+    expect(L.querySelector(".layer-control")?.textContent).toBe("ctl");
+  });
+});
+
+// The season slider triggers an aggregation that wants to update the row's
+// count. Doing that with refresh() replaces the panel — and with it the range
+// input the reader is holding — so an arrow key lands on <body> and a paused
+// drag loses pointer capture. refreshStatus rewrites the count and nothing else.
+describe("Switcher.refreshStatus", () => {
+  function mountSeason(status: () => string | null) {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const modules: LayerModule[] = [
+      {
+        key: "season", label: "Burned this year", question: "q",
+        layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        status,
+        control: (el) => { el.innerHTML = '<input class="season-range" type="range">'; },
+      },
+    ];
+    const sw = mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    return { sw, L, count: () => L.querySelector(".layer-count")?.textContent ?? null };
+  }
+
+  it("updates the row's count in place when status() starts returning something new", () => {
+    let text = "21,822 fires · 60,800 km²";
+    const { sw, count } = mountSeason(() => text);
+    expect(count()).toBe("21,822 fires · 60,800 km²");
+    text = "4,422 fires · 32,533 km²";
+    sw.refreshStatus("season");
+    expect(count()).toBe("4,422 fires · 32,533 km²");
+  });
+
+  it("keeps the control and the input inside it as the SAME nodes", () => {
+    let text = "a";
+    const { sw, L } = mountSeason(() => text);
+    const controlBefore = L.querySelector(".layer-control")!;
+    const inputBefore = L.querySelector<HTMLInputElement>(".season-range")!;
+    text = "b";
+    sw.refreshStatus("season");
+    // toBe, not toEqual: node identity is the whole point — a replaced input
+    // is a lost focus and a lost drag, however identical it looks.
+    expect(L.querySelector(".layer-control")).toBe(controlBefore);
+    expect(L.querySelector(".season-range")).toBe(inputBefore);
+    expect(document.contains(inputBefore)).toBe(true);
+  });
+
+  it("holds keyboard focus on the control across a status update", () => {
+    const { sw, L } = mountSeason(() => "a");
+    const input = L.querySelector<HTMLInputElement>(".season-range")!;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    sw.refreshStatus("season");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("leaves an off module's row without a count", () => {
+    const { sw, L, count } = mountSeason(() => "still counting");
+    const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    cb.checked = false;
+    cb.dispatchEvent(new Event("change"));
+    sw.refreshStatus("season");
+    expect(count()).toBeNull();
+  });
+
+  it("adds a count to a row that had none when status() was null", () => {
+    let text: string | null = null;
+    const { sw, count } = mountSeason(() => text);
+    expect(count()).toBeNull();
+    text = "now there is one";
+    sw.refreshStatus("season");
+    expect(count()).toBe("now there is one");
+  });
+
+  it("is a no-op for an unknown key", () => {
+    const { sw, count } = mountSeason(() => "a");
+    expect(() => sw.refreshStatus("nope")).not.toThrow();
+    expect(count()).toBe("a");
+  });
+});

@@ -42,7 +42,10 @@ import {
   createSeasonCellsLoader,
   seasonLegend,
   seasonStatus,
+  setCellsThreshold,
+  setSeasonAggregate,
 } from "./layer_season";
+import { createSeasonFilter } from "./season_filter";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -169,6 +172,9 @@ async function boot() {
     // Assigned right after mountSwitcher (it needs switcher.isOn); the
     // module's onToggle closes over the variable, not the value.
     let seasonLoader: ReturnType<typeof createSeasonCellsLoader> | null = null;
+    // Owns the size threshold and re-aggregation; assigned with the loader
+    // below. The module's status/control close over the variable.
+    let seasonFilter: ReturnType<typeof createSeasonFilter> | null = null;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -296,9 +302,19 @@ async function boot() {
             question: `Where did ${season.year} burn?`,
             layerIds: SEASON_LAYER_IDS,
             defaultOn: true,
-            status: () => seasonStatus(season),
+            // Filtered totals once the reader has moved the slider; the
+            // pipeline's totals until then — one number in the panel, never two.
+            status: () => {
+              const s = seasonFilter?.summary();
+              return seasonStatus(s ? { ...season, fires: s.fires, km2: s.km2 } : season);
+            },
+            control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
-            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure(); },
+            // `force`: the zoom gate is about painting cells, but the size
+            // histogram is needed at any zoom. Toggling the layer off before
+            // the idle prefetch ran (ensure() returns early while it is off)
+            // otherwise strands the control on "loading sizes…" for good.
+            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: true }); },
           } as LayerModule]
         : []),
     ];
@@ -310,8 +326,53 @@ async function boot() {
       manifest,
     );
     if (season) {
-      seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"));
+      seasonFilter = createSeasonFilter({
+        onAggregate: (agg) => {
+          setSeasonAggregate(map, agg.r6);
+          setCellsThreshold(map, agg.threshold);
+          // Status line only: a full refresh would rebuild the panel and hand
+          // the reader a brand-new range input mid-interaction, dropping
+          // keyboard focus to <body> and breaking a paused drag's pointer
+          // capture. The filter repaints its own label after this returns.
+          switcher.refreshStatus("season");
+        },
+      });
+      // mountSwitcher renders once on the way in, while seasonFilter is still
+      // null — the module's control() drew nothing into an empty box. Redraw
+      // now that it exists, or the row stays blank until the cells land: on a
+      // slow connection that is precisely when the "loading sizes…" state is
+      // the only thing the reader has.
+      switcher.refresh();
+      seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"), fetch, {
+        onLoaded: (cells, sizes) => { seasonFilter?.setCells(cells, sizes); switcher.refresh(); },
+        onGaveUp: () => { seasonFilter?.setUnavailable(); switcher.refresh(); },
+      });
       void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
+      // The size histogram needs the cells file wherever the camera is, so
+      // fetch it once the boot work has drained — after first paint, never
+      // before it.
+      // The timeout caps the wait: on a page that never goes idle the
+      // histogram would otherwise never arrive.
+      const idle: (fn: () => void) => void =
+        typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function"
+          ? (fn) =>
+              (window as unknown as {
+                requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void;
+              }).requestIdleCallback(fn, { timeout: 3000 })
+          : (fn) => { setTimeout(fn, 1500); };
+      // …but not on a connection the reader is rationing. Data-saver mode and
+      // 2g are an explicit "spend nothing you don't have to", and the cells
+      // file is megabytes for a histogram nobody asked for yet. Those readers
+      // get the cells — and with them the size filter — on approach to z7.5,
+      // exactly as they did before this feature existed. `connection` is not
+      // in lib.dom (Network Information API, Chromium-only), hence the local
+      // shape and the optional chaining.
+      const conn = (navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }).connection;
+      const constrained =
+        conn?.saveData === true || conn?.effectiveType === "2g" || conn?.effectiveType === "slow-2g";
+      if (!constrained) idle(() => { void seasonLoader?.ensure({ force: true }); });
     }
     wireScaleBlobToggle(
       map,
