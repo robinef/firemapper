@@ -42,7 +42,10 @@ import {
   createSeasonCellsLoader,
   seasonLegend,
   seasonStatus,
+  setCellsThreshold,
+  setSeasonAggregate,
 } from "./layer_season";
+import { createSeasonFilter } from "./season_filter";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -169,6 +172,9 @@ async function boot() {
     // Assigned right after mountSwitcher (it needs switcher.isOn); the
     // module's onToggle closes over the variable, not the value.
     let seasonLoader: ReturnType<typeof createSeasonCellsLoader> | null = null;
+    // Owns the size threshold and re-aggregation; assigned with the loader
+    // below. The module's status/control close over the variable.
+    let seasonFilter: ReturnType<typeof createSeasonFilter> | null = null;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -296,7 +302,13 @@ async function boot() {
             question: `Where did ${season.year} burn?`,
             layerIds: SEASON_LAYER_IDS,
             defaultOn: true,
-            status: () => seasonStatus(season),
+            // Filtered totals once the reader has moved the slider; the
+            // pipeline's totals until then — one number in the panel, never two.
+            status: () => {
+              const s = seasonFilter?.summary();
+              return seasonStatus(s ? { ...season, fires: s.fires, km2: s.km2 } : season);
+            },
+            control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
             onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure(); },
           } as LayerModule]
@@ -310,8 +322,32 @@ async function boot() {
       manifest,
     );
     if (season) {
-      seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"));
+      seasonFilter = createSeasonFilter({
+        onAggregate: (agg) => {
+          setSeasonAggregate(map, agg.r6);
+          setCellsThreshold(map, agg.threshold);
+          switcher.refresh(); // status line + control label
+        },
+      });
+      // mountSwitcher renders once on the way in, while seasonFilter is still
+      // null — the module's control() drew nothing into an empty box. Redraw
+      // now that it exists, or the row stays blank until the cells land: on a
+      // slow connection that is precisely when the "loading sizes…" state is
+      // the only thing the reader has.
+      switcher.refresh();
+      seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"), fetch, {
+        onLoaded: (cells, sizes) => { seasonFilter?.setCells(cells, sizes); switcher.refresh(); },
+        onGaveUp: () => { seasonFilter?.setUnavailable(); switcher.refresh(); },
+      });
       void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
+      // The size histogram needs the cells file wherever the camera is, so
+      // fetch it once the boot work has drained — after first paint, never
+      // before it.
+      const idle: (fn: () => void) => void =
+        typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function"
+          ? (fn) => (window as unknown as { requestIdleCallback: (cb: () => void) => void }).requestIdleCallback(fn)
+          : (fn) => { setTimeout(fn, 1500); };
+      idle(() => { void seasonLoader?.ensure({ force: true }); });
     }
     wireScaleBlobToggle(
       map,

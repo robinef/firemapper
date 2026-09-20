@@ -158,7 +158,10 @@ Layers live in `web/src/layer_*.ts`, one module per layer. The overview's
 "Burned this year" layer (`layer_season.ts`) is the one that renders a whole
 season rather than the last two days: a heatmap far out, res-6 hex bins in the
 middle, the real burned cells from zoom 8, all sources added at boot and the
-cells file fetched lazily on approach. The ramp breaks are tuned on real archive
+cells file fetched on idle after first paint (or on approach to zoom 8) and,
+once loaded, driving a minimum-fire-size slider under a log histogram
+(`season_filter.ts`) that re-aggregates the hexes client-side with the
+pipeline's own dedup rule and filters the cells GPU-side. The ramp breaks are tuned on real archive
 data (`SEASON_HEX_BREAKS` in `layer_season.ts` records the distribution). The per-fire view is
 `web/src/firecard.ts`; the bottom histogram is `web/src/timeline.ts`.
 
