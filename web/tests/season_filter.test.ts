@@ -144,12 +144,24 @@ describe("filterLabel", () => {
 describe("tickPos", () => {
   it("maps edge and interior km² values to bin-interpolated positions on the histogram", () => {
     expect(tickPos(0.5)).toBe(0);
+    expect(tickPos(0.3)).toBe(0);
     expect(tickPos(600)).toBe(1);
     expect(tickPos(20)).toBeCloseTo(10 / 15, 9);
   });
-  it("in the rendered control, G tick's left % matches tickPos(20.2)", () => {
-    const pos = tickPos(20.2);
-    expect((pos * 100).toFixed(1)).toMatch(/^[0-9.]+$/);
+  it("in the rendered control, tick style.left matches tickPos computation", () => {
+    function manualScheduler() {
+      let pending: (() => void) | null = null;
+      return { schedule: (fn: () => void) => { pending = fn; }, flush: () => { const f = pending; pending = null; f?.(); }, has: () => pending !== null };
+    }
+    const sched = manualScheduler();
+    const el = document.createElement("div");
+    const filter = createSeasonFilter({ onAggregate: vi.fn(), schedule: sched.schedule });
+    filter.control(el);
+    const spans = [...el.querySelectorAll<HTMLElement>(".season-ticks span")];
+    const g = spans.find((s) => s.textContent === "G")!;
+    expect(g.style.left).toBe(`${(tickPos(20.2) * 100).toFixed(1)}%`);
+    const e = spans.find((s) => s.textContent === "E")!;
+    expect(e.style.left).toBe(`${(tickPos(1.2) * 100).toFixed(1)}%`);
   });
 });
 

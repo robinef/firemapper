@@ -127,7 +127,7 @@ const BAR_W = HIST_W / (SIZE_EDGES.length - 1);
 /** 0…1 position of a km² tick on the equal-width histogram, interpolated within bins. */
 export function tickPos(km2: number): number {
   const i = Math.max(0, Math.min(binIndex(km2), SIZE_EDGES.length - 2));
-  const frac = Math.log(km2 / SIZE_EDGES[i]) / Math.log(SIZE_EDGES[i + 1] / SIZE_EDGES[i]);
+  const frac = Math.max(0, Math.min(1, Math.log(km2 / SIZE_EDGES[i]) / Math.log(SIZE_EDGES[i + 1] / SIZE_EDGES[i])));
   return (i + frac) / (SIZE_EDGES.length - 1);
 }
 
