@@ -58,7 +58,7 @@ function scarClick(): maplibregl.MapLayerMouseEvent {
 /** Reports the given keys as on, everything else off — a stand-in for the
  *  switcher's live per-module toggle state (not each module's defaultOn). */
 function switcherWithLayersOn(...on: string[]): Switcher {
-  return { isOn: (k) => on.includes(k), setLevel: () => {}, refresh: () => {} };
+  return { isOn: (k) => on.includes(k), setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
 }
 
 function build(switcher: Switcher, compare: CompareLike | null = null) {

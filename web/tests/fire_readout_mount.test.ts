@@ -187,7 +187,7 @@ describe("readout mount wiring", () => {
     document.body.innerHTML =
       `<div id="view" data-view="detail"><div id="panel" class="hidden"></div></div>` +
       `<div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {}, wind,
@@ -267,7 +267,7 @@ describe("readout mount wiring", () => {
     document.body.innerHTML =
       `<div id="view" data-view="detail"><div id="panel" class="hidden"></div></div>` +
       `<div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     let entered = 0;
     const card = setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never,
@@ -335,7 +335,7 @@ describe("readout mount wiring", () => {
     document.body.innerHTML =
       `<div id="view" data-view="detail"><div id="panel" class="hidden"></div></div>` +
       `<div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},

@@ -87,7 +87,7 @@ describe("openHistoricalLookup", () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map, sourceObjs, layerVis, flights } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -109,7 +109,7 @@ describe("openHistoricalLookup", () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -125,7 +125,7 @@ describe("openHistoricalLookup", () => {
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
     const setLevel = vi.fn();
-    const switcher: Switcher = { isOn: () => true, setLevel, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -145,7 +145,7 @@ describe("openHistoricalLookup", () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -167,7 +167,7 @@ describe("openHistoricalLookup", () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},

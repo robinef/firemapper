@@ -150,3 +150,80 @@ describe("LayerModule.control hook", () => {
     expect(containers).toHaveLength(2);
   });
 });
+
+// The season slider triggers an aggregation that wants to update the row's
+// count. Doing that with refresh() replaces the panel — and with it the range
+// input the reader is holding — so an arrow key lands on <body> and a paused
+// drag loses pointer capture. refreshStatus rewrites the count and nothing else.
+describe("Switcher.refreshStatus", () => {
+  function mountSeason(status: () => string | null) {
+    document.body.innerHTML = '<div id="l"></div><div id="lg"></div>';
+    const L = document.getElementById("l")!;
+    const modules: LayerModule[] = [
+      {
+        key: "season", label: "Burned this year", question: "q",
+        layerIds: ["season-heat"], defaultOn: true, levels: [1],
+        status,
+        control: (el) => { el.innerHTML = '<input class="season-range" type="range">'; },
+      },
+    ];
+    const sw = mountSwitcher(L, document.getElementById("lg")!, modules, stubMap() as never);
+    return { sw, L, count: () => L.querySelector(".layer-count")?.textContent ?? null };
+  }
+
+  it("updates the row's count in place when status() starts returning something new", () => {
+    let text = "21,822 fires · 60,800 km²";
+    const { sw, count } = mountSeason(() => text);
+    expect(count()).toBe("21,822 fires · 60,800 km²");
+    text = "4,422 fires · 32,533 km²";
+    sw.refreshStatus("season");
+    expect(count()).toBe("4,422 fires · 32,533 km²");
+  });
+
+  it("keeps the control and the input inside it as the SAME nodes", () => {
+    let text = "a";
+    const { sw, L } = mountSeason(() => text);
+    const controlBefore = L.querySelector(".layer-control")!;
+    const inputBefore = L.querySelector<HTMLInputElement>(".season-range")!;
+    text = "b";
+    sw.refreshStatus("season");
+    // toBe, not toEqual: node identity is the whole point — a replaced input
+    // is a lost focus and a lost drag, however identical it looks.
+    expect(L.querySelector(".layer-control")).toBe(controlBefore);
+    expect(L.querySelector(".season-range")).toBe(inputBefore);
+    expect(document.contains(inputBefore)).toBe(true);
+  });
+
+  it("holds keyboard focus on the control across a status update", () => {
+    const { sw, L } = mountSeason(() => "a");
+    const input = L.querySelector<HTMLInputElement>(".season-range")!;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    sw.refreshStatus("season");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("leaves an off module's row without a count", () => {
+    const { sw, L, count } = mountSeason(() => "still counting");
+    const cb = L.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    cb.checked = false;
+    cb.dispatchEvent(new Event("change"));
+    sw.refreshStatus("season");
+    expect(count()).toBeNull();
+  });
+
+  it("adds a count to a row that had none when status() was null", () => {
+    let text: string | null = null;
+    const { sw, count } = mountSeason(() => text);
+    expect(count()).toBeNull();
+    text = "now there is one";
+    sw.refreshStatus("season");
+    expect(count()).toBe("now there is one");
+  });
+
+  it("is a no-op for an unknown key", () => {
+    const { sw, count } = mountSeason(() => "a");
+    expect(() => sw.refreshStatus("nope")).not.toThrow();
+    expect(count()).toBe("a");
+  });
+});

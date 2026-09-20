@@ -283,6 +283,74 @@ describe("createSeasonFilter control", () => {
     expect(heights.filter((h) => h > 0)).toHaveLength(3); // three fires in three bins
   });
 
+  // The bug this pins: once a first aggregate exists, labelText() used to fall
+  // straight through to filterLabel(index, last) — the NEW threshold beside the
+  // PREVIOUS threshold's totals — for the whole debounce window, and
+  // aria-valuetext announced that never-true pairing to a screen reader as the
+  // settled value of the step.
+  it("shows the placeholder, not the previous threshold's totals, while a move is pending", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    sched.flush(); // the threshold-0 aggregate now exists
+    const zero = aggregate(cells, sizes, 0);
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, zero));
+
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6"; // ≥ 4 km²
+    range.dispatchEvent(new Event("input"));
+    // NOT flushed: the aggregation for 4 km² has not run.
+    const pending = el.querySelector(".season-filter-label")?.textContent;
+    expect(pending).toBe("≥ 4 km² · …");
+    expect(range.getAttribute("aria-valuetext")).toBe(pending);
+    // The stale totals must not appear anywhere in the announced string.
+    expect(pending).not.toContain(String(zero.fires));
+
+    sched.flush();
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(6, filter.summary()!));
+    expect(range.getAttribute("aria-valuetext")).toBe(filterLabel(6, filter.summary()!));
+  });
+
+  it("returning to index 0 while pending shows the count placeholder, not the old totals", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6"; range.dispatchEvent(new Event("input"));
+    sched.flush(); // `last` now describes 4 km²
+    range.value = "0"; range.dispatchEvent(new Event("input"));
+    expect(el.querySelector(".season-filter-label")?.textContent)
+      .toBe(`all sizes · ${sizes.size.toLocaleString("en-GB")} fires`);
+  });
+
+  // Every bin is 0 before setCells, so a height-proportional bar is invisible:
+  // the control rendered as an empty box under three orphan tick letters.
+  it("draws full-height skeleton bars while loading and while unavailable", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    const heights = () =>
+      [...el.querySelectorAll<SVGRectElement>(".season-hist rect")].map((r) => Number(r.getAttribute("height")));
+    expect(heights()).toHaveLength(15);
+    expect(heights().every((h) => h === 40)).toBe(true);
+
+    filter.setCells(cells, sizes);
+    const real = heights();
+    expect(real.some((h) => h < 40)).toBe(true); // real counts, not a skeleton
+    expect(real.filter((h) => h === 0).length).toBeGreaterThan(0);
+
+    // Unavailable, re-rendered into a fresh container the way the layer panel
+    // rebuilds it on the next moveend — the branch that actually re-runs the
+    // bar maths with a non-ready status.
+    const other = createSeasonFilter({ onAggregate: vi.fn(), schedule: sched.schedule });
+    other.control(document.createElement("div"));
+    other.setUnavailable();
+    const fresh = document.createElement("div");
+    other.control(fresh);
+    expect(fresh.querySelector(".season-filter")?.classList.contains("is-unavailable")).toBe(true);
+    const un = [...fresh.querySelectorAll<SVGRectElement>(".season-hist rect")].map((r) => Number(r.getAttribute("height")));
+    expect(un.every((h) => h === 40)).toBe(true);
+  });
+
   it("range input has correct attributes", () => {
     const sched = manualScheduler();
     const { el } = mount(sched.schedule);

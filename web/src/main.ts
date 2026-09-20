@@ -310,7 +310,11 @@ async function boot() {
             },
             control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
-            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure(); },
+            // `force`: the zoom gate is about painting cells, but the size
+            // histogram is needed at any zoom. Toggling the layer off before
+            // the idle prefetch ran (ensure() returns early while it is off)
+            // otherwise strands the control on "loading sizes…" for good.
+            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: true }); },
           } as LayerModule]
         : []),
     ];
@@ -326,7 +330,11 @@ async function boot() {
         onAggregate: (agg) => {
           setSeasonAggregate(map, agg.r6);
           setCellsThreshold(map, agg.threshold);
-          switcher.refresh(); // status line + control label
+          // Status line only: a full refresh would rebuild the panel and hand
+          // the reader a brand-new range input mid-interaction, dropping
+          // keyboard focus to <body> and breaking a paused drag's pointer
+          // capture. The filter repaints its own label after this returns.
+          switcher.refreshStatus("season");
         },
       });
       // mountSwitcher renders once on the way in, while seasonFilter is still
@@ -343,9 +351,14 @@ async function boot() {
       // The size histogram needs the cells file wherever the camera is, so
       // fetch it once the boot work has drained — after first paint, never
       // before it.
+      // The timeout caps the wait: on a page that never goes idle the
+      // histogram would otherwise never arrive.
       const idle: (fn: () => void) => void =
         typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function"
-          ? (fn) => (window as unknown as { requestIdleCallback: (cb: () => void) => void }).requestIdleCallback(fn)
+          ? (fn) =>
+              (window as unknown as {
+                requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void;
+              }).requestIdleCallback(fn, { timeout: 3000 })
           : (fn) => { setTimeout(fn, 1500); };
       idle(() => { void seasonLoader?.ensure({ force: true }); });
     }

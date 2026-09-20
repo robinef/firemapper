@@ -84,7 +84,7 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     ({ setupFireCard } = await import("../src/firecard"));
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map, sourceObjs, layerVis } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const mountOverview = vi.fn();
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
@@ -115,7 +115,7 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     ({ setupFireCard } = await import("../src/firecard"));
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map, sourceObjs } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const mountOverview = vi.fn();
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
@@ -147,7 +147,7 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     ({ setupFireCard } = await import("../src/firecard"));
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
@@ -167,7 +167,7 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     ({ setupFireCard } = await import("../src/firecard"));
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
     const { map } = footprintMap();
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     const card = setupFireCard(
       map, { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},

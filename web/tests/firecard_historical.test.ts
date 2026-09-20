@@ -55,7 +55,7 @@ async function build() {
   ({ setupFireCard } = await import("../src/firecard"));
   document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
   const setLevel = vi.fn();
-  const switcher: Switcher = { isOn: () => true, setLevel, refresh: () => {} };
+  const switcher: Switcher = { isOn: () => true, setLevel, refresh: () => {}, refreshStatus: () => {} };
   const card = setupFireCard(
     stubMap(), { generation: "gen-1", layers: {} } as never, null,
     document.getElementById("timeline")!, switcher, () => {}, () => {},

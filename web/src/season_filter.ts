@@ -159,7 +159,11 @@ export function createSeasonFilter(opts: {
   const labelText = (): string => {
     if (status === "loading") return "loading sizes…";
     if (status === "unavailable") return "sizes unavailable";
-    if (!last) {
+    // `last` is only usable while it describes the threshold now on screen.
+    // Between a slider move and the debounced re-aggregation it describes the
+    // PREVIOUS one, and pairing the new head with those totals states a
+    // number that was never true — worse, aria-valuetext would announce it.
+    if (!last || last.threshold !== thresholdFor(index)) {
       // Until the first aggregation lands (scheduled from setCells), show the
       // count alone: the deduped km² is not known yet and must never be
       // approximated by a per-fire sum, which double-counts shared ground.
@@ -211,7 +215,11 @@ export function createSeasonFilter(opts: {
     const max = Math.max(1, ...bins);
     const rects = bins
       .map((n, i) => {
-        const h = Math.round((n / max) * HIST_H);
+        // Loading and unavailable have no counts yet, so a height-proportional
+        // bar is a zero-height bar: nothing paints and the row reads as an
+        // empty box under three orphan tick letters. Draw full-height bars and
+        // let the CSS grey them — a skeleton, which is what those states mean.
+        const h = status === "ready" ? Math.round((n / max) * HIST_H) : HIST_H;
         return `<rect x="${(i * BAR_W).toFixed(1)}" y="${HIST_H - h}" width="${(BAR_W - 1).toFixed(1)}" height="${h}"></rect>`;
       })
       .join("");

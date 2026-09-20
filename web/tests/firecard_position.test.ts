@@ -96,7 +96,7 @@ function polygonFireClick(): maplibregl.MapLayerMouseEvent {
 
 function build(map: maplibregl.Map, compare: CompareLike | null) {
   document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
-  const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+  const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
   return setupFireCard(
     map, { generation: "gen-1", layers: {} } as never, compare,
     document.getElementById("timeline")!, switcher, () => {}, () => {},

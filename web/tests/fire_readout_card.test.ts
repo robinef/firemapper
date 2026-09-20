@@ -136,7 +136,7 @@ describe("openFire wiring", () => {
   async function mount() {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
-    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {} };
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
     return setupFireCard(
       stubMap(), { generation: "gen-1", layers: {} } as never, null,
       document.getElementById("timeline")!, switcher, () => {}, () => {},
