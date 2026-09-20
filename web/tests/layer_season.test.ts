@@ -14,8 +14,11 @@ import {
   createSeasonCellsLoader,
   formatFloor,
   heatPointFeatures,
+  hexFeaturesCached,
   seasonLegend,
   seasonStatus,
+  setCellsThreshold,
+  setSeasonAggregate,
 } from "../src/layer_season";
 import type { SeasonSummary } from "../src/types";
 
@@ -27,8 +30,9 @@ export function stubMap(zoom = 4) {
   const layerDefs: Record<string, any> = {};
   const paint: Record<string, Record<string, unknown>> = {};
   const handlers: Record<string, Array<() => void>> = {};
+  const filters: Record<string, unknown> = {};
   return {
-    _sources: sources, _layers: layers, _paint: paint, _handlers: handlers,
+    _sources: sources, _layers: layers, _paint: paint, _handlers: handlers, _filters: filters,
     zoom,
     getZoom() { return this.zoom; },
     getSource: (id: string) => sources[id],
@@ -41,6 +45,7 @@ export function stubMap(zoom = 4) {
     setPaintProperty: (id: string, prop: string, value: unknown) => {
       paint[id] = { ...(paint[id] ?? {}), [prop]: value };
     },
+    setFilter: (id: string, f: unknown) => { filters[id] = f; },
     on: (ev: string, fn: () => void) => { (handlers[ev] ??= []).push(fn); },
     fire: (ev: string) => { for (const fn of handlers[ev] ?? []) fn(); },
   };
@@ -68,8 +73,8 @@ describe("season feature builders", () => {
       "fire-2": { digest: "e", first: "2026-07-02", cells: [b] },
     });
     expect(feats.map((f) => f.properties)).toEqual([
-      { cell: a, fire_id: "fire-1" },
-      { cell: b, fire_id: "fire-2" },
+      { cell: a, fire_id: "fire-1", km2: 0 },
+      { cell: b, fire_id: "fire-2", km2: 0 },
     ]);
     const ring = (feats[0].geometry as GeoJSON.Polygon).coordinates[0];
     expect(ring.length).toBe(7);
@@ -84,8 +89,8 @@ describe("season feature builders", () => {
       "fire-2": { digest: "e", first: "2026-07-02", cells: [shared, other] },
     });
     expect(feats.map((f) => f.properties)).toEqual([
-      { cell: shared, fire_id: "fire-1" },
-      { cell: other, fire_id: "fire-2" },
+      { cell: shared, fire_id: "fire-1", km2: 0 },
+      { cell: other, fire_id: "fire-2", km2: 0 },
     ]);
   });
 });
@@ -241,5 +246,103 @@ describe("createSeasonCellsLoader", () => {
     addSeason(map as never, { ...SUMMARY, r6: [] });
     expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(1);
     expect(map._layers).toEqual(SEASON_LAYER_IDS);
+  });
+});
+
+describe("cells carry km2 and filter GPU-side", () => {
+  const a = latLngToCell(45.0, 5.0, 8);
+  const b = latLngToCell(46.0, 6.0, 8);
+  const cells = {
+    "fire-1": { digest: "d", first: "2026-07-01", cells: [a] },
+    "fire-2": { digest: "e", first: "2026-07-02", cells: [b] },
+  };
+
+  it("cellFeatures tags each polygon with its fire's km2 when sizes are given", () => {
+    const sizes = new Map([["fire-1", 0.7], ["fire-2", 12.5]]);
+    const feats = cellFeatures(cells, sizes);
+    expect(feats.map((f) => f.properties)).toEqual([
+      { cell: a, fire_id: "fire-1", km2: 0.7 },
+      { cell: b, fire_id: "fire-2", km2: 12.5 },
+    ]);
+  });
+
+  it("cellFeatures defaults km2 to 0 without sizes", () => {
+    expect(cellFeatures(cells)[0].properties).toEqual({ cell: a, fire_id: "fire-1", km2: 0 });
+  });
+
+  it("setCellsThreshold filters both cell layers and clears at 0", () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    setCellsThreshold(map as never, 4);
+    expect(map._filters["season-cells-fill"]).toEqual([">=", ["get", "km2"], 4]);
+    expect(map._filters["season-cells-line"]).toEqual([">=", ["get", "km2"], 4]);
+    setCellsThreshold(map as never, 0);
+    expect(map._filters["season-cells-fill"]).toBeNull();
+    expect(map._filters["season-cells-line"]).toBeNull();
+  });
+
+  it("setSeasonAggregate refreshes heat and hex sources and leaves cells alone", () => {
+    const map = stubMap(6);
+    addSeason(map as never, SUMMARY);
+    const cellsSetData = map._sources[SEASON_CELLS_SOURCE].setData;
+    setSeasonAggregate(map as never, []);
+    expect(map._sources[SEASON_HEAT_SOURCE].data.features).toHaveLength(0);
+    expect(map._sources[SEASON_HEX_SOURCE].data.features).toHaveLength(0);
+    expect(cellsSetData).not.toHaveBeenCalled();
+  });
+
+  it("hexFeaturesCached builds the same shape as the boot hexes and reuses rings", () => {
+    const r6 = SUMMARY.r6;
+    const first = hexFeaturesCached(r6);
+    const second = hexFeaturesCached(r6);
+    expect(first[0].properties).toEqual({ n: 12.6, cell: r6[0][0] });
+    expect((first[0].geometry as GeoJSON.Polygon).coordinates[0]).toHaveLength(7);
+    // Same ring object reused: the cache hands back the identical array.
+    expect((second[0].geometry as GeoJSON.Polygon).coordinates[0]).toBe(
+      (first[0].geometry as GeoJSON.Polygon).coordinates[0],
+    );
+  });
+});
+
+describe("loader force + hooks", () => {
+  const a = latLngToCell(45.0, 5.0, 8);
+  const body = { "fire-1": { digest: "d", first: "2026-07-01", cells: [a] } };
+  const okFetch = () => vi.fn(async () => ({ ok: true, json: async () => body }));
+
+  it("ensure({force:true}) fetches below the prefetch zoom and reports cells + sizes once", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const onLoaded = vi.fn();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onLoaded });
+    await loader.ensure();
+    expect(fetchFn).not.toHaveBeenCalled();
+    await loader.ensure({ force: true });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(onLoaded).toHaveBeenCalledTimes(1);
+    const [cells, sizes] = onLoaded.mock.calls[0] as [unknown, Map<string, number>];
+    expect(cells).toEqual(body);
+    expect(sizes.get("fire-1")).toBeGreaterThan(0.5);
+    expect(map._sources[SEASON_CELLS_SOURCE].data.features[0].properties.km2).toBeCloseTo(sizes.get("fire-1")!, 6);
+  });
+
+  it("force still respects the layer being off", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => false, fetchFn as never);
+    await loader.ensure({ force: true });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("onGaveUp fires exactly once when the attempt cap is reached", async () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
+    const onGaveUp = vi.fn();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, { onGaveUp });
+    for (let i = 0; i < 5; i += 1) await loader.ensure();
+    expect(fetchFn).toHaveBeenCalledTimes(MAX_CELLS_ATTEMPTS);
+    expect(onGaveUp).toHaveBeenCalledTimes(1);
   });
 });

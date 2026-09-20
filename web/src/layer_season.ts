@@ -1,6 +1,7 @@
 import type * as maplibregl from "maplibre-gl";
 import { cellToBoundary, cellToLatLng } from "h3-js";
 import { sliceFeatures } from "./layer_dayslice";
+import { fireSizes } from "./season_filter";
 import type { SeasonCells, SeasonSummary } from "./types";
 
 /**
@@ -10,8 +11,8 @@ import type { SeasonCells, SeasonSummary } from "./types";
  *
  * Data: pipeline/export_season.py's two files under archive/. The small
  * summary (res-6 hex km² + totals + floor date) is loaded at boot; the
- * per-fire cells file is fetched lazily by the loader in this module the
- * first time the reader gets close (see createSeasonCellsLoader).
+ * per-fire cells file is fetched on idle after first paint (or on approach
+ * to z7.5, whichever first; see createSeasonCellsLoader).
  *
  * Visual variables (docs/cartography-rules.md):
  *   HUE   = the ember/ash family every "past fire" element already uses
@@ -99,11 +100,14 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
  * Fires overlap — the same cell is claimed by several archived fires — so a
  * cell is emitted once, for the first fire that claims it. Stacking duplicate
  * polygons darkened shared ground (semi-transparent fills compound) and paid
- * for the extra geometry twice. */
-export function cellFeatures(cells: SeasonCells): GeoJSON.Feature[] {
+ * for the extra geometry twice.
+ *
+ * `km2` = the owning fire's size, for `setCellsThreshold`. */
+export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
   for (const [fireId, entry] of Object.entries(cells)) {
+    const km2 = sizes?.get(fireId) ?? 0;
     for (const cell of entry.cells) {
       if (seen.has(cell)) continue;
       seen.add(cell);
@@ -112,7 +116,9 @@ export function cellFeatures(cells: SeasonCells): GeoJSON.Feature[] {
       out.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
-        properties: { cell, fire_id: fireId },
+        // km2 is the OWNING fire's size, so the size filter can hide a cell
+        // GPU-side with setFilter instead of re-uploading ~160k polygons.
+        properties: { cell, fire_id: fireId, km2 },
       });
     }
   }
@@ -121,6 +127,39 @@ export function cellFeatures(cells: SeasonCells): GeoJSON.Feature[] {
 
 function fc(features: GeoJSON.Feature[]): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features };
+}
+
+/** Res-6 rings, built once per cell and reused across every re-aggregation
+ * the size filter triggers — the ~9k-hex FeatureCollection then costs a
+ * Map lookup per hex, not a cellToBoundary call. Same feature shape as
+ * sliceFeatures (property `n` = km²), so the fill ramp reads it unchanged. */
+const RING_CACHE = new Map<string, number[][]>();
+export function hexFeaturesCached(r6: [string, number][]): GeoJSON.Feature[] {
+  return r6.map(([cell, n]) => {
+    let ring = RING_CACHE.get(cell);
+    if (!ring) {
+      ring = cellToBoundary(cell).map(([lat, lng]) => [lng, lat]);
+      ring.push(ring[0]);
+      RING_CACHE.set(cell, ring);
+    }
+    return { type: "Feature", geometry: { type: "Polygon", coordinates: [ring] }, properties: { n, cell } };
+  });
+}
+
+/** Replace the heat and hex data with a re-aggregated `r6`. The cells source
+ * is deliberately untouched — its filtering is setCellsThreshold's job. */
+export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]): void {
+  (map.getSource(SEASON_HEAT_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(heatPointFeatures(r6)));
+  (map.getSource(SEASON_HEX_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(hexFeaturesCached(r6)));
+}
+
+/** Hide cells whose owning fire is smaller than `threshold` km², on the GPU.
+ * `null` clears the filter (threshold 0 = everything). */
+export function setCellsThreshold(map: maplibregl.Map, threshold: number): void {
+  const expr = threshold > 0 ? ([">=", ["get", "km2"], threshold] as never) : null;
+  for (const id of ["season-cells-fill", "season-cells-line"]) {
+    if (map.getLayer(id)) map.setFilter(id, expr);
+  }
 }
 
 /** Add (or refresh) the season sources and layers. Call BEFORE the day-slice
@@ -251,11 +290,20 @@ export const MAX_CELLS_ATTEMPTS = 3;
 
 type CellsState = "idle" | "loading" | "loaded";
 
+export type SeasonCellsHooks = {
+  /** Parsed cells + per-fire km², once, on the first successful load. */
+  onLoaded?: (cells: SeasonCells, sizes: Map<string, number>) => void;
+  /** Once, when the attempt cap is reached. */
+  onGaveUp?: () => void;
+};
+
 /**
  * Lazy loader for the per-fire cells file. `ensure()` is idempotent and
  * cheap: it returns immediately unless the reader is close enough
  * (zoom ≥ CELLS_PREFETCH_ZOOM, so the band is painted before its opacity
  * starts rising at z8), the layer is on, and nothing is loaded or in flight.
+ *
+ * `force: true` skips the zoom gate only (still respects idle/loaded/failures/isOn).
  *
  * Wired to zoomend/moveend here, but a zoom event alone misses the common
  * cases — the layer toggled on while already at z10, a `?fire=` deep link
@@ -272,31 +320,38 @@ export function createSeasonCellsLoader(
   year: number,
   isOn: () => boolean,
   fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
-): { ensure(): Promise<void>; state(): CellsState } {
+  hooks: SeasonCellsHooks = {},
+): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState } {
   let state: CellsState = "idle";
   let failures = 0;
 
-  const ensure = async (): Promise<void> => {
+  const ensure = async (opts: { force?: boolean } = {}): Promise<void> => {
     if (state !== "idle") return;
     if (failures >= MAX_CELLS_ATTEMPTS) return;
     if (!isOn()) return;
-    if (map.getZoom() < CELLS_PREFETCH_ZOOM) return;
+    // `force` (the idle prefetch after boot) skips only the zoom gate: the
+    // size histogram needs the cells file regardless of where the camera is.
+    if (!opts.force && map.getZoom() < CELLS_PREFETCH_ZOOM) return;
     state = "loading";
     try {
       const r = await fetchImpl(`/data/archive/season_${year}_cells.json`);
       if (!r.ok) throw new Error(`season cells ${r.ok}`);
       const cells = (await r.json()) as SeasonCells;
+      if (!cells || typeof cells !== "object" || Array.isArray(cells)) throw new Error("season cells malformed");
+      const sizes = fireSizes(cells);
       const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
       if (!source) throw new Error("season cells source missing");
-      source.setData(fc(cellFeatures(cells)));
+      source.setData(fc(cellFeatures(cells, sizes)));
       if (map.getLayer("season-hex-fill")) {
         map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
       }
       state = "loaded";
+      hooks.onLoaded?.(cells, sizes);
     } catch (err) {
       failures += 1;
       console.warn("layer_season: cells load failed, hex band stays", err);
       state = "idle";
+      if (failures >= MAX_CELLS_ATTEMPTS) hooks.onGaveUp?.();
     }
   };
 
