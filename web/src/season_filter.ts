@@ -117,3 +117,136 @@ export function filterLabel(index: number, agg: { fires: number; km2: number }):
   const head = index <= 0 ? "all sizes" : `≥ ${thresholdFor(index)} km²`;
   return `${head} · ${n(agg.fires)} fires · ${n(agg.km2)} km²`;
 }
+
+type FilterStatus = "loading" | "ready" | "unavailable";
+
+const HIST_W = 150;
+const HIST_H = 40;
+const BAR_W = HIST_W / (SIZE_EDGES.length - 1);
+const LOG_MIN = Math.log(SIZE_EDGES[0]);
+const LOG_MAX = Math.log(SIZE_EDGES[SIZE_EDGES.length - 1]);
+/** 0…1 position of a km² value on the histogram's log axis. */
+const logPos = (km2: number) => (Math.log(km2) - LOG_MIN) / (LOG_MAX - LOG_MIN);
+
+const defaultSchedule = (() => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (fn: () => void) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fn, 100);
+  };
+})();
+
+/**
+ * The control half: owns the threshold, the per-fire sizes and the last
+ * aggregate, and renders idempotently into whatever container the layer
+ * panel hands it (the panel rebuilds its DOM on every moveend). Label and
+ * bar dimming follow the slider instantly; the aggregation — tens of ms of
+ * h3 math plus a setData — is debounced through `schedule`.
+ */
+export function createSeasonFilter(opts: {
+  onAggregate: (agg: SeasonAggregate) => void;
+  schedule?: (fn: () => void) => void;
+}) {
+  const schedule = opts.schedule ?? defaultSchedule;
+  let status: FilterStatus = "loading";
+  let cells: SeasonCells | null = null;
+  let sizes: Map<string, number> | null = null;
+  let bins: number[] = new Array<number>(SIZE_EDGES.length - 1).fill(0);
+  let index = 0;
+  let last: SeasonAggregate | null = null;
+  let container: HTMLElement | null = null;
+
+  const labelText = (): string => {
+    if (status === "loading") return "loading sizes…";
+    if (status === "unavailable") return "sizes unavailable";
+    if (!last) {
+      // Until the first aggregation lands (scheduled from setCells), show the
+      // count alone: the deduped km² is not known yet and must never be
+      // approximated by a per-fire sum, which double-counts shared ground.
+      if (index <= 0) return `all sizes · ${sizes?.size.toLocaleString("en-GB") ?? 0} fires`;
+      const t = thresholdFor(index);
+      return `≥ ${t} km² · `;
+    }
+    return filterLabel(index, last);
+  };
+
+  const paint = (): void => {
+    if (!container) return;
+    const box = container.querySelector(".season-filter");
+    if (!box) return;
+    box.className = `season-filter is-${status}`;
+    const t = thresholdFor(index);
+    box.querySelectorAll<SVGRectElement>(".season-hist rect").forEach((r, i) => {
+      r.classList.toggle("dim", index > 0 && SIZE_EDGES[i] < t);
+      r.classList.toggle("hi", index > 0 && SIZE_EDGES[i] >= t);
+    });
+    const range = box.querySelector<HTMLInputElement>(".season-range");
+    if (range) {
+      range.disabled = status !== "ready";
+      range.value = String(index);
+    }
+    const label = box.querySelector(".season-filter-label");
+    if (label) label.textContent = labelText();
+  };
+
+  const runAggregate = (): void => {
+    if (!cells || !sizes) return;
+    const t = thresholdFor(index);
+    last = aggregate(cells, sizes, t);
+    opts.onAggregate(last);
+    paint();
+  };
+
+  const onInput = (e: Event): void => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (!Number.isFinite(v)) return;
+    index = Math.max(0, Math.min(SIZE_EDGES.length - 1, Math.round(v)));
+    paint();
+    schedule(runAggregate);
+  };
+
+  const control = (el: HTMLElement): void => {
+    container = el;
+    const max = Math.max(1, ...bins);
+    const rects = bins
+      .map((n, i) => {
+        const h = Math.round((n / max) * HIST_H);
+        return `<rect x="${(i * BAR_W).toFixed(1)}" y="${HIST_H - h}" width="${(BAR_W - 1).toFixed(1)}" height="${h}"></rect>`;
+      })
+      .join("");
+    const ticks = NWCG_TICKS
+      .map((tk) => `<span style="left:${(logPos(tk.km2) * 100).toFixed(1)}%">${tk.label}</span>`)
+      .join("");
+    el.innerHTML =
+      `<div class="season-filter is-${status}">` +
+      `<svg class="season-hist" viewBox="0 0 ${HIST_W} ${HIST_H}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>` +
+      `<div class="season-ticks">${ticks}</div>` +
+      `<input class="season-range" type="range" min="0" max="${SIZE_EDGES.length - 1}" step="1" ` +
+      `aria-label="Minimum fire size">` +
+      `<div class="season-filter-label"></div>` +
+      `</div>`;
+    el.querySelector<HTMLInputElement>(".season-range")!.addEventListener("input", onInput);
+    paint();
+  };
+
+  return {
+    control,
+    setCells(c: SeasonCells, s: Map<string, number>): void {
+      cells = c;
+      sizes = s;
+      bins = histogram(s);
+      status = "ready";
+      // Rebuild into the current container so the bars reflect real counts,
+      // then aggregate once at threshold 0 (debounced, off the idle path) so
+      // the label and the status line carry the same deduped totals.
+      if (container) control(container);
+      schedule(runAggregate);
+    },
+    setUnavailable(): void {
+      status = "unavailable";
+      paint();
+    },
+    threshold: () => thresholdFor(index),
+    summary: () => (last ? { fires: last.fires, km2: last.km2 } : null),
+  };
+}

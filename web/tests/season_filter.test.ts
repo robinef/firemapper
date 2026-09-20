@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cellArea, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
 import {
   SIZE_EDGES,
+  NWCG_TICKS,
   aggregate,
   binIndex,
+  createSeasonFilter,
   dedupNested,
   filterLabel,
   fireSizes,
@@ -135,5 +137,118 @@ describe("filterLabel", () => {
     expect(filterLabel(0, { fires: 21672, km2: 60471.6 })).toBe("all sizes · 21,672 fires · 60,472 km²");
     expect(filterLabel(6, { fires: 4355, km2: 54229.4 })).toBe("≥ 4 km² · 4,355 fires · 54,229 km²");
     expect(filterLabel(1, { fires: 1, km2: 0.7 })).toBe("≥ 0.7 km² · 1 fires · 1 km²");
+  });
+});
+
+describe("createSeasonFilter control", () => {
+  const cells: SeasonCells = {
+    s: entry([a]),
+    m: entry([a, b, far]),
+    l: entry([...gridDisk(far, 2)]), // 19 cells ≈ 13 km²
+  };
+  const sizes = fireSizes(cells);
+
+  function manualScheduler() {
+    let pending: (() => void) | null = null;
+    return { schedule: (fn: () => void) => { pending = fn; }, flush: () => { const f = pending; pending = null; f?.(); }, has: () => pending !== null };
+  }
+
+  function mount(schedule?: (fn: () => void) => void) {
+    const onAggregate = vi.fn();
+    const filter = createSeasonFilter({ onAggregate, schedule });
+    const el = document.createElement("div");
+    filter.control(el);
+    return { filter, el, onAggregate };
+  }
+
+  it("renders disabled with 'loading sizes…' before cells arrive", () => {
+    const { el } = mount();
+    expect(el.querySelector(".season-filter")?.classList.contains("is-loading")).toBe(true);
+    expect(el.querySelector<HTMLInputElement>(".season-range")?.disabled).toBe(true);
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe("loading sizes…");
+    expect(el.querySelectorAll(".season-hist rect")).toHaveLength(15);
+    expect(el.querySelectorAll(".season-ticks span")).toHaveLength(NWCG_TICKS.length);
+  });
+
+  it("after setCells the slider enables and a threshold-0 aggregation gives the label its totals", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const box = el.querySelector(".season-filter")!;
+    expect(box.classList.contains("is-loading")).toBe(false);
+    expect(el.querySelector<HTMLInputElement>(".season-range")?.disabled).toBe(false);
+    expect(filter.summary()).toBeNull(); // aggregation is scheduled, not run inline
+    sched.flush();
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+    const agg = aggregate(cells, sizes, 0);
+    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2 });
+    // Shared cell `a` counted once: the label's km² is the deduped total, the
+    // same number the status line shows — never two numbers in the panel.
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, agg));
+  });
+
+  it("moving the slider updates label and dimming at once, aggregates after the debounce", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6"; // ≥ 4 km²
+    range.dispatchEvent(new Event("input"));
+    expect(el.querySelector(".season-filter-label")?.textContent?.startsWith("≥ 4 km² · ")).toBe(true);
+    const rects = [...el.querySelectorAll(".season-hist rect")];
+    expect(rects.slice(0, 6).every((r) => r.classList.contains("dim"))).toBe(true);
+    expect(rects.slice(6).some((r) => r.classList.contains("dim"))).toBe(false);
+    expect(onAggregate).not.toHaveBeenCalled();
+    sched.flush();
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+    const agg = onAggregate.mock.calls[0][0] as { threshold: number; fires: number };
+    expect(agg.threshold).toBe(4);
+    expect(agg.fires).toBe(1); // only `l` (~13 km²)
+    expect(filter.threshold()).toBe(4);
+    expect(filter.summary()?.fires).toBe(1);
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(6, filter.summary()!));
+  });
+
+  it("two rapid inputs produce one aggregation", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "3"; range.dispatchEvent(new Event("input"));
+    range.value = "6"; range.dispatchEvent(new Event("input"));
+    sched.flush();
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+    expect((onAggregate.mock.calls[0][0] as { threshold: number }).threshold).toBe(4);
+  });
+
+  it("re-rendering into a fresh container keeps the threshold and totals", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6"; range.dispatchEvent(new Event("input"));
+    sched.flush();
+    const fresh = document.createElement("div");
+    filter.control(fresh);
+    expect(fresh.querySelector<HTMLInputElement>(".season-range")?.value).toBe("6");
+    expect(fresh.querySelector(".season-filter-label")?.textContent).toBe(el.querySelector(".season-filter-label")?.textContent);
+    expect(onAggregate).toHaveBeenCalledTimes(1); // a re-render never re-aggregates
+  });
+
+  it("setUnavailable disables the slider and says so", () => {
+    const { filter, el } = mount();
+    filter.setUnavailable();
+    expect(el.querySelector(".season-filter")?.classList.contains("is-unavailable")).toBe(true);
+    expect(el.querySelector<HTMLInputElement>(".season-range")?.disabled).toBe(true);
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe("sizes unavailable");
+  });
+
+  it("bar heights scale to the fullest bin and the thumb's bins are highlighted", () => {
+    const { filter, el } = mount();
+    filter.setCells(cells, sizes);
+    const rects = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")];
+    const heights = rects.map((r) => Number(r.getAttribute("height")));
+    expect(Math.max(...heights)).toBe(40);
+    expect(heights.filter((h) => h > 0)).toHaveLength(3); // three fires in three bins
   });
 });
