@@ -586,6 +586,16 @@ body.compare-mode #timeline { display: none; }
 /* Custom per-layer control under a row (registry.ts `control` hook). */
 .layer-control { margin: 2px 0 8px 26px; }
 .season-filter { display: flex; flex-direction: column; gap: 3px; }
+/* EU-27 scope toggle, above the histogram: which fires exist, then which of
+   them are big enough. Ember family, like everything else on this layer. */
+.season-scope { display: flex; gap: 4px; margin-bottom: 4px; }
+.season-scope button {
+  flex: 1; font: inherit; font-size: 10.5px; padding: 2px 0;
+  border: 1px solid #5a2a14; border-radius: 3px; background: transparent;
+  color: var(--fg, #ddd); cursor: pointer;
+}
+.season-scope button.on { background: #8a3d1c; border-color: #d1874f; }
+.season-scope button:disabled { opacity: .4; cursor: default; }
 .season-hist { width: 100%; height: 40px; display: block; }
 .season-hist rect { fill: #8a3d1c; }
 .season-hist rect.hi { fill: #d1874f; }

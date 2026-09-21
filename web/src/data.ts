@@ -1,4 +1,4 @@
-import type { Manifest, SeasonSummary, Slice, Stats, Track } from "./types";
+import type { FiresSummary, Manifest, SeasonSummary, Slice, Stats, Track } from "./types";
 
 export const SCHEMA_MAJOR = 1;
 // Minimal shape we depend on — lets tests inject a simple fake.
@@ -132,6 +132,29 @@ export async function loadSeason(
     const s = (await r.json()) as Partial<SeasonSummary> | null;
     if (!s || typeof s.year !== "number" || !Array.isArray(s.r6) || typeof s.fires !== "number") return null;
     return s as SeasonSummary;
+  } catch {
+    return null;
+  }
+}
+
+/** The per-fire country + area summary (pipeline/export_scale_blob.py), the
+ * season layer's only source of "which country did this fire burn in?".
+ * Permanent, one file per year, published beside the season export.
+ *
+ * Null on any failure, exactly like loadSeason: the EU-27 scope toggle is an
+ * enhancement, and a missing countries file must leave the size filter, the
+ * status line and the map working as they did before it existed. */
+export async function loadFiresSummary(
+  year: number,
+  base = "/data",
+  fetchFn: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
+): Promise<FiresSummary | null> {
+  try {
+    const r = await fetchFn(`${base}/archive/blob_${year}_fires.json`);
+    if (!r.ok) return null;
+    const s = (await r.json()) as unknown;
+    if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+    return s as FiresSummary;
   } catch {
     return null;
   }

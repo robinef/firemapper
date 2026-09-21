@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { cellArea, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
 import {
+  EU27,
   SIZE_EDGES,
   NWCG_TICKS,
   aggregate,
@@ -11,10 +12,11 @@ import {
   filterLabel,
   fireSizes,
   histogram,
+  isEuFire,
   thresholdFor,
   tickPos,
 } from "../src/season_filter";
-import type { SeasonCells } from "../src/types";
+import type { FiresSummary, SeasonCells } from "../src/types";
 
 const km2 = (c: string) => cellArea(c, UNITS.km2);
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -139,15 +141,89 @@ describe("aggregate", () => {
 
   it("empty selection yields no hexes and zero totals", () => {
     const agg = aggregate(cells, sizes, 1e9);
-    expect(agg).toEqual({ threshold: 1e9, r6: [], fires: 0, km2: 0 });
+    expect(agg).toEqual({ threshold: 1e9, r6: [], fires: 0, km2: 0, scope: "all" });
+  });
+
+  it("carries the scope it was given, and defaults to 'all'", () => {
+    expect(aggregate(cells, sizes, 0).scope).toBe("all");
+    expect(aggregate(cells, sizes, 0, undefined, "eu").scope).toBe("eu");
+  });
+
+  // The country scope is a second filter on the SAME loop, so a fire the
+  // predicate rejects must vanish from the count, the union and the km² —
+  // not merely be hidden on the map.
+  it("with a keep predicate only the kept fires reach the count, the hexes and the total", () => {
+    const all = aggregate(cells, sizes, 0);
+    const kept = aggregate(cells, sizes, 0, (id) => id !== "big");
+    expect(kept.fires).toBe(2);
+    const union = new Set([a, b]);
+    const expected = new Map<string, number>();
+    for (const c of union) {
+      const p = cellToParent(c, 6);
+      expected.set(p, (expected.get(p) ?? 0) + km2(c));
+    }
+    const want = [...expected.entries()].map(([p, v]) => [p, r1(v)] as [string, number]).sort();
+    expect(kept.r6).toEqual(want);
+    expect(kept.km2).toBe(r1(want.reduce((s, [, v]) => s + v, 0)));
+    expect(kept.km2).toBeLessThan(all.km2);
+    expect(kept.r6.map(([c]) => c)).not.toContain(cellToParent(far, 6));
+  });
+
+  it("keep and threshold compose: a fire must pass both", () => {
+    const t = sizes.get("shared")!;
+    const kept = aggregate(cells, sizes, t, (id) => id !== "big");
+    expect(kept.fires).toBe(1); // `shared` alone: `big` is dropped, `small` is under t
+  });
+});
+
+describe("EU-27 membership", () => {
+  const summary: FiresSummary = {
+    es: { country: "ES", area_km2: 3 },
+    ua: { country: "UA", area_km2: 9 },
+    nowhere: { country: null, area_km2: 1 },
+  };
+
+  it("has the 27 member states and excludes non-members", () => {
+    expect(EU27.size).toBe(27);
+    expect(EU27.has("ES")).toBe(true);
+    for (const outside of ["UA", "RU", "TR", "DZ", "GB", "CH", "NO", "RS"]) {
+      expect(EU27.has(outside)).toBe(false);
+    }
+  });
+
+  it("is true only for a fire whose known country is a member state", () => {
+    expect(isEuFire(summary, "es")).toBe(true);
+    expect(isEuFire(summary, "ua")).toBe(false);
+    expect(isEuFire(summary, "nowhere")).toBe(false); // country unknown ≠ EU
+    expect(isEuFire(summary, "not-in-the-file")).toBe(false);
+    expect(isEuFire(null, "es")).toBe(false); // no countries file, no EU claim
   });
 });
 
 describe("filterLabel", () => {
-  it("reads 'all sizes' at index 0 and '≥ t km²' otherwise", () => {
-    expect(filterLabel(0, { fires: 21672, km2: 60471.6 })).toBe("all sizes · 21,672 fires · 60,472 km²");
-    expect(filterLabel(6, { fires: 4355, km2: 54229.4 })).toBe("≥ 4 km² · 4,355 fires · 54,229 km²");
-    expect(filterLabel(1, { fires: 1, km2: 0.7 })).toBe("≥ 0.7 km² · 1 fires · 1 km²");
+  it("reads 'all sizes' at index 0 and '≥ t km²' otherwise, and names the km² a footprint", () => {
+    expect(filterLabel(0, { fires: 21672, km2: 60471.6 })).toBe("all sizes · 21,672 fires · 60,472 km² footprint");
+    expect(filterLabel(6, { fires: 4355, km2: 54229.4 })).toBe("≥ 4 km² · 4,355 fires · 54,229 km² footprint");
+    expect(filterLabel(1, { fires: 1, km2: 0.7 })).toBe("≥ 0.7 km² · 1 fires · 1 km² footprint");
+  });
+
+  it("prefixes the EU-27 scope, and only that scope", () => {
+    expect(filterLabel(0, { fires: 21867, km2: 60891 }, "eu")).toBe("EU-27 · all sizes · 21,867 fires · 60,891 km² footprint");
+    expect(filterLabel(6, { fires: 1203, km2: 9812 }, "eu")).toBe("EU-27 · ≥ 4 km² · 1,203 fires · 9,812 km² footprint");
+    expect(filterLabel(6, { fires: 1203, km2: 9812 }, "all")).toBe("≥ 4 km² · 1,203 fires · 9,812 km² footprint");
+  });
+});
+
+describe("histogram with a keep predicate", () => {
+  it("counts only the kept fires, leaving the rejected ones' bins empty", () => {
+    const sizes = new Map([["x", 0.6], ["y", 3.5], ["z", 3.6]]);
+    const all = histogram(sizes);
+    expect(all[binIndex(0.6)]).toBe(1);
+    expect(all[binIndex(3.5)]).toBe(2);
+    const kept = histogram(sizes, (id) => id !== "x" && id !== "z");
+    expect(kept[binIndex(0.6)]).toBe(0);
+    expect(kept[binIndex(3.5)]).toBe(1);
+    expect(kept.reduce((s, n) => s + n, 0)).toBe(1);
   });
 });
 
@@ -379,6 +455,158 @@ describe("createSeasonFilter control", () => {
     expect(range?.getAttribute("min")).toBe("0");
     expect(range?.getAttribute("max")).toBe("15");
     expect(range?.getAttribute("step")).toBe("1");
+  });
+
+  // The scope toggle. `l` is the only fire outside the EU-27, and it is the
+  // only fire in its size bin — so EU scope must empty that bar, drop the
+  // fire count, and shrink the total.
+  const countries: FiresSummary = {
+    s: { country: "ES", area_km2: 0.4 },
+    m: { country: "FR", area_km2: 1.1 },
+    l: { country: "UA", area_km2: 9.0 },
+  };
+  const scopeButtons = (el: HTMLElement) => ({
+    all: el.querySelector<HTMLButtonElement>('.season-scope button[data-scope="all"]')!,
+    eu: el.querySelector<HTMLButtonElement>('.season-scope button[data-scope="eu"]')!,
+  });
+  const heights = (el: HTMLElement) =>
+    [...el.querySelectorAll<SVGRectElement>(".season-hist rect")].map((r) => Number(r.getAttribute("height")));
+
+  it("the EU-27 button is disabled until the countries file lands", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    expect(scopeButtons(el).eu.title).toBe("countries unavailable");
+    expect(scopeButtons(el).all.getAttribute("aria-pressed")).toBe("true");
+    expect(filter.scope()).toBe("all");
+    const group = el.querySelector(".season-scope")!;
+    expect(group.getAttribute("role")).toBe("group");
+    expect(group.getAttribute("aria-label")).toBe("Fire scope");
+    // Above the histogram: scope first, then the sizes inside it.
+    const kids = [...el.querySelector(".season-filter")!.children].map((c) => c.getAttribute("class"));
+    expect(kids.indexOf("season-scope")).toBeLessThan(kids.indexOf("season-hist"));
+
+    filter.setCountries(countries);
+    expect(scopeButtons(el).eu.disabled).toBe(false);
+    expect(scopeButtons(el).eu.title).toBe("");
+  });
+
+  it("setCountries(null) leaves the EU-27 button disabled", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries(null);
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    expect(filter.scope()).toBe("all");
+  });
+
+  it("clicking EU-27 re-bins the histogram, prefixes the label and aggregates the EU fires alone", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries(countries);
+    sched.flush(); // the all-Europe threshold-0 aggregate
+    const allAgg = aggregate(cells, sizes, 0);
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+    const lBin = binIndex(sizes.get("l")!);
+    expect(heights(el)[lBin]).toBeGreaterThan(0);
+
+    scopeButtons(el).eu.click();
+    // Bars first: the histogram is the legend for the filter, so it re-bins
+    // before the (debounced) aggregation lands.
+    expect(heights(el)[lBin]).toBe(0);
+    expect(heights(el)[binIndex(sizes.get("s")!)]).toBeGreaterThan(0);
+    expect(filter.scope()).toBe("eu");
+    expect(scopeButtons(el).eu.classList.contains("on")).toBe(true);
+    expect(scopeButtons(el).eu.getAttribute("aria-pressed")).toBe("true");
+    expect(scopeButtons(el).all.classList.contains("on")).toBe(false);
+    expect(scopeButtons(el).all.getAttribute("aria-pressed")).toBe("false");
+    const pending = el.querySelector(".season-filter-label")!.textContent!;
+    expect(pending.startsWith("EU-27 · ")).toBe(true);
+    // The all-Europe totals belong to a scope that is no longer on screen.
+    expect(pending).not.toContain(String(Math.round(allAgg.km2)));
+    expect(onAggregate).toHaveBeenCalledTimes(1); // debounced, exactly like the slider
+
+    sched.flush();
+    expect(onAggregate).toHaveBeenCalledTimes(2);
+    const agg = onAggregate.mock.calls[1][0] as typeof allAgg;
+    expect(agg.scope).toBe("eu");
+    expect(agg.fires).toBe(2); // s and m; l is in Ukraine
+    const expected = new Map<string, number>();
+    for (const c of [a, b, far]) {
+      const p = cellToParent(c, 6);
+      expected.set(p, (expected.get(p) ?? 0) + km2(c));
+    }
+    const want = [...expected.entries()].map(([p, v]) => [p, r1(v)] as [string, number]).sort();
+    expect(agg.r6).toEqual(want);
+    expect(agg.km2).toBeLessThan(allAgg.km2);
+    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2 });
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, agg, "eu"));
+  });
+
+  it("clicking All Europe again restores the full set", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries(countries);
+    sched.flush();
+    scopeButtons(el).eu.click();
+    sched.flush();
+    scopeButtons(el).all.click();
+    sched.flush();
+    expect(filter.scope()).toBe("all");
+    const agg = onAggregate.mock.calls.at(-1)![0] as ReturnType<typeof aggregate>;
+    expect(agg.scope).toBe("all");
+    expect(agg.fires).toBe(3);
+    expect(agg.km2).toBe(aggregate(cells, sizes, 0).km2);
+    expect(heights(el)[binIndex(sizes.get("l")!)]).toBeGreaterThan(0);
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, agg));
+  });
+
+  // The `disabled` attribute is presentation; the guard is the contract. A
+  // click that reaches the handler without a countries file (a stale attribute
+  // after a rebuild, an assistive client, a stray dispatch) must not switch to
+  // a scope that would then keep() every fire out and show an empty map.
+  it("a click on the EU-27 button without a countries file cannot change the scope", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    sched.flush();
+    const eu = scopeButtons(el).eu;
+    expect(eu.disabled).toBe(true);
+    eu.disabled = false; // force the event through, as a stale attribute would
+    eu.click();
+    sched.flush();
+    expect(filter.scope()).toBe("all");
+    expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, aggregate(cells, sizes, 0)));
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+  });
+
+  // The layer panel rebuilds its DOM on every moveend: the scope has to live
+  // in the filter's state, not in the markup it last wrote.
+  it("re-rendering into a fresh container keeps the scope and the threshold", () => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries(countries);
+    sched.flush();
+    scopeButtons(el).eu.click();
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "1"; range.dispatchEvent(new Event("input"));
+    sched.flush();
+    const before = onAggregate.mock.calls.length;
+
+    const fresh = document.createElement("div");
+    filter.control(fresh);
+    expect(scopeButtons(fresh).eu.classList.contains("on")).toBe(true);
+    expect(scopeButtons(fresh).eu.getAttribute("aria-pressed")).toBe("true");
+    expect(scopeButtons(fresh).eu.disabled).toBe(false);
+    expect(scopeButtons(fresh).all.classList.contains("on")).toBe(false);
+    expect(fresh.querySelector<HTMLInputElement>(".season-range")?.value).toBe("1");
+    expect(fresh.querySelector(".season-filter-label")?.textContent)
+      .toBe(el.querySelector(".season-filter-label")?.textContent);
+    expect(onAggregate).toHaveBeenCalledTimes(before); // a re-render never re-aggregates
   });
 
   it("after aggregation, range aria-valuetext matches label text", () => {

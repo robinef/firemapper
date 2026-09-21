@@ -5,8 +5,11 @@
 // about the fires, unrelated to the blob's geometry/drag lifecycle.
 import { escapeHtml } from "./escape";
 import { statRow } from "./stat_row";
+import type { FiresSummary } from "./types";
 
-export type FiresSummary = Record<string, { country: string | null; area_km2: number }>;
+// Moved to types.ts when the season layer became a second reader; re-exported
+// here so this module's existing importers keep their one-stop import.
+export type { FiresSummary } from "./types";
 
 export type CountryBreakdown = { country: string; areaKm2: number; fireCount: number };
 
