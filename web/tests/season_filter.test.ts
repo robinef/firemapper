@@ -2,7 +2,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { cellArea, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
 import {
-  EU27,
   SIZE_EDGES,
   NWCG_TICKS,
   aggregate,
@@ -24,7 +23,7 @@ const r1 = (v: number) => Math.round(v * 10) / 10;
 const a = latLngToCell(45.0, 5.0, 8);
 const b = latLngToCell(45.0, 5.02, 8);
 const far = latLngToCell(52.0, 13.0, 8);
-const entry = (cells: string[]) => ({ digest: "d", first: "2026-07-01", cells });
+const entry = (cells: string[], first = "2026-07-01") => ({ digest: "d", first, cells });
 
 /** Stands in for the control's debounce: holds the pending aggregation so a
  * test decides when it runs, with no real timer anywhere near the suite. */
@@ -92,10 +91,13 @@ describe("dedupNested", () => {
 });
 
 describe("aggregate", () => {
+  // Distinct first-detection dates, deliberately NOT in size order: the floor
+  // has to follow which fires are kept, and the smallest fire here is also the
+  // earliest, so any filter that drops it must move the date.
   const cells: SeasonCells = {
-    small: entry([a]),
-    big: entry([...gridDisk(far, 1)]), // 7 cells ≈ 5 km²
-    shared: entry([a, b]), // shares `a` with `small`
+    small: entry([a], "2026-03-04"),
+    big: entry([...gridDisk(far, 1)], "2026-08-12"), // 7 cells ≈ 5 km²
+    shared: entry([a, b], "2026-05-19"), // shares `a` with `small`
   };
   const sizes = fireSizes(cells);
 
@@ -141,7 +143,40 @@ describe("aggregate", () => {
 
   it("empty selection yields no hexes and zero totals", () => {
     const agg = aggregate(cells, sizes, 1e9);
-    expect(agg).toEqual({ threshold: 1e9, r6: [], fires: 0, km2: 0, scope: "all" });
+    expect(agg).toEqual({ threshold: 1e9, r6: [], fires: 0, km2: 0, scope: "all", floor: null });
+  });
+
+  // The status line reads "… since <floor>". The floor has to describe the
+  // fires whose numbers stand beside it: a date from a fire the filter dropped
+  // claims a season that started earlier than the one on screen.
+  describe("floor", () => {
+    it("is the earliest first-detection among the kept fires", () => {
+      expect(aggregate(cells, sizes, 0).floor).toBe("2026-03-04");
+    });
+
+    it("moves when the threshold drops the earliest fire", () => {
+      // `small` (2026-03-04) is under the threshold; `shared` and `big` remain.
+      const agg = aggregate(cells, sizes, sizes.get("shared")!);
+      expect(agg.fires).toBe(2);
+      expect(agg.floor).toBe("2026-05-19");
+    });
+
+    it("moves when `keep` drops the earliest fire", () => {
+      // Same threshold-0 selection as above minus one fire: the floor follows
+      // the scope predicate too, not just the size slider.
+      const agg = aggregate(cells, sizes, 0, (id) => id !== "small");
+      expect(agg.fires).toBe(2);
+      expect(agg.floor).toBe("2026-05-19");
+    });
+
+    it("keeps the earliest of the survivors when a LATER fire is dropped", () => {
+      expect(aggregate(cells, sizes, 0, (id) => id !== "big").floor).toBe("2026-03-04");
+    });
+
+    it("is null when nothing is kept", () => {
+      expect(aggregate(cells, sizes, 1e9).floor).toBeNull();
+      expect(aggregate(cells, sizes, 0, () => false).floor).toBeNull();
+    });
   });
 
   it("carries the scope it was given, and defaults to 'all'", () => {
@@ -183,14 +218,9 @@ describe("EU-27 membership", () => {
     nowhere: { country: null, area_km2: 1 },
   };
 
-  it("has the 27 member states and excludes non-members", () => {
-    expect(EU27.size).toBe(27);
-    expect(EU27.has("ES")).toBe(true);
-    for (const outside of ["UA", "RU", "TR", "DZ", "GB", "CH", "NO", "RS"]) {
-      expect(EU27.has(outside)).toBe(false);
-    }
-  });
-
+  // The membership itself is tested in tests/eu27.test.ts, where it lives.
+  // What belongs here is the fire-shaped question this module answers on top
+  // of it.
   it("is true only for a fire whose known country is a member state", () => {
     expect(isEuFire(summary, "es")).toBe(true);
     expect(isEuFire(summary, "ua")).toBe(false);
@@ -248,10 +278,13 @@ describe("tickPos", () => {
 });
 
 describe("createSeasonFilter control", () => {
+  // `l` is both the biggest fire and the earliest — and (below) the only one
+  // outside the EU-27, so every filter that drops it also has to move the
+  // floor date the status line prints.
   const cells: SeasonCells = {
-    s: entry([a]),
-    m: entry([a, b, far]),
-    l: entry([...gridDisk(far, 2)]), // 19 cells ≈ 13 km²
+    s: entry([a], "2026-06-02"),
+    m: entry([a, b, far], "2026-04-21"),
+    l: entry([...gridDisk(far, 2)], "2026-02-09"), // 19 cells ≈ 13 km²
   };
   const sizes = fireSizes(cells);
 
@@ -285,7 +318,7 @@ describe("createSeasonFilter control", () => {
     sched.flush();
     expect(onAggregate).toHaveBeenCalledTimes(1);
     const agg = aggregate(cells, sizes, 0);
-    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2 });
+    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2, floor: agg.floor });
     // Shared cell `a` counted once: the label's km² is the deduped total, the
     // same number the status line shows — never two numbers in the panel.
     expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, agg));
@@ -618,8 +651,45 @@ describe("createSeasonFilter control", () => {
     const want = [...expected.entries()].map(([p, v]) => [p, r1(v)] as [string, number]).sort();
     expect(agg.r6).toEqual(want);
     expect(agg.km2).toBeLessThan(allAgg.km2);
-    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2 });
+    expect(filter.summary()).toEqual({ fires: agg.fires, km2: agg.km2, floor: agg.floor });
     expect(el.querySelector(".season-filter-label")?.textContent).toBe(filterLabel(0, agg, "eu"));
+  });
+
+  // The floor is what the panel's status line prints after "since". It has to
+  // describe the fires currently counted: `l` is the earliest fire AND the one
+  // in Ukraine, so an EU-27 season legitimately starts later than the Europe
+  // one — and saying otherwise would date the EU season to a fire outside it.
+  it("summary() carries the floor of the fires actually counted, per scope", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries(countries);
+    sched.flush();
+    expect(filter.summary()?.floor).toBe("2026-02-09"); // `l`, in Ukraine
+
+    scopeButtons(el).eu.click();
+    sched.flush();
+    expect(filter.scope()).toBe("eu");
+    expect(filter.summary()?.floor).toBe("2026-04-21"); // `m`, the earliest EU fire
+
+    // …and the two gates compose. Still in the EU-27 scope: at ≥ 4 km² the
+    // only fire big enough is `l`, which this scope has already excluded, so
+    // the selection empties. A selection with no fires in it has no season to
+    // date — the status line must print no "since" at all rather than keep
+    // the last date that was true.
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = "6"; range.dispatchEvent(new Event("input"));
+    sched.flush();
+    expect(filter.scope()).toBe("eu");
+    expect(filter.summary()?.fires).toBe(0);
+    expect(filter.summary()?.floor).toBeNull();
+  });
+
+  it("summary() is null before the first aggregation, so there is no floor to show", () => {
+    const sched = manualScheduler();
+    const { filter } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    expect(filter.summary()).toBeNull();
   });
 
   it("clicking All Europe again restores the full set", () => {

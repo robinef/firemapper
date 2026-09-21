@@ -95,6 +95,58 @@ describe("showScaleBlobPanel / hideScaleBlobPanel", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  // The season layer already loads archive/blob_{year}_fires.json at boot for
+  // its EU-27 scope. Fetching it again here is a second ~1.1 MB download and a
+  // second parse of a file the page is already holding, so the caller hands
+  // over its promise and this panel reads from that instead.
+  it("reads a given summary promise instead of fetching", async () => {
+    const container = document.createElement("div");
+    const summary: FiresSummary = { "fire-a": { country: "FR", area_km2: 5 } };
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    await showScaleBlobPanel(
+      container,
+      2026,
+      fetchImpl as unknown as typeof fetch,
+      Promise.resolve(summary),
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(container.innerHTML).toContain("FR");
+    expect(container.innerHTML).toContain("5.0 km²");
+  });
+
+  // A promise that resolves null is still an ANSWER — the file was tried and
+  // is not available. Falling back to a fetch here would restore the second
+  // download this change exists to remove, on the one path where it is known
+  // to fail.
+  it("does not fall back to the fetch when the given promise resolves null", async () => {
+    const container = document.createElement("div");
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    await showScaleBlobPanel(
+      container,
+      2026,
+      fetchImpl as unknown as typeof fetch,
+      Promise.resolve(null),
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("still fetches when no summary promise is given", async () => {
+    const container = document.createElement("div");
+    const summary: FiresSummary = { "fire-b": { country: "GR", area_km2: 9 } };
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => summary });
+
+    await showScaleBlobPanel(container, 2026, fetchImpl as unknown as typeof fetch, undefined);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("blob_2026_fires.json"));
+    expect(container.innerHTML).toContain("GR");
+  });
+
   it("hideScaleBlobPanel clears the container", async () => {
     const container = document.createElement("div");
     container.innerHTML = "<p>stale content</p>";
