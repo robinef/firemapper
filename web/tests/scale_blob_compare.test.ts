@@ -4,6 +4,7 @@ import type * as maplibregl from "maplibre-gl";
 import { emitUi } from "../src/ui_events";
 import { deactivateScaleBlob, isScaleBlobActive } from "../src/layer_scale_blob";
 import type { ScaleBlobCell } from "../src/layer_scale_blob";
+import type { FiresSummary } from "../src/types";
 
 // Same import-time guards as tests/ui_events_wiring.test.ts: maplibre-gl calls
 // URL.createObjectURL on load, and main.ts calls boot() unconditionally at
@@ -185,6 +186,99 @@ describe("scale blob vs compare mode", () => {
     expect(uiSubscriberCount("compare:enter")).toBe(before + 1);
     off();
     expect(uiSubscriberCount("compare:enter")).toBe(before);
+  });
+});
+
+/**
+ * The country breakdown and the season layer's EU-27 scope read the SAME file,
+ * archive/blob_{year}_fires.json (~1.1 MB). main.ts starts that load once at
+ * boot and hands the promise here, so activating the blob costs no second
+ * download and no second parse of a file the page is already holding.
+ */
+describe("scale blob country breakdown source", () => {
+  const firesJson: FiresSummary = { "fire-1": { country: "FR", area_km2: 3.2 } };
+
+  /** Counts requests per URL so "only one load" can be asserted as a fact
+   * about the network, not inferred from what rendered. */
+  function countingFetch() {
+    const urls: string[] = [];
+    const spy = vi.fn((url: string) => {
+      urls.push(url);
+      return Promise.resolve(
+        url.includes("_fires.json")
+          ? { ok: true, json: async () => firesJson }
+          : { ok: true, json: async () => sampleBlob },
+      );
+    });
+    return { spy, urls, firesRequests: () => urls.filter((u) => u.includes("_fires.json")) };
+  }
+
+  it("renders from the promise it is given, without a second request", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const { spy, firesRequests } = countingFetch();
+    vi.stubGlobal("fetch", spy);
+
+    const off = wireScaleBlobToggle(map, btn, breakdown, {
+      year: new Date().getFullYear(),
+      promise: Promise.resolve(firesJson),
+    });
+    btn.click();
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
+
+    // The blob geometry is still fetched — it is a different file. The fires
+    // summary is not fetched at all.
+    expect(firesRequests()).toEqual([]);
+
+    off();
+    vi.unstubAllGlobals();
+  });
+
+  // The blob is always the CURRENT year's; the season's year comes from the
+  // manifest. Across a new year those disagree, and a summary for the wrong
+  // year would put last season's countries under this season's shape.
+  it("ignores a promise for a different year and fetches the blob's own", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const { spy, firesRequests } = countingFetch();
+    vi.stubGlobal("fetch", spy);
+
+    const stale: FiresSummary = { "fire-9": { country: "PT", area_km2: 1 } };
+    const off = wireScaleBlobToggle(map, btn, breakdown, {
+      year: new Date().getFullYear() - 1,
+      promise: Promise.resolve(stale),
+    });
+    btn.click();
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
+
+    expect(firesRequests()).toHaveLength(1);
+    expect(breakdown.innerHTML).not.toContain("PT");
+
+    off();
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches as before when no promise is given", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const { spy, firesRequests } = countingFetch();
+    vi.stubGlobal("fetch", spy);
+
+    const off = wireScaleBlobToggle(map, btn, breakdown);
+    btn.click();
+    await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
+    expect(firesRequests()).toHaveLength(1);
+
+    off();
+    vi.unstubAllGlobals();
   });
 });
 

@@ -1,4 +1,5 @@
 import { cellArea, cellToParent, getResolution, UNITS } from "h3-js";
+import { isEuCountry } from "./eu27";
 import type { FiresSummary, SeasonCells } from "./types";
 
 /**
@@ -23,21 +24,18 @@ export const NWCG_TICKS: { label: string; km2: number }[] = [
 ];
 export const AGG_RES = 6;
 
-/** The 27 EU member states, ISO 3166-1 alpha-2 — the same codes the scale
- * blob's per-fire summary carries (GeoNames-derived). Deliberately NOT
- * "Europe": the season layer's box reaches Ukraine, Russia, Turkey and
- * Algeria, and the /scale page's EFFIS comparison is EU-27 only. */
-export const EU27: ReadonlySet<string> = new Set([
-  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
-  "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-]);
+/** The membership itself lives in eu27.ts — a fact about the world, shared by
+ * every EU-only view. Re-exported here so this module's existing importers
+ * keep their one-stop import. Deliberately NOT "Europe": the season layer's
+ * box reaches Ukraine, Russia, Turkey and Algeria, and the /scale page's EFFIS
+ * comparison is EU-27 only. */
+export { EU27 } from "./eu27";
 
 /** Which side of the EU-27 border a fire burned on. Unknown is not EU: a fire
  * the geocoder could not place (31 of 21,867 in 2026) must not be counted into
  * a total the reader will compare against an EFFIS EU-27 number. */
 export function isEuFire(summary: FiresSummary | null, id: string): boolean {
-  const c = summary?.[id]?.country;
-  return c != null && EU27.has(c);
+  return isEuCountry(summary?.[id]?.country);
 }
 
 /** Which fires the layer is counting: the whole Europe box, or the EU-27. */
@@ -52,6 +50,10 @@ export type SeasonAggregate = {
    * label, the status line, the cell filter) can never pair one scope's
    * numbers with another's heading. */
   scope: SeasonScope;
+  /** Earliest first-detection date (YYYY-MM-DD) among the KEPT fires — the
+   * date the status line prints after "since". Null when nothing is kept:
+   * a selection with no fires in it has no season to date. */
+  floor: string | null;
 };
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
@@ -134,12 +136,18 @@ export function aggregate(
 ): SeasonAggregate {
   const union = new Set<string>();
   let fires = 0;
+  // The floor rides the SAME loop as the count and the union, for the same
+  // reason: a date taken over all fires would outlive the fire it came from
+  // and claim the filtered season started earlier than it did. YYYY-MM-DD
+  // sorts chronologically as a string, so a plain comparison is the right one.
+  let floor: string | null = null;
   for (const [id, entry] of Object.entries(cells)) {
     if ((sizes.get(id) ?? 0) < threshold) continue;
     // A second gate on the same loop, so a rejected fire leaves the count, the
     // union and the km² alike — not merely the map.
     if (keep && !keep(id)) continue;
     fires += 1;
+    if (floor === null || entry.first < floor) floor = entry.first;
     for (const c of dedupNested(new Set(entry.cells))) union.add(c);
   }
   const totals = new Map<string, number>();
@@ -151,7 +159,7 @@ export function aggregate(
     .map(([cell, v]) => [cell, round1(v)] as [string, number])
     .sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
   const km2 = round1(r6.reduce((s, [, v]) => s + v, 0));
-  return { threshold, r6, fires, km2, scope };
+  return { threshold, r6, fires, km2, scope, floor };
 }
 
 /** "EU-27 · " when the layer is scoped, nothing when it is not. One place, so
@@ -327,8 +335,10 @@ export function createSeasonFilter(opts: {
     if (s === "eu" && !hasCountries()) return; // no countries file, no EU claim
     scope = s;
     if (sizes) bins = histogram(sizes, keepFn());
+    // control() ends in paint(), so the new scope reaches the buttons, the
+    // bars and the label through that one call — a second paint() here would
+    // be a duplicate rule for the same fact.
     if (container) control(container);
-    paint();
     // The re-render above replaced the button that was clicked, so focus is
     // on <body> now. Put it back on the new button: a keyboard reader must
     // not be dumped out of the control for using it, and a screen reader
@@ -416,6 +426,9 @@ export function createSeasonFilter(opts: {
     },
     scope: (): SeasonScope => scope,
     threshold: () => thresholdFor(index),
-    summary: () => (last ? { fires: last.fires, km2: last.km2 } : null),
+    /** The landed aggregate's headline numbers AND its floor date — the three
+     * the panel's status line prints together, so they always describe the
+     * same selection of fires. */
+    summary: () => (last ? { fires: last.fires, km2: last.km2, floor: last.floor } : null),
   };
 }

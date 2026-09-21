@@ -145,8 +145,8 @@ describe("addSeason", () => {
 
 describe("legend + status", () => {
   // "footprint", not plain "km²": the number is satellite heat coverage
-  // (0.7 km² per detection, agricultural burning included), 2–3× the mapped
-  // burn area the /scale page reports from EFFIS for the same fires.
+  // (0.7 km² per detection, agricultural burning included), roughly double the
+  // mapped burn area the /scale page reports from EFFIS for the same fires.
   it("status counts fires and km² of footprint since the floor", () => {
     expect(seasonStatus(SUMMARY)).toBe("21,350 fires · 88,904 km² footprint since 13 Jul");
   });

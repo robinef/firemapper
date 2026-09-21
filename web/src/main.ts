@@ -183,6 +183,12 @@ async function boot() {
     // The scope of the totals the status line is currently showing — updated
     // with them, in onAggregate, so heading and numbers can never disagree.
     let seasonScope: SeasonScope = "all";
+    // The one load of archive/blob_{year}_fires.json. Declared out here, not
+    // inside the `if (season)` that starts it, because the scale-comparison
+    // blob's country breakdown reads the same file and takes this promise
+    // rather than downloading its own copy. Null when there is no season: then
+    // nobody has started a load and the panel fetches for itself, as before.
+    let firesP: Promise<FiresSummary | null> | null = null;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -319,9 +325,18 @@ async function boot() {
             // and `summary()` has not, and a panel rebuild in that window
             // (any moveend) would print an "EU-27 ·" heading over all-Europe
             // numbers — a pairing that was never true.
+            //
+            // The floor travels with them for the same reason: "since 13 Jul"
+            // is a fact about the fires being counted, so a scope or a size
+            // threshold that drops the earliest fire has to move the date. The
+            // pipeline's floor stands only until the first aggregate lands —
+            // before that there is no filtered selection to date.
             status: () => {
               const s = seasonFilter?.summary();
-              return seasonStatus(s ? { ...season, fires: s.fires, km2: s.km2 } : season, seasonScope);
+              return seasonStatus(
+                s ? { ...season, fires: s.fires, km2: s.km2, floor: s.floor } : season,
+                seasonScope,
+              );
             },
             control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
@@ -341,11 +356,13 @@ async function boot() {
       manifest,
     );
     if (season) {
-      // Per-fire countries for the EU-27 scope. Started here — inside the
-      // only branch that can use it — and left unawaited: it resolves null on
-      // any failure, and a reader who never touches the scope toggle must not
-      // wait a round-trip for it.
-      const firesP = loadFiresSummary(seasonYear, BASE);
+      // Per-fire countries for the EU-27 scope. Started here — the season is
+      // what makes the file worth loading at boot — and left unawaited: it
+      // resolves null on any failure, and a reader who never touches the scope
+      // toggle must not wait a round-trip for it. The scale-comparison blob's
+      // country breakdown then reads THIS promise, so the file is fetched and
+      // parsed once for the whole session.
+      firesP = loadFiresSummary(seasonYear, BASE);
       seasonFilter = createSeasonFilter({
         onAggregate: (agg) => {
           seasonScope = agg.scope;
@@ -416,6 +433,7 @@ async function boot() {
       map,
       document.getElementById("scale-blob-toggle") as HTMLButtonElement,
       document.getElementById("scale-blob-breakdown") as HTMLElement,
+      firesP ? { year: seasonYear, promise: firesP } : undefined,
     );
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
@@ -764,11 +782,20 @@ async function boot() {
  * Exported, and taking its two collaborators as arguments, so the compare-mode
  * rule below is testable: boot() needs a WebGL map, a manifest and a network,
  * and none of that can run under jsdom.
+ *
+ * `fires`: the per-fire country summary boot() already loads for the season
+ * layer's EU-27 scope, so the breakdown panel costs no second download of the
+ * same ~1.1 MB file. It carries the year it was loaded for and is used only
+ * when that matches the blob's: the blob is always the CURRENT year's, the
+ * season's year comes from the manifest, and across a new year those disagree
+ * — last season's countries under this season's shape would be a wrong answer
+ * rather than a slow one.
  */
 export function wireScaleBlobToggle(
   map: maplibregl.Map,
   button: HTMLButtonElement,
   breakdown: HTMLElement,
+  fires?: { year: number; promise: Promise<FiresSummary | null> },
 ): () => void {
   const reset = () => {
     button.setAttribute("aria-pressed", "false");
@@ -796,7 +823,12 @@ export function wireScaleBlobToggle(
         // deactivates (or compare:enter deactivates for them) — without the
         // isScaleBlobActive() recheck, this would resolve afterward and
         // silently repopulate the panel for a blob that is no longer shown.
-        void showScaleBlobPanel(breakdown, year).then(() => {
+        void showScaleBlobPanel(
+          breakdown,
+          year,
+          fetch,
+          fires?.year === year ? fires.promise : undefined,
+        ).then(() => {
           if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
         });
       } else {

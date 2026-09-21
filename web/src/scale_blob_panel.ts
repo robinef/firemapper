@@ -56,12 +56,22 @@ export async function fetchFiresSummary(
   return (await response.json()) as FiresSummary;
 }
 
+/**
+ * `summaryP`: the caller's already-running load of the SAME file. The season
+ * layer starts one at boot for its EU-27 scope (data.ts::loadFiresSummary), so
+ * on a page that has a season this panel would otherwise download and parse
+ * ~1.1 MB a second time. Given a promise, it is the answer — including when it
+ * resolves null, which means "the file was tried and is not there"; falling
+ * back to a fetch then would reinstate the second download on the one path
+ * already known to fail. Without it (no season published), the fetch stands.
+ */
 export async function showScaleBlobPanel(
   container: HTMLElement,
   year: number,
   fetchImpl: typeof fetch = fetch,
+  summaryP?: Promise<FiresSummary | null>,
 ): Promise<void> {
-  const summary = await fetchFiresSummary(year, fetchImpl);
+  const summary = await (summaryP ?? fetchFiresSummary(year, fetchImpl));
   container.innerHTML = summary ? breakdownHtml(aggregateByCountry(summary)) : "";
 }
 
