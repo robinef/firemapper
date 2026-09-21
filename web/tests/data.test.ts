@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadEvents, loadFootprint, loadManifest, loadSeason, loadTrack } from "../src/data";
+import { loadEvents, loadFiresSummary, loadFootprint, loadManifest, loadSeason, loadTrack } from "../src/data";
 import type { Manifest } from "../src/types";
 
 const manifest = {
@@ -128,5 +128,40 @@ describe("loadSeason", () => {
   it("returns null when the fetch throws", async () => {
     const fetchFn = async () => { throw new Error("offline"); };
     expect(await loadSeason(2026, "/data", fetchFn as never)).toBeNull();
+  });
+});
+
+// The per-fire country/area summary the scale blob already publishes
+// (pipeline/export_scale_blob.py). The season layer reads it for one thing
+// only: is this fire inside the EU-27? Null on anything wrong — the scope
+// toggle then stays disabled and the layer behaves exactly as before.
+describe("loadFiresSummary", () => {
+  const good = { "fire-a": { country: "ES", area_km2: 3.2 }, "fire-b": { country: null, area_km2: 0.7 } };
+
+  it("returns the summary when the file is well-formed", async () => {
+    const fetchFn = async (url: string) => {
+      expect(url).toBe("/data/archive/blob_2026_fires.json");
+      return { ok: true, json: async () => good };
+    };
+    expect(await loadFiresSummary(2026, "/data", fetchFn as never)).toEqual(good);
+  });
+
+  it("returns null on a non-ok response even when the body is well-formed", async () => {
+    const fetchFn = async () => ({ ok: false, json: async () => good });
+    expect(await loadFiresSummary(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", [{ country: "ES", area_km2: 1 }]],
+    ["a scalar", 42],
+  ])("returns null when the body is %s", async (_what, body) => {
+    const fetchFn = async () => ({ ok: true, json: async () => body });
+    expect(await loadFiresSummary(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it("returns null when the fetch throws", async () => {
+    const fetchFn = async () => { throw new Error("offline"); };
+    expect(await loadFiresSummary(2026, "/data", fetchFn as never)).toBeNull();
   });
 });

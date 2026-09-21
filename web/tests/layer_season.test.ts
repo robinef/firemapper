@@ -144,12 +144,23 @@ describe("addSeason", () => {
 });
 
 describe("legend + status", () => {
-  it("status counts fires and km² since the floor", () => {
-    expect(seasonStatus(SUMMARY)).toBe("21,350 fires · 88,904 km² since 13 Jul");
+  // "footprint", not plain "km²": the number is satellite heat coverage
+  // (0.7 km² per detection, agricultural burning included), 2–3× the mapped
+  // burn area the /scale page reports from EFFIS for the same fires.
+  it("status counts fires and km² of footprint since the floor", () => {
+    expect(seasonStatus(SUMMARY)).toBe("21,350 fires · 88,904 km² footprint since 13 Jul");
   });
 
   it("status omits the floor when there is none", () => {
-    expect(seasonStatus({ ...SUMMARY, floor: null, fires: 0, km2: 0 })).toBe("0 fires · 0 km²");
+    expect(seasonStatus({ ...SUMMARY, floor: null, fires: 0, km2: 0 })).toBe("0 fires · 0 km² footprint");
+  });
+
+  it("status names the EU-27 scope, and only when it is on", () => {
+    expect(seasonStatus({ ...SUMMARY, fires: 1203, km2: 9812 }, "eu"))
+      .toBe("EU-27 · 1,203 fires · 9,812 km² footprint since 13 Jul");
+    expect(seasonStatus({ ...SUMMARY, fires: 1203, km2: 9812 }, "all"))
+      .toBe("1,203 fires · 9,812 km² footprint since 13 Jul");
+    expect(seasonStatus({ ...SUMMARY, floor: null, fires: 5, km2: 4 }, "eu")).toBe("EU-27 · 5 fires · 4 km² footprint");
   });
 
   it("formatFloor renders a UTC day-month", () => {
@@ -162,6 +173,22 @@ describe("legend + status", () => {
     expect(legend.entries).toHaveLength(4);
     expect(legend.note).toContain("since 13 Jul 2026");
     expect(legend.note).toContain("not yet archived");
+  });
+
+  // The whole point of the note: a reader comparing this layer's 60.8k km²
+  // with /scale's 6.7k km² must be told why they differ before concluding one
+  // of them is wrong. The multiplier is "roughly double" and the comparison is
+  // per REGION: the app's own EU-27 figure is 12,348 km² against EFFIS's
+  // 6,741 (1.8×, and 1.0× once the slider reaches ≥ 4 km²), so "2–3×" would
+  // be a number the app itself contradicts on screen.
+  it("legend note says what the area actually measures", () => {
+    const legend = seasonLegend("2026-07-13", 2026);
+    expect(legend.note).toContain("satellite heat footprint");
+    expect(legend.note).toContain("0.7 km² cell");
+    expect(legend.note).toContain("agricultural burning is included");
+    expect(legend.note).toContain("roughly double the mapped burn area EFFIS reports for the same region");
+    expect(legend.note).not.toContain("2–3×");
+    expect(legend.note).toContain("Zoom in for the real burned ground.");
   });
 
   it("the title names the season's year, not the floor's — a floor can sit in the year before", () => {
@@ -314,6 +341,121 @@ describe("cells carry km2 and filter GPU-side", () => {
     setCellsThreshold(map as never, 0);
     expect(map._filters["season-cells-fill"]).toBeNull();
     expect(map._filters["season-cells-line"]).toBeNull();
+  });
+
+  // Four combinations. All-Europe filters on `km2` (the largest claimant of
+  // any nationality); EU-27 filters on `eu_km2` (the largest EU claimant), so
+  // one clause always says everything and the `all` wrapper is never needed.
+  it("setCellsThreshold picks the size property the scope is about", () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const both = ["season-cells-fill", "season-cells-line"];
+
+    setCellsThreshold(map as never, 0, "all");
+    for (const id of both) expect(map._filters[id]).toBeNull();
+
+    setCellsThreshold(map as never, 4, "all");
+    for (const id of both) expect(map._filters[id]).toEqual([">=", ["get", "km2"], 4]);
+
+    // t = 0 under EU still filters: a cell with no EU claimant at all has
+    // eu_km2 = 0 and must not be drawn.
+    setCellsThreshold(map as never, 0, "eu");
+    for (const id of both) expect(map._filters[id]).toEqual([">", ["get", "eu_km2"], 0]);
+
+    setCellsThreshold(map as never, 4, "eu");
+    for (const id of both) expect(map._filters[id]).toEqual([">=", ["get", "eu_km2"], 4]);
+  });
+
+  it("setCellsThreshold defaults to the whole Europe box", () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    setCellsThreshold(map as never, 4);
+    expect(map._filters["season-cells-fill"]).toEqual([">=", ["get", "km2"], 4]);
+  });
+
+  // A cell is EU if ANY claiming fire is — the same rule km2 uses (max across
+  // claimants), not "whatever the first claimant happened to be". Tagging by
+  // first claimant would blank ground that really did burn inside the EU
+  // whenever a foreign fire happened to be enumerated first.
+  //
+  // But the max has to be taken over the EU claimants ALONE. A boolean `eu`
+  // maxed independently of `km2` describes a cell that may not exist: a cell
+  // burned by a small EU fire and a large foreign one would carry km2 = 50
+  // and eu = 1, pass an "EU-27, ≥ 4 km²" filter, and be drawn under hexes
+  // that deliberately excluded it.
+  it("cellFeatures maxes each extra property across claiming fires, and eu_km2 over the EU ones", () => {
+    const shared = latLngToCell(45.0, 5.0, 8);
+    const isEu: Record<string, boolean> = { "fire-es": true, "fire-ua": false };
+    const sizes = new Map([["fire-es", 0.6], ["fire-ua", 50]]);
+    const feats = cellFeatures(
+      {
+        "fire-ua": { digest: "e", first: "2026-07-02", cells: [shared] },
+        "fire-es": { digest: "d", first: "2026-07-01", cells: [shared] },
+      },
+      sizes,
+      (id, km2) => ({ eu_km2: isEu[id] ? km2 : 0 }),
+    );
+    expect(feats).toHaveLength(1);
+    // km2 is still the biggest claimant of any nationality; eu_km2 is the
+    // biggest EU one — 0.6, not 50, and not a bare 1.
+    expect(feats[0].properties).toEqual({ cell: shared, fire_id: "fire-ua", km2: 50, eu_km2: 0.6 });
+  });
+
+  // The equivalence that matters: a cell survives the GPU filter exactly when
+  // the hex aggregate for the same (scope, threshold) counted it. Evaluated
+  // here against the real filter expressions setCellsThreshold produces.
+  const passes = (expr: unknown, props: Record<string, unknown>): boolean => {
+    if (expr === null) return true;
+    const [op, get, v] = expr as [string, [string, string], number];
+    const value = Number(props[get[1]]);
+    return op === ">=" ? value >= v : op === ">" ? value > v : false;
+  };
+
+  it("a cell shared by a small EU fire and a big foreign one is dropped by 'EU-27, ≥ 4 km²'", () => {
+    const shared = latLngToCell(45.0, 5.0, 8);
+    const ownCell = latLngToCell(46.0, 6.0, 8);
+    const isEu: Record<string, boolean> = { "fire-es": true, "fire-ua": false };
+    const sizes = new Map([["fire-es", 0.6], ["fire-ua", 50]]);
+    const feats = cellFeatures(
+      {
+        "fire-ua": { digest: "e", first: "2026-07-02", cells: [shared, ownCell] },
+        "fire-es": { digest: "d", first: "2026-07-01", cells: [shared] },
+      },
+      sizes,
+      (id, km2) => ({ eu_km2: isEu[id] ? km2 : 0 }),
+    );
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const drawn = (t: number, scope: "all" | "eu") => {
+      setCellsThreshold(map as never, t, scope);
+      const expr = map._filters["season-cells-fill"];
+      return feats.filter((f) => passes(expr, f.properties as Record<string, unknown>))
+        .map((f) => (f.properties as { cell: string }).cell).sort();
+    };
+    // All Europe: the 50 km² Ukrainian fire carries both its cells.
+    expect(drawn(0, "all")).toEqual([shared, ownCell].sort());
+    expect(drawn(4, "all")).toEqual([shared, ownCell].sort());
+    // EU-27: only the shared cell has an EU claimant at all…
+    expect(drawn(0, "eu")).toEqual([shared]);
+    // …and that claimant is 0.6 km², so at ≥ 4 km² nothing is drawn — which
+    // is exactly what aggregate(cells, sizes, 4, euOnly) counts: no fires.
+    expect(drawn(4, "eu")).toEqual([]);
+  });
+
+  it("cellFeatures carries extra properties per fire and omits them when no extra is given", () => {
+    const a2 = latLngToCell(45.0, 5.0, 8);
+    const b2 = latLngToCell(46.0, 6.0, 8);
+    const src = {
+      "fire-1": { digest: "d", first: "2026-07-01", cells: [a2] },
+      "fire-2": { digest: "e", first: "2026-07-02", cells: [b2] },
+    };
+    const sizes = new Map([["fire-1", 3], ["fire-2", 9]]);
+    const tagged = cellFeatures(src, sizes, (id, km2) => ({ eu_km2: id === "fire-1" ? km2 : 0 }));
+    expect(tagged.map((f) => f.properties)).toEqual([
+      { cell: a2, fire_id: "fire-1", km2: 3, eu_km2: 3 },
+      { cell: b2, fire_id: "fire-2", km2: 9, eu_km2: 0 },
+    ]);
+    expect(cellFeatures(src)[0].properties).toEqual({ cell: a2, fire_id: "fire-1", km2: 0 });
   });
 
   it("setSeasonAggregate refreshes heat and hex sources and leaves cells alone", () => {
@@ -499,5 +641,92 @@ describe("loader force + hooks", () => {
     expect(fetchFn).toHaveBeenCalledTimes(MAX_CELLS_ATTEMPTS);
     expect(onGaveUp).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
+  });
+});
+
+// The countries file and the cells file are two independent downloads, in
+// either order. Whichever lands second has to be able to re-tag what is
+// already on the map, or the EU-27 filter would hide every cell installed
+// before the countries arrived.
+describe("loader cellProps + retag", () => {
+  const a = latLngToCell(45.0, 5.0, 8);
+  const body = { "fire-1": { digest: "d", first: "2026-07-01", cells: [a] } };
+  const okFetch = () => vi.fn(async () => ({ ok: true, json: async () => body }));
+  const props = (map: ReturnType<typeof stubMap>) =>
+    map._sources[SEASON_CELLS_SOURCE].data.features[0].properties;
+
+  it("installs cells tagged by cellProps, and retag() re-tags them with the current answer", async () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    let isEu = false;
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never, {
+      cellProps: (_id, km2) => ({ eu_km2: isEu ? km2 : 0 }),
+    });
+    await loader.ensure();
+    expect(loader.state()).toBe("loaded");
+    expect(props(map).eu_km2).toBe(0);
+    expect(map._sources[SEASON_CELLS_SOURCE].setData).toHaveBeenCalledTimes(1);
+
+    isEu = true; // the countries file just landed
+    loader.retag();
+    expect(map._sources[SEASON_CELLS_SOURCE].setData).toHaveBeenCalledTimes(2);
+    // The fire's own size, handed to cellProps by the loader — not a boolean.
+    expect(props(map).eu_km2).toBeCloseTo(props(map).km2, 6);
+    expect(props(map).eu_km2).toBeGreaterThan(0.5);
+    expect(props(map).fire_id).toBe("fire-1"); // everything else survives the re-tag
+  });
+
+  // The loader installs INSIDE the fetch try-block and fires onLoaded after
+  // it, so at the first install past the zoom gate onLoaded has not run yet.
+  // That is why cellProps is handed the fire's km² rather than reading a
+  // caller-side `sizes` captured from onLoaded: such a capture is still null
+  // here, and every cell would install tagged 0.
+  it("evaluates cellProps at install time, before onLoaded", async () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const order: string[] = [];
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never, {
+      cellProps: (_id, km2) => { order.push("cellProps"); return { eu_km2: km2 }; },
+      onLoaded: () => { order.push("onLoaded"); },
+    });
+    await loader.ensure();
+    expect(order).toEqual(["cellProps", "onLoaded"]);
+    expect(props(map).eu_km2).toBeGreaterThan(0.5);
+  });
+
+  it("retag() is a no-op before the cells are installed", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    let isEu = false;
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never, {
+      cellProps: (_id, km2) => ({ eu_km2: isEu ? km2 : 0 }),
+    });
+    loader.retag(); // idle: nothing fetched, nothing to re-tag
+    expect(map._sources[SEASON_CELLS_SOURCE].setData).not.toHaveBeenCalled();
+
+    await loader.ensure({ force: true });
+    expect(loader.state()).toBe("fetched");
+    loader.retag(); // fetched but not installed: still nothing on the map
+    expect(map._sources[SEASON_CELLS_SOURCE].setData).not.toHaveBeenCalled();
+
+    // …and the deferred install uses the answer as of install time.
+    isEu = true;
+    map.zoom = 8;
+    map.fire("zoomend");
+    await Promise.resolve();
+    expect(loader.state()).toBe("loaded");
+    expect(props(map).eu_km2).toBeGreaterThan(0.5);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("without cellProps the installed cells carry no eu_km2 tag", async () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never);
+    await loader.ensure();
+    expect(props(map).eu_km2).toBeUndefined();
+    loader.retag();
+    expect(props(map).eu_km2).toBeUndefined();
   });
 });

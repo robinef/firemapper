@@ -3,6 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import {
   loadDaySlice,
   loadEvents,
+  loadFiresSummary,
   loadFrp,
   loadIsochrones,
   loadManifest,
@@ -45,7 +46,7 @@ import {
   setCellsThreshold,
   setSeasonAggregate,
 } from "./layer_season";
-import { createSeasonFilter } from "./season_filter";
+import { createSeasonFilter, isEuFire, type SeasonScope } from "./season_filter";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -76,7 +77,7 @@ import {
   renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
   runHistoricalLookup, wireGeocodeSearch,
 } from "./historical_lookup_ui";
-import type { Manifest } from "./types";
+import type { FiresSummary, Manifest } from "./types";
 
 const BASE = "/data";
 
@@ -175,6 +176,13 @@ async function boot() {
     // Owns the size threshold and re-aggregation; assigned with the loader
     // below. The module's status/control close over the variable.
     let seasonFilter: ReturnType<typeof createSeasonFilter> | null = null;
+    // Per-fire countries, null until the summary resolves (or forever, if the
+    // file is missing). The loader's cellProps closes over the VARIABLE, so
+    // cells installed before the file lands are re-tagged by retag() after.
+    let countries: FiresSummary | null = null;
+    // The scope of the totals the status line is currently showing — updated
+    // with them, in onAggregate, so heading and numbers can never disagree.
+    let seasonScope: SeasonScope = "all";
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -304,9 +312,16 @@ async function boot() {
             defaultOn: true,
             // Filtered totals once the reader has moved the slider; the
             // pipeline's totals until then — one number in the panel, never two.
+            //
+            // The scope comes from the aggregate those totals came from, not
+            // from seasonFilter.scope(): between a scope click and the
+            // debounced re-aggregation the control's scope has already moved
+            // and `summary()` has not, and a panel rebuild in that window
+            // (any moveend) would print an "EU-27 ·" heading over all-Europe
+            // numbers — a pairing that was never true.
             status: () => {
               const s = seasonFilter?.summary();
-              return seasonStatus(s ? { ...season, fires: s.fires, km2: s.km2 } : season);
+              return seasonStatus(s ? { ...season, fires: s.fires, km2: s.km2 } : season, seasonScope);
             },
             control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
@@ -326,10 +341,16 @@ async function boot() {
       manifest,
     );
     if (season) {
+      // Per-fire countries for the EU-27 scope. Started here — inside the
+      // only branch that can use it — and left unawaited: it resolves null on
+      // any failure, and a reader who never touches the scope toggle must not
+      // wait a round-trip for it.
+      const firesP = loadFiresSummary(seasonYear, BASE);
       seasonFilter = createSeasonFilter({
         onAggregate: (agg) => {
+          seasonScope = agg.scope;
           setSeasonAggregate(map, agg.r6);
-          setCellsThreshold(map, agg.threshold);
+          setCellsThreshold(map, agg.threshold, agg.scope);
           // Status line only: a full refresh would rebuild the panel and hand
           // the reader a brand-new range input mid-interaction, dropping
           // keyboard focus to <body> and breaking a paused drag's pointer
@@ -346,6 +367,23 @@ async function boot() {
       seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"), fetch, {
         onLoaded: (cells, sizes) => { seasonFilter?.setCells(cells, sizes); switcher.refresh(); },
         onGaveUp: () => { seasonFilter?.setUnavailable(); switcher.refresh(); },
+        // The EU-27 tag the cell filter reads on the GPU: the fire's own km²
+        // when it burned in the EU, 0 when it did not. A size, not a flag —
+        // cellFeatures maxes it across claimants, so a cell ends up carrying
+        // the size of its LARGEST EU claimant, which is the number the
+        // "EU-27, ≥ t km²" filter has to compare against for the cells to
+        // match the hexes. Evaluated at install time and again on retag(), so
+        // it always reflects the countries file as it is NOW.
+        cellProps: (id, km2) => ({ eu_km2: isEuFire(countries, id) ? km2 : 0 }),
+      });
+      // The two files race. Whichever order they land in, the scope button
+      // enables (setCountries repaints the live button itself, so no panel
+      // rebuild is needed — and a rebuild here would steal focus) and the
+      // already-installed cells, if any, get their tag.
+      void firesP.then((s) => {
+        countries = s;
+        seasonFilter?.setCountries(s);
+        seasonLoader?.retag();
       });
       void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
       // The size histogram needs the cells file wherever the camera is, so

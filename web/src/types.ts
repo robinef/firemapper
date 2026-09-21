@@ -97,3 +97,9 @@ export interface SeasonSummary {
 
 /** archive/season_{year}_cells.json — one entry per settled fire. */
 export type SeasonCells = Record<string, { digest: string; first: string; cells: string[] }>;
+
+/** archive/blob_{year}_fires.json — pipeline/export_scale_blob.py's per-fire
+ * country + EFFIS-mapped area. Lives here rather than beside its first reader
+ * (scale_blob_panel.ts) because the season layer reads it too, for country
+ * scoping, and data.ts must not import a panel module to name its return type. */
+export type FiresSummary = Record<string, { country: string | null; area_km2: number }>;

@@ -161,7 +161,15 @@ middle, the real burned cells from zoom 8, all sources added at boot and the
 cells file fetched on idle after first paint (or on approach to zoom 7.5) and,
 once loaded, driving a minimum-fire-size slider under a log histogram
 (`season_filter.ts`) that re-aggregates the hexes client-side with the
-pipeline's own dedup rule and filters the cells GPU-side. The ramp breaks are
+pipeline's own dedup rule and filters the cells GPU-side. The same control
+scopes the layer to the EU-27, reading each fire's country from the scale
+blob's per-fire summary (`archive/blob_{year}_fires.json`) — the layer's own
+box reaches Ukraine, Russia, Turkey and Algeria, which is most of the gap
+between its total and the /scale page's EFFIS figure. The rest of that gap is
+what the number measures: season totals are a satellite *heat footprint* (every
+detection claims a whole 0.7 km² cell, agricultural burning included), roughly
+double the mapped burn area EFFIS reports for the same region, and the label,
+the status line and the legend all say so. The ramp breaks are
 tuned on real archive data (`SEASON_HEX_BREAKS` in `layer_season.ts` records
 the distribution). The per-fire view is `web/src/firecard.ts`; the bottom
 histogram is `web/src/timeline.ts`.

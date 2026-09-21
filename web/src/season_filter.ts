@@ -1,5 +1,5 @@
 import { cellArea, cellToParent, getResolution, UNITS } from "h3-js";
-import type { SeasonCells } from "./types";
+import type { FiresSummary, SeasonCells } from "./types";
 
 /**
  * Size filter for the "Burned this year" layer — the math half.
@@ -23,7 +23,36 @@ export const NWCG_TICKS: { label: string; km2: number }[] = [
 ];
 export const AGG_RES = 6;
 
-export type SeasonAggregate = { threshold: number; r6: [string, number][]; fires: number; km2: number };
+/** The 27 EU member states, ISO 3166-1 alpha-2 — the same codes the scale
+ * blob's per-fire summary carries (GeoNames-derived). Deliberately NOT
+ * "Europe": the season layer's box reaches Ukraine, Russia, Turkey and
+ * Algeria, and the /scale page's EFFIS comparison is EU-27 only. */
+export const EU27: ReadonlySet<string> = new Set([
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
+  "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+]);
+
+/** Which side of the EU-27 border a fire burned on. Unknown is not EU: a fire
+ * the geocoder could not place (31 of 21,867 in 2026) must not be counted into
+ * a total the reader will compare against an EFFIS EU-27 number. */
+export function isEuFire(summary: FiresSummary | null, id: string): boolean {
+  const c = summary?.[id]?.country;
+  return c != null && EU27.has(c);
+}
+
+/** Which fires the layer is counting: the whole Europe box, or the EU-27. */
+export type SeasonScope = "all" | "eu";
+
+export type SeasonAggregate = {
+  threshold: number;
+  r6: [string, number][];
+  fires: number;
+  km2: number;
+  /** Scope these totals describe — carried so a reader of the aggregate (the
+   * label, the status line, the cell filter) can never pair one scope's
+   * numbers with another's heading. */
+  scope: SeasonScope;
+};
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
@@ -48,9 +77,13 @@ export function binIndex(km2: number): number {
   return Math.min(i, SIZE_EDGES.length - 2);
 }
 
-export function histogram(sizes: Map<string, number>): number[] {
+/** `keep` scopes the distribution to a subset of fires (the EU-27 toggle):
+ * the bars are the legend for what the slider will select, so they have to
+ * count the same fires the aggregation will. */
+export function histogram(sizes: Map<string, number>, keep?: (id: string) => boolean): number[] {
   const bins = new Array<number>(SIZE_EDGES.length - 1).fill(0);
-  for (const v of sizes.values()) {
+  for (const [id, v] of sizes) {
+    if (keep && !keep(id)) continue;
     const i = binIndex(v);
     if (i >= 0) bins[i] += 1;
   }
@@ -92,11 +125,20 @@ export function dedupNested(cells: Set<string>): Set<string> {
  * from one fire and its res-8 child from another BOTH survive — that is the
  * pipeline's answer and the published numbers are the contract. Roll-up to res
  * 6, per-hex km² rounded to 0.1, total = rounded sum of the rounded hexes. */
-export function aggregate(cells: SeasonCells, sizes: Map<string, number>, threshold: number): SeasonAggregate {
+export function aggregate(
+  cells: SeasonCells,
+  sizes: Map<string, number>,
+  threshold: number,
+  keep?: (id: string) => boolean,
+  scope: SeasonScope = "all",
+): SeasonAggregate {
   const union = new Set<string>();
   let fires = 0;
   for (const [id, entry] of Object.entries(cells)) {
     if ((sizes.get(id) ?? 0) < threshold) continue;
+    // A second gate on the same loop, so a rejected fire leaves the count, the
+    // union and the km² alike — not merely the map.
+    if (keep && !keep(id)) continue;
     fires += 1;
     for (const c of dedupNested(new Set(entry.cells))) union.add(c);
   }
@@ -109,13 +151,23 @@ export function aggregate(cells: SeasonCells, sizes: Map<string, number>, thresh
     .map(([cell, v]) => [cell, round1(v)] as [string, number])
     .sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
   const km2 = round1(r6.reduce((s, [, v]) => s + v, 0));
-  return { threshold, r6, fires, km2 };
+  return { threshold, r6, fires, km2, scope };
 }
 
-export function filterLabel(index: number, agg: { fires: number; km2: number }): string {
+/** "EU-27 · " when the layer is scoped, nothing when it is not. One place, so
+ * the label, its placeholder and the status line cannot drift apart. */
+export function scopePrefix(scope: SeasonScope): string {
+  return scope === "eu" ? "EU-27 · " : "";
+}
+
+/** "footprint", not "burned": every detection claims a whole 0.7 km² cell and
+ * agricultural burning is in there too, so this number runs roughly double the
+ * mapped burn area EFFIS reports for the same region. Naming it stops a reader
+ * treating it as the /scale page's EFFIS figure. */
+export function filterLabel(index: number, agg: { fires: number; km2: number }, scope: SeasonScope = "all"): string {
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
   const head = index <= 0 ? "all sizes" : `≥ ${thresholdFor(index)} km²`;
-  return `${head} · ${n(agg.fires)} fires · ${n(agg.km2)} km²`;
+  return `${scopePrefix(scope)}${head} · ${n(agg.fires)} fires · ${n(agg.km2)} km² footprint`;
 }
 
 type FilterStatus = "loading" | "ready" | "unavailable";
@@ -155,6 +207,22 @@ export function createSeasonFilter(opts: {
   let index = 0;
   let last: SeasonAggregate | null = null;
   let container: HTMLElement | null = null;
+  let scope: SeasonScope = "all";
+  /** Per-fire countries, null until the summary lands (or forever, if it
+   * never does — then the EU-27 button stays disabled and nothing else here
+   * changes behaviour). */
+  let countries: FiresSummary | null = null;
+
+  /** Is there a usable countries file? An EMPTY summary is not one: it parses,
+   * but it answers "not EU" for every fire, so offering the scope would offer
+   * a guaranteed empty map. One predicate, used by both the renderer and the
+   * painter, so the button's markup and its live state cannot disagree. */
+  const hasCountries = (): boolean => countries !== null && Object.keys(countries).length > 0;
+
+  /** The predicate the current scope implies. `undefined` for "all", so the
+   * unscoped path costs no call per fire. */
+  const keepFn = (): ((id: string) => boolean) | undefined =>
+    scope === "eu" ? (id: string) => isEuFire(countries, id) : undefined;
 
   const labelText = (): string => {
     if (status === "loading") return "loading sizes…";
@@ -163,15 +231,29 @@ export function createSeasonFilter(opts: {
     // Between a slider move and the debounced re-aggregation it describes the
     // PREVIOUS one, and pairing the new head with those totals states a
     // number that was never true — worse, aria-valuetext would announce it.
-    if (!last || last.threshold !== thresholdFor(index)) {
+    // …and the same is true of the SCOPE: after a scope click `last` still
+    // holds the other scope's totals, and pairing them with an "EU-27 ·"
+    // heading would state a number that was never true.
+    if (!last || last.threshold !== thresholdFor(index) || last.scope !== scope) {
       // Until the first aggregation lands (scheduled from setCells), show the
       // count alone: the deduped km² is not known yet and must never be
       // approximated by a per-fire sum, which double-counts shared ground.
-      if (index <= 0) return `all sizes · ${sizes?.size.toLocaleString("en-GB") ?? 0} fires`;
+      if (index <= 0) return `${scopePrefix(scope)}all sizes · ${keptFires().toLocaleString("en-GB")} fires`;
       const t = thresholdFor(index);
-      return `≥ ${t} km² · …`;
+      return `${scopePrefix(scope)}≥ ${t} km² · …`;
     }
-    return filterLabel(index, last);
+    return filterLabel(index, last, scope);
+  };
+
+  /** How many fires the current scope holds — the one number available before
+   * an aggregation runs (a count needs no geometry). */
+  const keptFires = (): number => {
+    if (!sizes) return 0;
+    const keep = keepFn();
+    if (!keep) return sizes.size;
+    let n = 0;
+    for (const id of sizes.keys()) if (keep(id)) n += 1;
+    return n;
   };
 
   const paint = (): void => {
@@ -179,6 +261,27 @@ export function createSeasonFilter(opts: {
     const box = container.querySelector(".season-filter");
     if (!box) return;
     box.className = `season-filter is-${status}`;
+    // Scope buttons read state, never their own markup: the panel rebuilds
+    // this DOM on every moveend and setCountries can land at any point.
+    box.querySelectorAll<HTMLButtonElement>(".season-scope button").forEach((b) => {
+      const s = b.dataset.scope as SeasonScope | undefined;
+      if (!s) return;
+      const on = s === scope;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+      // BOTH buttons follow the filter's ready state, not just the EU one.
+      // Re-scoping means re-aggregating, and runAggregate returns early
+      // without the cells file — so a click while loading or unavailable
+      // would leave a pressed "EU-27" beside all-Europe numbers, on a map
+      // that never changed. The EU button additionally needs the countries.
+      const noCountries = s === "eu" && !hasCountries();
+      b.disabled = status !== "ready" || noCountries;
+      // The title names the countries reason only: a filter that is loading
+      // or unavailable already says so in its label, and borrowing the
+      // countries wording there would blame the wrong missing file.
+      if (noCountries) b.title = "countries unavailable";
+      else b.removeAttribute("title");
+    });
     const t = thresholdFor(index);
     box.querySelectorAll<SVGRectElement>(".season-hist rect").forEach((r, i) => {
       r.classList.toggle("dim", index > 0 && SIZE_EDGES[i] < t);
@@ -197,7 +300,7 @@ export function createSeasonFilter(opts: {
   const runAggregate = (): void => {
     if (!cells || !sizes) return;
     const t = thresholdFor(index);
-    last = aggregate(cells, sizes, t);
+    last = aggregate(cells, sizes, t, keepFn(), scope);
     opts.onAggregate(last);
     paint();
   };
@@ -207,6 +310,30 @@ export function createSeasonFilter(opts: {
     if (!Number.isFinite(v)) return;
     index = Math.max(0, Math.min(SIZE_EDGES.length - 1, Math.round(v)));
     paint();
+    schedule(runAggregate);
+  };
+
+  /** A scope click changes WHICH fires exist, so unlike a slider move it
+   * re-bins the histogram — hence a full re-render, not a paint. The
+   * aggregation rides the same debounce as the slider's. */
+  const onScope = (e: Event): void => {
+    const b = e.currentTarget as HTMLButtonElement;
+    const s = b.dataset.scope as SeasonScope | undefined;
+    if (!s || s === scope) return;
+    // The same two gates paint() disables the buttons on, enforced here as
+    // well: `disabled` is presentation (and can be stale after a rebuild),
+    // these are the contract.
+    if (status !== "ready") return; // nothing to re-scope, and no aggregation would run
+    if (s === "eu" && !hasCountries()) return; // no countries file, no EU claim
+    scope = s;
+    if (sizes) bins = histogram(sizes, keepFn());
+    if (container) control(container);
+    paint();
+    // The re-render above replaced the button that was clicked, so focus is
+    // on <body> now. Put it back on the new button: a keyboard reader must
+    // not be dumped out of the control for using it, and a screen reader
+    // announces the new aria-pressed state only if focus lands there.
+    container?.querySelector<HTMLButtonElement>(`.season-scope button[data-scope="${s}"]`)?.focus();
     schedule(runAggregate);
   };
 
@@ -234,8 +361,23 @@ export function createSeasonFilter(opts: {
     const ticks = NWCG_TICKS
       .map((tk) => `<span style="left:${(tickPos(tk.km2) * 100).toFixed(1)}%">${tk.label}</span>`)
       .join("");
+    // Scope above sizes: the reader picks which fires exist, then which of
+    // those are big enough.
+    //
+    // The buttons render BARE — no `on`, `aria-pressed`, `disabled` or
+    // `title` here. paint() runs at the end of this function and owns all
+    // four, reading state, so a rebuild into a fresh container restores the
+    // choice. Setting them here as well would be two rules for one fact, and
+    // the template's copy is unobservable (paint always overwrites it) —
+    // exactly the kind of duplicate that drifts unnoticed.
+    const scopeHtml =
+      `<div class="season-scope" role="group" aria-label="Fire scope">` +
+      `<button type="button" data-scope="all">All Europe</button>` +
+      `<button type="button" data-scope="eu">EU-27</button>` +
+      `</div>`;
     el.innerHTML =
       `<div class="season-filter is-${status}">` +
+      scopeHtml +
       `<svg class="season-hist" viewBox="0 0 ${HIST_W} ${HIST_H}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>` +
       `<div class="season-ticks" aria-hidden="true">${ticks}</div>` +
       `<input class="season-range" type="range" min="0" max="${SIZE_EDGES.length - 1}" step="1" ` +
@@ -243,6 +385,8 @@ export function createSeasonFilter(opts: {
       `<div class="season-filter-label"></div>` +
       `</div>`;
     el.querySelector<HTMLInputElement>(".season-range")!.addEventListener("input", onInput);
+    el.querySelectorAll<HTMLButtonElement>(".season-scope button")
+      .forEach((b) => b.addEventListener("click", onScope));
     paint();
   };
 
@@ -251,7 +395,7 @@ export function createSeasonFilter(opts: {
     setCells(c: SeasonCells, s: Map<string, number>): void {
       cells = c;
       sizes = s;
-      bins = histogram(s);
+      bins = histogram(s, keepFn());
       status = "ready";
       // Rebuild into the current container so the bars reflect real counts,
       // then aggregate once at threshold 0 (debounced, off the idle path) so
@@ -263,6 +407,14 @@ export function createSeasonFilter(opts: {
       status = "unavailable";
       paint();
     },
+    /** Per-fire countries for the EU-27 scope. Null, or an empty summary (a
+     * missing, broken or empty file), simply leaves the button disabled —
+     * never changes the totals, never switches scope back on its own. */
+    setCountries(summary: FiresSummary | null): void {
+      countries = summary;
+      paint();
+    },
+    scope: (): SeasonScope => scope,
     threshold: () => thresholdFor(index),
     summary: () => (last ? { fires: last.fires, km2: last.km2 } : null),
   };

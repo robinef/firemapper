@@ -1,7 +1,8 @@
 import type * as maplibregl from "maplibre-gl";
 import { cellToBoundary, cellToLatLng } from "h3-js";
 import { sliceFeatures } from "./layer_dayslice";
-import { dedupNested, fireSizes } from "./season_filter";
+import { dedupNested, fireSizes, scopePrefix } from "./season_filter";
+import type { SeasonScope } from "./season_filter";
 import type { SeasonCells, SeasonSummary } from "./types";
 
 /**
@@ -111,16 +112,48 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
  * fireSizes and aggregate use): a fire holding a coarse Meteosat cell and its
  * finer VIIRS children has one patch of ground, not two, and drawing the
  * parent would blanket ground the hex band deliberately never counted.
- * Across fires nothing is dropped — that is the pipeline's rule too. */
-export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): GeoJSON.Feature[] {
+ * Across fires nothing is dropped — that is the pipeline's rule too.
+ *
+ * `extra(fireId, km2)` adds numeric properties (`eu_km2`, the EU-27 tag).
+ * They follow the `km2` rule, not the `fire_id` rule: each key takes the MAX
+ * across every fire claiming the cell. Tagging by first claimant instead
+ * would hide ground that really did burn inside the EU whenever a foreign
+ * fire came first in the file — a bug invisible to anything but a
+ * shared-cell test.
+ *
+ * `extra` gets the fire's OWN km², which is what makes the cells and the hex
+ * aggregate equivalent at every threshold. The EU tag is a SIZE maxed over
+ * the EU claimants alone (`eu_km2`), not a boolean maxed independently of
+ * `km2`: with a boolean, a cell burned by a 0.6 km² Spanish fire and a
+ * 50 km² Ukrainian one carries `km2 = 50, eu = 1`, passes an "EU-27, ≥ 4 km²"
+ * filter, and paints ground the hex band — which keeps only fires passing
+ * BOTH gates — deliberately excluded. With `eu_km2 = 0.6` the two agree:
+ * a cell survives `eu_km2 >= t` exactly when some EU fire of at least t km²
+ * claimed it, which is exactly what aggregate(cells, sizes, t, euOnly)
+ * counts. */
+export function cellFeatures(
+  cells: SeasonCells,
+  sizes?: Map<string, number>,
+  extra?: (fireId: string, km2: number) => Record<string, number>,
+): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
-  // Compute the largest claiming fire's size for each cell.
+  // Compute the largest claiming fire's size — and the max of every extra
+  // property — for each cell.
   const best = new Map<string, number>();
+  const extras = extra ? new Map<string, Record<string, number>>() : null;
   for (const [fireId, entry] of Object.entries(cells)) {
     const km2 = sizes?.get(fireId) ?? 0;
+    // Once per fire, not once per cell: `extra` may do real work (a map lookup
+    // and a set membership test) and a fire holds thousands of cells.
+    const ex = extra?.(fireId, km2);
     for (const cell of dedupNested(new Set(entry.cells))) {
       best.set(cell, Math.max(best.get(cell) ?? 0, km2));
+      if (extras && ex) {
+        const cur = extras.get(cell);
+        if (!cur) extras.set(cell, { ...ex });
+        else for (const [k, v] of Object.entries(ex)) cur[k] = cur[k] === undefined ? v : Math.max(cur[k], v);
+      }
     }
   }
   // Emit each cell once, tagged with the first claimant fire.
@@ -133,7 +166,7 @@ export function cellFeatures(cells: SeasonCells, sizes?: Map<string, number>): G
       out.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
-        properties: { cell, fire_id: fireId, km2: best.get(cell) ?? 0 },
+        properties: { cell, fire_id: fireId, km2: best.get(cell) ?? 0, ...(extras?.get(cell) ?? {}) },
       });
     }
   }
@@ -172,10 +205,28 @@ export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]):
   (map.getSource(SEASON_HEX_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(hexFeaturesCached(r6)));
 }
 
-/** Hide cells whose owning fire is smaller than `threshold` km², on the GPU.
- * `null` clears the filter (threshold 0 = everything). */
-export function setCellsThreshold(map: maplibregl.Map, threshold: number): void {
-  const expr = threshold > 0 ? ([">=", ["get", "km2"], threshold] as maplibregl.FilterSpecification) : null;
+/** Hide cells no kept fire claims, on the GPU, from properties cellFeatures
+ * already wrote.
+ *
+ * The scope picks WHICH size property to test, rather than adding a second
+ * clause: all-Europe asks "is the biggest claimant ≥ t?" (`km2`), EU-27 asks
+ * "is the biggest EU claimant ≥ t?" (`eu_km2`). One question either way, and
+ * the answer matches the hex aggregate's by construction (see cellFeatures).
+ *
+ * `null` (no filter) only at threshold 0 under all-Europe. At threshold 0
+ * under EU-27 the filter still has work to do: a cell with no EU claimant at
+ * all has `eu_km2 = 0`. */
+export function setCellsThreshold(
+  map: maplibregl.Map,
+  threshold: number,
+  scope: SeasonScope = "all",
+): void {
+  const key = scope === "eu" ? "eu_km2" : "km2";
+  const expr = (threshold > 0
+    ? [">=", ["get", key], threshold]
+    : scope === "eu"
+      ? [">", ["get", key], 0]
+      : null) as maplibregl.FilterSpecification | null;
   for (const id of ["season-cells-fill", "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
@@ -276,9 +327,12 @@ export function formatFloor(floor: string): string {
   });
 }
 
-export function seasonStatus(summary: SeasonSummary): string {
+/** The panel's one-line summary. Same wording as the filter's label —
+ * "footprint" because the km² is satellite heat coverage, not mapped burn
+ * area — so the two numbers in the panel read as one statement. */
+export function seasonStatus(summary: SeasonSummary, scope: SeasonScope = "all"): string {
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
-  const base = `${n(summary.fires)} fires · ${n(summary.km2)} km²`;
+  const base = `${scopePrefix(scope)}${n(summary.fires)} fires · ${n(summary.km2)} km² footprint`;
   return summary.floor ? `${base} since ${formatFloor(summary.floor)}` : base;
 }
 
@@ -295,9 +349,16 @@ export function seasonLegend(floor: string | null, year = new Date().getUTCFullY
       { color: EMBER_LIGHT, label: "", shape: "square" as const },
       { color: EMBER_PALE, label: "most burned", shape: "square" as const },
     ],
+    // The comparison a reader will make whether or not we invite it: this
+    // layer says ~60.9k km² for 2026 and the /scale page says ~6.7k km² for
+    // the EU-27. Both are right; they measure different things. Saying so
+    // here is cheaper than letting someone conclude one of them is broken.
     note:
-      `Every fire the satellites saw settle ${since}. Earlier fires this year ` +
-      "are not yet archived. Zoom in for the real burned ground.",
+      `Every fire the satellites saw settle ${since}; earlier fires this year ` +
+      "are not yet archived. Area is the satellite heat footprint — each " +
+      "detection claims a whole 0.7 km² cell and agricultural burning is " +
+      "included — so it runs roughly double the mapped burn area EFFIS " +
+      "reports for the same region. Zoom in for the real burned ground.",
   };
 }
 
@@ -317,6 +378,15 @@ export type SeasonCellsHooks = {
   onLoaded?: (cells: SeasonCells, sizes: Map<string, number>) => void;
   /** Once, when the attempt cap is reached. */
   onGaveUp?: () => void;
+  /** Extra numeric properties per fire, merged into every installed cell (the
+   * EU-27 tag). Read at install time and again on retag(), never cached: the
+   * countries file may land after the cells do.
+   *
+   * The fire's km² is passed IN rather than looked up by the caller: the
+   * install runs inside the fetch (before onLoaded fires), so a caller-side
+   * `sizes` captured from onLoaded is still null at the first install past
+   * the zoom gate, and every cell would be tagged 0. */
+  cellProps?: (fireId: string, km2: number) => Record<string, number>;
 };
 
 /**
@@ -353,11 +423,14 @@ export function createSeasonCellsLoader(
   isOn: () => boolean,
   fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
   hooks: SeasonCellsHooks = {},
-): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState } {
+): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState; retag(): void } {
   let state: CellsState = "idle";
   let failures = 0;
   /** Parsed cells waiting for the reader to approach the cells band. */
   let held: { cells: SeasonCells; sizes: Map<string, number> } | null = null;
+  /** What was handed to the map, kept so retag() can rebuild the features
+   * with a newer `cellProps` answer without refetching megabytes. */
+  let installed: { cells: SeasonCells; sizes: Map<string, number> } | null = null;
 
   /** The install has ONE gate, the camera: `force` waives the gate on the
    * FETCH (the histogram needs the file at any zoom), never on the install.
@@ -372,12 +445,30 @@ export function createSeasonCellsLoader(
   const install = (): void => {
     const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (!held || !source) return;
-    source.setData(fc(cellFeatures(held.cells, held.sizes)));
+    source.setData(fc(cellFeatures(held.cells, held.sizes, hooks.cellProps)));
     if (map.getLayer("season-hex-fill")) {
       map.setPaintProperty("season-hex-fill", "fill-opacity", HEX_OPACITY_INSTALLED as never);
     }
+    installed = held;
     held = null;
     state = "loaded";
+  };
+
+  /** Rebuild the installed cells' properties from the CURRENT `cellProps`.
+   * The countries file and the cells file are independent downloads in either
+   * order; whichever lands second has to be able to re-tag what is already on
+   * the map. A no-op unless cells are actually installed — before that, the
+   * install itself will read the fresh answer.
+   *
+   * `installed` IS the "loaded" test: it is set in install() at the same
+   * moment the state becomes "loaded", and a failed install leaves both
+   * untouched. Guarding on the state as well would add a branch nothing can
+   * exercise. */
+  const retag = (): void => {
+    if (!installed) return;
+    const source = map.getSource(SEASON_CELLS_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (!source) return;
+    source.setData(fc(cellFeatures(installed.cells, installed.sizes, hooks.cellProps)));
   };
 
   const ensure = async (opts: { force?: boolean } = {}): Promise<void> => {
@@ -431,5 +522,5 @@ export function createSeasonCellsLoader(
 
   map.on("zoomend", () => { void ensure(); });
   map.on("moveend", () => { void ensure(); });
-  return { ensure, state: () => state };
+  return { ensure, state: () => state, retag };
 }
