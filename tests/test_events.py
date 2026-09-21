@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import h3
 
-from pipeline.config import STATIC_CELL_DAYS, STATIC_EVENT_FRAC
+from pipeline.config import STATIC_CELL_DAYS
 from pipeline.events import (
     BRIDGE_K,
     BRIDGE_MIN_CELLS,
@@ -12,14 +12,15 @@ from pipeline.events import (
     CLOSE_AFTER_H,
     METEOSAT_CELL_KM2,
     METEOSAT_RES,
+    STATIC_RING_K,
     _UF,
     cell_km2_for,
     cluster,
     event_id_for,
-    is_static,
     lifecycle,
     reactivation_links,
     static_cells,
+    static_zone,
 )
 from pipeline.metrics import CELL_KM2
 from tests.synth import T, hs
@@ -454,8 +455,8 @@ def test_static_cell_day_boundary():
 def test_static_source_with_jitter_cells_is_dropped_as_one_event():
     # A flare core (30 static days) plus a handful of detections on an
     # adjacent cell (3 days, not static alone) that chain into the SAME event
-    # via 48h adjacency: the whole event is static (share of members in
-    # static cells >= STATIC_EVENT_FRAC), jitter cells included.
+    # via 48h adjacency: the adjacent cell is inside the static zone (core +
+    # STATIC_RING_K), so the whole thing goes, jitter cells included.
     core = h3.latlng_to_cell(*A, 8)
     jitter = h3.grid_disk(core, 1)[1]
     rows = _daily(*A, 1, 30) + [hs(*h3.cell_to_latlng(jitter), T(d, 13)) for d in (5, 15, 25)]
@@ -463,26 +464,63 @@ def test_static_source_with_jitter_cells_is_dropped_as_one_event():
     assert ev == {}
 
 
-def _padded(lat, lon, first_day, n):
-    """`n` detections at (lat, lon) across at most 2 distinct days (hourly),
-    never enough days to be static on its own however large `n` is."""
-    return [hs(lat, lon, T(first_day + i // 24, i % 24)) for i in range(n)]
-
-
-def test_static_event_share_boundary():
-    # A fire that spreads INTO a flare stays real if the flare is a small
-    # enough share of its detections; becomes static once the flare crosses
-    # STATIC_EVENT_FRAC of the event's members. assert STATIC_EVENT_FRAC == 0.5.
-    assert STATIC_EVENT_FRAC == 0.5
+def test_static_zone_is_the_static_cells_plus_one_ring():
     core = h3.latlng_to_cell(*A, 8)
-    jitter = h3.cell_to_latlng(h3.grid_disk(core, 1)[1])
-    flare = _daily(*A, 1, 30)  # 30 static-cell members, latest on day 30
-    below = flare + _padded(*jitter, 1, 31)  # 61 total, 30/61 = 0.49
-    assert len(cluster(below, now=T(31, 0))) == 1
-    exactly = flare + _padded(*jitter, 1, 30)  # 60 total, 30/60 = 0.50 exactly -> dropped (>=)
-    assert cluster(exactly, now=T(31, 0)) == {}
-    above = flare + _padded(*jitter, 1, 28)  # 58 total, 30/58 = 0.52
-    assert cluster(above, now=T(31, 0)) == {}
+    assert STATIC_RING_K == 1
+    assert static_zone({core}) == set(h3.grid_disk(core, 1))
+    assert static_zone(set()) == set()
+
+
+def test_fire_welded_to_a_static_source_keeps_only_its_own_detections():
+    """El Milia (DZ) 2026-09: a real ~700 km² fire spread past the Bellara
+    steelworks. The plant's near-daily pings (61 of 66 days on one cell)
+    were 9% of the event's members — far under any event-level share — so
+    the event survived WITH them: its latest detection was never more than
+    a few hours old (`active` three weeks after the fire's last real
+    detection), its `started` was the plant's first ping in July, and its
+    FRP series never went to zero. Static-zone detections are removed from
+    every event's rows, whatever share of the event they are; the fire keeps
+    its own geometry, dates and lifecycle."""
+    core = h3.latlng_to_cell(*A, 8)
+    plant = _daily(*A, 1, 30)  # pings daily through day 30
+    ring2 = h3.grid_ring(core, 2)
+    # A fire on days 10-11, four passes a day, on the whole ring-2 crown —
+    # 96 members to the plant's 30 — touching ring 1 once so it welds to
+    # the plant by adjacency.
+    fire = [hs(*h3.cell_to_latlng(c), T(10 + i % 2, h)) for i, c in enumerate(ring2) for h in (0, 6, 12, 18)]
+    touch = hs(*h3.cell_to_latlng(h3.grid_disk(core, 1)[1]), T(10, 12))
+    ev = cluster(plant + fire + [touch], now=T(31, 0), window_days=45)
+    assert len(ev) == 1
+    (members,) = ev.values()
+    assert {m["cell"] for m in members} == set(ring2)
+    assert min(m["acq_time"] for m in members) == T(10, 0)
+    assert max(m["acq_time"] for m in members) == T(11, 18)
+    assert lifecycle(members, None, T(31, 0)) == "closed"
+
+
+def test_static_zone_pings_never_form_an_event_of_their_own():
+    """Geolocation jitter lands a plant's pings on a neighbouring cell on
+    some days: never enough days to be static itself (Bellara: 8-9 days on
+    two neighbours vs 61 on the core), and when they fall >48 h after the
+    core's last ping they are not chained to it either — a one-cell "fire"
+    next to a refinery. The zone excludes them regardless, and reports them
+    with the static detections so the timeline/day-slices drop them too."""
+    core = h3.latlng_to_cell(*A, 8)
+    jitter = h3.grid_disk(core, 1)[1]
+    rows = _daily(*A, 1, 25) + [hs(*h3.cell_to_latlng(jitter), T(d, 13)) for d in (28, 29)]
+    report: dict = {}
+    assert cluster(rows, now=T(30, 0), report=report) == {}
+    reported = {m["src_id"] for ms in report["static_events"].values() for m in ms}
+    assert reported == {r["src_id"] for r in rows}
+
+
+def test_fire_two_cells_from_a_static_source_is_untouched():
+    # Pins the zone radius: ring 2 is outside it, whatever its timing.
+    core = h3.latlng_to_cell(*A, 8)
+    far = h3.grid_ring(core, 2)[0]
+    rows = _daily(*A, 1, 25) + [hs(*h3.cell_to_latlng(far), T(28, 12))]
+    ev = cluster(rows, now=T(29, 0))
+    assert [[m["cell"] for m in ms] for ms in ev.values()] == [[far]]
 
 
 def test_fresh_meteosat_fire_over_a_static_polar_source_is_suppressed():

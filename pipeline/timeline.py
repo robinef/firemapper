@@ -17,15 +17,15 @@ def build_timeline(
 ) -> list[dict]:
     """[{date, count, frp}] per UTC day for the last `days`, oldest first.
 
-    `exclude_ids` (src_id) drops the exact detections belonging to events
-    events.cluster() classified as static heat sources (flares, refineries,
-    oil fields), so the histogram reads the trend in wildfire activity, not a
-    constant industrial floor: measured on the prod archive, such detections
-    are 17.7% of the total (10-49% on any given day). By src_id, not by
-    cell: a cell can host a real, KEPT event alongside a dropped static one
-    (e.g. a fire that spread into a flare's cell but stayed under
-    STATIC_EVENT_FRAC) — excluding the whole cell would undercount that real
-    event's own detections here while the map still shows it in full."""
+    `exclude_ids` (src_id) drops the exact detections events.cluster()
+    removed as static heat sources (flares, refineries, oil fields — every
+    detection inside a static zone, see events.static_zone), so the
+    histogram reads the trend in wildfire activity, not a constant
+    industrial floor: measured on the prod archive, such detections are
+    17.7% of the total (10-49% on any given day). By src_id rather than by
+    cell so this stays one exclusion set shared with cluster() and the
+    day-slices — whatever rule cluster() applies, the histogram agrees with
+    the map by construction rather than re-deriving it."""
     start = (now - timedelta(days=days - 1)).date()
     exclude = exclude_ids or set()
     counts: dict[str, int] = {}

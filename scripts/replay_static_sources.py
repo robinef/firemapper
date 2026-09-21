@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline.config import H3_RES, SCAR_WINDOW_DAYS
+from pipeline.config import H3_RES, MAX_FIRE_DAYS
 from pipeline.enrich import MIN_PLACES, Places, load_places, place_for
 from pipeline.events import _cluster_one, cluster, static_cells
 from pipeline.store import read_hotspots
@@ -25,13 +25,28 @@ from pipeline.store import read_hotspots
 RUNTIME_BUDGET_PCT = 20
 
 # Labelled by hand against archive/hotspots-gen-20260907T083037Z.parquet
-# (sha256 recorded in the PR). Matched by place name substring (case-sensitive)
-# since ids are not stable across archive snapshots.
+# (sha256 recorded in the PR) and archive/hotspots-gen-20260921T190056Z.parquet
+# (El Milia). Matched by place name substring (case-sensitive) since ids are
+# not stable across archive snapshots. A tuple lists alternative names for
+# one source: a static cluster is named after the town nearest a hot cell,
+# and which town that is moves with the cluster's exact cell set (Etna's
+# summit craters read as Giarre or Zafferana Etnea).
 MUST_DROP = [
     "Meiderich", "IJmuiden", "Burglesum", "Cherepovets", "Lipetsk", "Linz",
-    "Fos-sur-Mer", "Giarre", "Kirkuk",
+    "Fos-sur-Mer", ("Giarre", "Zafferana Etnea"), "Kirkuk",
+    # Bellara steelworks (Complexe Sidérurgique de Bellara): the source that
+    # kept the 2026-08 El Milia fire "active" for three weeks after its last
+    # real detection while it was welded to it.
+    "El Milia",
 ]
-MUST_KEEP = ["Arès", "Nevesinje", "Bela Crkva", "Dobropillya"]
+# Real fires that must survive the filter — including El Milia, the ~700 km²
+# fire next to the steelworks above (same place name, different event).
+MUST_KEEP = ["Arès", "Nevesinje", "Bela Crkva", "Dobropillya", "El Milia"]
+
+
+def _matches(must: str | tuple[str, ...], names: list[str]) -> bool:
+    alts = (must,) if isinstance(must, str) else must
+    return any(alt in n for alt in alts for n in names)
 
 
 def main(argv: list[str]) -> int:
@@ -54,9 +69,12 @@ def main(argv: list[str]) -> int:
     # and let a name-substring check pass or fail for the wrong reason.
     places = load_places(places_path, min_places=MIN_PLACES) if places_path.exists() else Places([])
 
+    # Windowed at MAX_FIRE_DAYS, the widest cluster() allows, so a labelled
+    # fire stays checkable for as long as the archive still holds it rather
+    # than aging out of the 45-day scar window a few weeks after labelling.
     report: dict = {}
     t0 = time.time()
-    cluster(rows, now, window_days=SCAR_WINDOW_DAYS, report=report)
+    kept = cluster(rows, now, window_days=MAX_FIRE_DAYS, report=report)
     filtered_s = time.time() - t0
 
     static_events = report.get("static_events", {})
@@ -77,27 +95,30 @@ def main(argv: list[str]) -> int:
 
     ok = True
     for must in MUST_DROP:
-        if not any(must in n for n in seen_names):
+        if not _matches(must, seen_names):
             print(f"[FAIL] expected to drop a source matching {must!r}, none found")
             ok = False
 
-    # Everything else (unfiltered) must still contain each MUST_KEEP fire.
-    # `rows` is already non-meteosat (line 47); reuse it rather than re-filter.
-    # This pass doubles as the runtime baseline below — no separate 3rd pass.
-    t0 = time.time()
-    unfiltered = _cluster_one(rows, H3_RES, bridge=True)
-    baseline_s = time.time() - t0
+    # What cluster() kept must still contain each MUST_KEEP fire. Static-zone
+    # detections are removed from the rows before clustering, so the kept
+    # set is cluster()'s own result, not "unfiltered minus static ids".
     kept_names = []
-    for eid, members in unfiltered.items():
-        if eid in static_events or len(members) < 4:
+    for eid, members in kept.items():
+        if len(members) < 4:
             continue
         p = place_for(members, places) if len(places) else None
         if p:
             kept_names.append(p["name"])
     for must in MUST_KEEP:
-        if not any(must in n for n in kept_names):
+        if not _matches(must, kept_names):
             print(f"[FAIL] expected to keep a fire matching {must!r}, none found among kept events")
             ok = False
+
+    # Runtime baseline: the same rows clustered with no static filter at all.
+    # `rows` is already non-meteosat (line 47); reuse it rather than re-filter.
+    t0 = time.time()
+    _cluster_one(rows, H3_RES, bridge=True)
+    baseline_s = time.time() - t0
 
     static = static_cells(rows, H3_RES)
     print(f"cells classified static: {len(static)}")
