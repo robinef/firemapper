@@ -2,10 +2,9 @@
  * EU-27 membership — one set, for the whole app.
  *
  * Who is in the union is a fact about the world, not about a layer: the season
- * layer's "EU-27" scope, the /scale page's EFFIS comparison and any EU-only
- * view added later all have to answer it the same way, and have to change
- * together the day it changes. Hence its own module with no imports: update
- * the list here (only) if membership changes.
+ * layer's EU-27 scope and any EU-only view added later have to answer it the
+ * same way, and have to change together the day it changes. Hence its own
+ * module with no imports: update the list here (only) if membership changes.
  *
  * ISO 3166-1 alpha-2, upper case — the same spelling the per-fire summary
  * (pipeline/export_scale_blob.py, GeoNames-derived) carries.

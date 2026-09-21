@@ -264,6 +264,53 @@ describe("scale blob country breakdown source", () => {
     vi.unstubAllGlobals();
   });
 
+  // The enclosing try/catch in the click handler has already returned by the
+  // time this promise settles, and the fallback path can genuinely reject:
+  // fetchFiresSummary does not swallow a network error the way
+  // data.ts::loadFiresSummary does. The blob itself activated fine, so the
+  // reader must get the shape, an empty breakdown, and no console noise.
+  it("survives a rejected countries fetch", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const unhandled = vi.fn();
+    // `process` is the only place an unhandled rejection surfaces under the
+    // vitest runner, and @types/node is deliberately not in this tsconfig
+    // (the app is browser-only) — hence the local shape, same pattern as
+    // main.ts's navigator.connection.
+    const proc = (globalThis as unknown as {
+      process: {
+        on(e: string, fn: () => void): void;
+        off(e: string, fn: () => void): void;
+      };
+    }).process;
+    proc.on("unhandledRejection", unhandled);
+    const spy = vi.fn((url: string) =>
+      url.includes("_fires.json")
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve({ ok: true, json: async () => sampleBlob }),
+    );
+    vi.stubGlobal("fetch", spy);
+
+    const off = wireScaleBlobToggle(map, btn, breakdown);
+    btn.click();
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
+    // Let the rejection settle AND give node a turn to report it if nobody
+    // caught it — an unhandledRejection fires at the end of the event loop
+    // turn, not on the microtask queue.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(btn.textContent).toBe("Exit fire-scale compare");
+    expect(breakdown.innerHTML).toBe("");
+    expect(unhandled).not.toHaveBeenCalled();
+
+    proc.off("unhandledRejection", unhandled);
+    off();
+    vi.unstubAllGlobals();
+  });
+
   it("fetches as before when no promise is given", async () => {
     const { wireScaleBlobToggle } = await import("../src/main");
     const map = stubMap();

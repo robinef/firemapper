@@ -24,11 +24,11 @@ export const NWCG_TICKS: { label: string; km2: number }[] = [
 ];
 export const AGG_RES = 6;
 
-/** The membership itself lives in eu27.ts — a fact about the world, shared by
- * every EU-only view. Re-exported here so this module's existing importers
- * keep their one-stop import. Deliberately NOT "Europe": the season layer's
- * box reaches Ukraine, Russia, Turkey and Algeria, and the /scale page's EFFIS
- * comparison is EU-27 only. */
+/** eu27.ts is the source of truth for the membership — a fact about the world,
+ * shared by every EU-only view. Kept as public surface here because the scope
+ * is this module's feature and a reader looking for its definition looks here
+ * first. Deliberately NOT "Europe": the season layer's box reaches Ukraine,
+ * Russia, Turkey and Algeria. */
 export { EU27 } from "./eu27";
 
 /** Which side of the EU-27 border a fire burned on. Unknown is not EU: a fire

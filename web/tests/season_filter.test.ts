@@ -672,15 +672,17 @@ describe("createSeasonFilter control", () => {
     expect(filter.scope()).toBe("eu");
     expect(filter.summary()?.floor).toBe("2026-04-21"); // `m`, the earliest EU fire
 
-    // …and the size slider moves it too: ≥ 4 km² leaves `l` alone, which the
-    // EU scope has already excluded — so nothing is left and there is no date.
-    scopeButtons(el).all.click();
-    sched.flush();
+    // …and the two gates compose. Still in the EU-27 scope: at ≥ 4 km² the
+    // only fire big enough is `l`, which this scope has already excluded, so
+    // the selection empties. A selection with no fires in it has no season to
+    // date — the status line must print no "since" at all rather than keep
+    // the last date that was true.
     const range = el.querySelector<HTMLInputElement>(".season-range")!;
     range.value = "6"; range.dispatchEvent(new Event("input"));
     sched.flush();
-    expect(filter.summary()?.fires).toBe(1);
-    expect(filter.summary()?.floor).toBe("2026-02-09");
+    expect(filter.scope()).toBe("eu");
+    expect(filter.summary()?.fires).toBe(0);
+    expect(filter.summary()?.floor).toBeNull();
   });
 
   it("summary() is null before the first aggregation, so there is no floor to show", () => {

@@ -823,14 +823,22 @@ export function wireScaleBlobToggle(
         // deactivates (or compare:enter deactivates for them) — without the
         // isScaleBlobActive() recheck, this would resolve afterward and
         // silently repopulate the panel for a blob that is no longer shown.
+        //
+        // The .catch is not decoration: the enclosing try/catch is already
+        // past by the time this settles, and the fallback path really can
+        // REJECT (fetchFiresSummary does not swallow a network error, unlike
+        // data.ts::loadFiresSummary). Unhandled, that is a console error on a
+        // blob that activated perfectly well.
         void showScaleBlobPanel(
           breakdown,
           year,
           fetch,
           fires?.year === year ? fires.promise : undefined,
-        ).then(() => {
-          if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
-        });
+        )
+          .then(() => {
+            if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
+          })
+          .catch(() => {});
       } else {
         button.textContent = "Compare fire scale (unavailable)";
       }
