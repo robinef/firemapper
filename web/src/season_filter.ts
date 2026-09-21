@@ -161,8 +161,8 @@ export function scopePrefix(scope: SeasonScope): string {
 }
 
 /** "footprint", not "burned": every detection claims a whole 0.7 km² cell and
- * agricultural burning is in there too, so this number runs 2–3× the mapped
- * burn area EFFIS reports for the same fires. Naming it stops a reader
+ * agricultural burning is in there too, so this number runs roughly double the
+ * mapped burn area EFFIS reports for the same region. Naming it stops a reader
  * treating it as the /scale page's EFFIS figure. */
 export function filterLabel(index: number, agg: { fires: number; km2: number }, scope: SeasonScope = "all"): string {
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
@@ -212,6 +212,12 @@ export function createSeasonFilter(opts: {
    * never does — then the EU-27 button stays disabled and nothing else here
    * changes behaviour). */
   let countries: FiresSummary | null = null;
+
+  /** Is there a usable countries file? An EMPTY summary is not one: it parses,
+   * but it answers "not EU" for every fire, so offering the scope would offer
+   * a guaranteed empty map. One predicate, used by both the renderer and the
+   * painter, so the button's markup and its live state cannot disagree. */
+  const hasCountries = (): boolean => countries !== null && Object.keys(countries).length > 0;
 
   /** The predicate the current scope implies. `undefined` for "all", so the
    * unscoped path costs no call per fire. */
@@ -263,11 +269,18 @@ export function createSeasonFilter(opts: {
       const on = s === scope;
       b.classList.toggle("on", on);
       b.setAttribute("aria-pressed", String(on));
-      if (s === "eu") {
-        b.disabled = countries === null;
-        if (b.disabled) b.title = "countries unavailable";
-        else b.removeAttribute("title");
-      }
+      // BOTH buttons follow the filter's ready state, not just the EU one.
+      // Re-scoping means re-aggregating, and runAggregate returns early
+      // without the cells file — so a click while loading or unavailable
+      // would leave a pressed "EU-27" beside all-Europe numbers, on a map
+      // that never changed. The EU button additionally needs the countries.
+      const noCountries = s === "eu" && !hasCountries();
+      b.disabled = status !== "ready" || noCountries;
+      // The title names the countries reason only: a filter that is loading
+      // or unavailable already says so in its label, and borrowing the
+      // countries wording there would blame the wrong missing file.
+      if (noCountries) b.title = "countries unavailable";
+      else b.removeAttribute("title");
     });
     const t = thresholdFor(index);
     box.querySelectorAll<SVGRectElement>(".season-hist rect").forEach((r, i) => {
@@ -307,11 +320,20 @@ export function createSeasonFilter(opts: {
     const b = e.currentTarget as HTMLButtonElement;
     const s = b.dataset.scope as SeasonScope | undefined;
     if (!s || s === scope) return;
-    if (s === "eu" && !countries) return; // no countries file, no EU claim
+    // The same two gates paint() disables the buttons on, enforced here as
+    // well: `disabled` is presentation (and can be stale after a rebuild),
+    // these are the contract.
+    if (status !== "ready") return; // nothing to re-scope, and no aggregation would run
+    if (s === "eu" && !hasCountries()) return; // no countries file, no EU claim
     scope = s;
     if (sizes) bins = histogram(sizes, keepFn());
     if (container) control(container);
     paint();
+    // The re-render above replaced the button that was clicked, so focus is
+    // on <body> now. Put it back on the new button: a keyboard reader must
+    // not be dumped out of the control for using it, and a screen reader
+    // announces the new aria-pressed state only if focus lands there.
+    container?.querySelector<HTMLButtonElement>(`.season-scope button[data-scope="${s}"]`)?.focus();
     schedule(runAggregate);
   };
 
@@ -340,14 +362,18 @@ export function createSeasonFilter(opts: {
       .map((tk) => `<span style="left:${(tickPos(tk.km2) * 100).toFixed(1)}%">${tk.label}</span>`)
       .join("");
     // Scope above sizes: the reader picks which fires exist, then which of
-    // those are big enough. Rendered from state (not from what was last
-    // written) so a rebuild into a fresh container restores the choice.
+    // those are big enough.
+    //
+    // The buttons render BARE — no `on`, `aria-pressed`, `disabled` or
+    // `title` here. paint() runs at the end of this function and owns all
+    // four, reading state, so a rebuild into a fresh container restores the
+    // choice. Setting them here as well would be two rules for one fact, and
+    // the template's copy is unobservable (paint always overwrites it) —
+    // exactly the kind of duplicate that drifts unnoticed.
     const scopeHtml =
       `<div class="season-scope" role="group" aria-label="Fire scope">` +
-      `<button type="button"${scope === "all" ? ' class="on"' : ""} data-scope="all" ` +
-      `aria-pressed="${scope === "all"}">All Europe</button>` +
-      `<button type="button"${scope === "eu" ? ' class="on"' : ""} data-scope="eu" ` +
-      `aria-pressed="${scope === "eu"}"${countries ? "" : ` disabled title="countries unavailable"`}>EU-27</button>` +
+      `<button type="button" data-scope="all">All Europe</button>` +
+      `<button type="button" data-scope="eu">EU-27</button>` +
       `</div>`;
     el.innerHTML =
       `<div class="season-filter is-${status}">` +
@@ -381,9 +407,9 @@ export function createSeasonFilter(opts: {
       status = "unavailable";
       paint();
     },
-    /** Per-fire countries for the EU-27 scope. Null (a missing or broken
-     * file) simply leaves the button disabled — never changes the totals,
-     * never switches scope back on its own. */
+    /** Per-fire countries for the EU-27 scope. Null, or an empty summary (a
+     * missing, broken or empty file), simply leaves the button disabled —
+     * never changes the totals, never switches scope back on its own. */
     setCountries(summary: FiresSummary | null): void {
       countries = summary;
       paint();

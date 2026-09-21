@@ -501,6 +501,83 @@ describe("createSeasonFilter control", () => {
     expect(filter.scope()).toBe("all");
   });
 
+  // A summary with no fires in it is a file that technically parsed and
+  // answers "not EU" for every id. Honouring it would offer a scope whose
+  // only possible result is an empty map.
+  it("setCountries({}) is treated as no countries at all", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCells(cells, sizes);
+    filter.setCountries({});
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    expect(scopeButtons(el).eu.title).toBe("countries unavailable");
+    const fresh = document.createElement("div");
+    filter.control(fresh); // and a rebuild must not resurrect it either
+    expect(scopeButtons(fresh).eu.disabled).toBe(true);
+  });
+
+  // The scope decides which fires are counted; the count itself needs the
+  // cells file. While that file is loading or has given up there is nothing
+  // to re-scope, and a pressed EU-27 button beside all-Europe numbers (which
+  // is what an early-returning runAggregate leaves behind) is a lie.
+  it("both scope buttons follow the filter's ready state", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    filter.setCountries(countries); // countries fine, cells not here yet
+    expect(scopeButtons(el).all.disabled).toBe(true);
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+
+    filter.setCells(cells, sizes);
+    expect(scopeButtons(el).all.disabled).toBe(false);
+    expect(scopeButtons(el).eu.disabled).toBe(false);
+
+    filter.setUnavailable();
+    expect(scopeButtons(el).all.disabled).toBe(true);
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    // Not a countries problem, so it must not claim to be one.
+    expect(scopeButtons(el).eu.title).toBe("");
+  });
+
+  it.each([
+    ["while the sizes are still loading", (f: ReturnType<typeof createSeasonFilter>) => f.setCountries(countries)],
+    ["after the cells gave up", (f: ReturnType<typeof createSeasonFilter>) => {
+      f.setCountries(countries);
+      f.setUnavailable();
+    }],
+  ])("a forced click cannot switch scope %s", (_when, prepare) => {
+    const sched = manualScheduler();
+    const { filter, el, onAggregate } = mount(sched.schedule);
+    prepare(filter);
+    const eu = scopeButtons(el).eu;
+    expect(eu.disabled).toBe(true);
+    eu.disabled = false; // as a stale attribute after a rebuild would leave it
+    eu.click();
+    sched.flush();
+    expect(filter.scope()).toBe("all");
+    expect(eu.classList.contains("on")).toBe(false);
+    expect(eu.getAttribute("aria-pressed")).toBe("false");
+    expect(onAggregate).not.toHaveBeenCalled();
+  });
+
+  // The click re-renders the control, which destroys the button that was
+  // clicked. Without moving focus, a keyboard reader lands back on <body>
+  // and a screen reader never hears the new pressed state.
+  it("keeps focus on the scope button that was clicked", () => {
+    const sched = manualScheduler();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const filter = createSeasonFilter({ onAggregate: vi.fn(), schedule: sched.schedule });
+    filter.control(host);
+    filter.setCells(cells, sizes);
+    filter.setCountries(countries);
+    scopeButtons(host).eu.click();
+    expect(document.activeElement).toBe(scopeButtons(host).eu);
+    expect(scopeButtons(host).eu.classList.contains("on")).toBe(true);
+    scopeButtons(host).all.click();
+    expect(document.activeElement).toBe(scopeButtons(host).all);
+    host.remove();
+  });
+
   it("clicking EU-27 re-bins the histogram, prefixes the label and aggregates the EU fires alone", () => {
     const sched = manualScheduler();
     const { filter, el, onAggregate } = mount(sched.schedule);

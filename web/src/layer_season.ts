@@ -114,16 +114,27 @@ export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
  * parent would blanket ground the hex band deliberately never counted.
  * Across fires nothing is dropped — that is the pipeline's rule too.
  *
- * `extra(fireId)` adds numeric properties (the EU-27 tag). They follow the
- * `km2` rule, not the `fire_id` rule: each key takes the MAX across every
- * fire claiming the cell, so a cell one EU fire and one Ukrainian fire both
- * burned is `eu: 1`. Tagging by first claimant instead would hide ground that
- * really did burn inside the EU whenever the foreign fire came first in the
- * file — a filtering bug invisible to anything but a shared-cell test. */
+ * `extra(fireId, km2)` adds numeric properties (`eu_km2`, the EU-27 tag).
+ * They follow the `km2` rule, not the `fire_id` rule: each key takes the MAX
+ * across every fire claiming the cell. Tagging by first claimant instead
+ * would hide ground that really did burn inside the EU whenever a foreign
+ * fire came first in the file — a bug invisible to anything but a
+ * shared-cell test.
+ *
+ * `extra` gets the fire's OWN km², which is what makes the cells and the hex
+ * aggregate equivalent at every threshold. The EU tag is a SIZE maxed over
+ * the EU claimants alone (`eu_km2`), not a boolean maxed independently of
+ * `km2`: with a boolean, a cell burned by a 0.6 km² Spanish fire and a
+ * 50 km² Ukrainian one carries `km2 = 50, eu = 1`, passes an "EU-27, ≥ 4 km²"
+ * filter, and paints ground the hex band — which keeps only fires passing
+ * BOTH gates — deliberately excluded. With `eu_km2 = 0.6` the two agree:
+ * a cell survives `eu_km2 >= t` exactly when some EU fire of at least t km²
+ * claimed it, which is exactly what aggregate(cells, sizes, t, euOnly)
+ * counts. */
 export function cellFeatures(
   cells: SeasonCells,
   sizes?: Map<string, number>,
-  extra?: (fireId: string) => Record<string, number>,
+  extra?: (fireId: string, km2: number) => Record<string, number>,
 ): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = [];
   const seen = new Set<string>();
@@ -135,7 +146,7 @@ export function cellFeatures(
     const km2 = sizes?.get(fireId) ?? 0;
     // Once per fire, not once per cell: `extra` may do real work (a map lookup
     // and a set membership test) and a fire holds thousands of cells.
-    const ex = extra?.(fireId);
+    const ex = extra?.(fireId, km2);
     for (const cell of dedupNested(new Set(entry.cells))) {
       best.set(cell, Math.max(best.get(cell) ?? 0, km2));
       if (extras && ex) {
@@ -194,23 +205,28 @@ export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]):
   (map.getSource(SEASON_HEX_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(fc(hexFeaturesCached(r6)));
 }
 
-/** Hide cells whose owning fire is smaller than `threshold` km², or (under the
- * EU-27 scope) burned outside the EU — both on the GPU, from properties
- * cellFeatures already wrote. Each clause is independently optional: neither
- * gives `null` (maplibre's "no filter"), one stands alone, two need `all`. */
+/** Hide cells no kept fire claims, on the GPU, from properties cellFeatures
+ * already wrote.
+ *
+ * The scope picks WHICH size property to test, rather than adding a second
+ * clause: all-Europe asks "is the biggest claimant ≥ t?" (`km2`), EU-27 asks
+ * "is the biggest EU claimant ≥ t?" (`eu_km2`). One question either way, and
+ * the answer matches the hex aggregate's by construction (see cellFeatures).
+ *
+ * `null` (no filter) only at threshold 0 under all-Europe. At threshold 0
+ * under EU-27 the filter still has work to do: a cell with no EU claimant at
+ * all has `eu_km2 = 0`. */
 export function setCellsThreshold(
   map: maplibregl.Map,
   threshold: number,
   scope: SeasonScope = "all",
 ): void {
-  const clauses: unknown[] = [];
-  if (threshold > 0) clauses.push([">=", ["get", "km2"], threshold]);
-  if (scope === "eu") clauses.push(["==", ["get", "eu"], 1]);
-  const expr = (clauses.length === 0
-    ? null
-    : clauses.length === 1
-      ? clauses[0]
-      : ["all", ...clauses]) as maplibregl.FilterSpecification | null;
+  const key = scope === "eu" ? "eu_km2" : "km2";
+  const expr = (threshold > 0
+    ? [">=", ["get", key], threshold]
+    : scope === "eu"
+      ? [">", ["get", key], 0]
+      : null) as maplibregl.FilterSpecification | null;
   for (const id of ["season-cells-fill", "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
@@ -341,8 +357,8 @@ export function seasonLegend(floor: string | null, year = new Date().getUTCFullY
       `Every fire the satellites saw settle ${since}; earlier fires this year ` +
       "are not yet archived. Area is the satellite heat footprint — each " +
       "detection claims a whole 0.7 km² cell and agricultural burning is " +
-      "included — so it runs about 2–3× the mapped burn area EFFIS reports " +
-      "for the same fires. Zoom in for the real burned ground.",
+      "included — so it runs roughly double the mapped burn area EFFIS " +
+      "reports for the same region. Zoom in for the real burned ground.",
   };
 }
 
@@ -364,8 +380,13 @@ export type SeasonCellsHooks = {
   onGaveUp?: () => void;
   /** Extra numeric properties per fire, merged into every installed cell (the
    * EU-27 tag). Read at install time and again on retag(), never cached: the
-   * countries file may land after the cells do. */
-  cellProps?: (fireId: string) => Record<string, number>;
+   * countries file may land after the cells do.
+   *
+   * The fire's km² is passed IN rather than looked up by the caller: the
+   * install runs inside the fetch (before onLoaded fires), so a caller-side
+   * `sizes` captured from onLoaded is still null at the first install past
+   * the zoom gate, and every cell would be tagged 0. */
+  cellProps?: (fireId: string, km2: number) => Record<string, number>;
 };
 
 /**

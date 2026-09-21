@@ -77,7 +77,7 @@ import {
   renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
   runHistoricalLookup, wireGeocodeSearch,
 } from "./historical_lookup_ui";
-import type { Manifest } from "./types";
+import type { FiresSummary, Manifest } from "./types";
 
 const BASE = "/data";
 
@@ -145,11 +145,6 @@ async function boot() {
     // never reject while it sits unawaited.
     const seasonYear = Number(manifest.generated_at.slice(0, 4));
     const seasonP = loadSeason(seasonYear, BASE);
-    // Per-fire countries for the EU-27 scope, started here for the same reason
-    // and consumed the same way: unawaited (it resolves null on any failure),
-    // wired in below once the filter exists. A reader who never touches the
-    // scope toggle must not wait a round-trip for it.
-    const firesP = loadFiresSummary(seasonYear, BASE);
 
     const frp =
       manifest.frp_points != null
@@ -181,10 +176,10 @@ async function boot() {
     // Owns the size threshold and re-aggregation; assigned with the loader
     // below. The module's status/control close over the variable.
     let seasonFilter: ReturnType<typeof createSeasonFilter> | null = null;
-    // Per-fire countries, null until firesP resolves (or forever, if the file
-    // is missing). The loader's cellProps closes over the VARIABLE, so cells
-    // installed before the file lands are re-tagged by retag() afterwards.
-    let countries: Awaited<typeof firesP> = null;
+    // Per-fire countries, null until the summary resolves (or forever, if the
+    // file is missing). The loader's cellProps closes over the VARIABLE, so
+    // cells installed before the file lands are re-tagged by retag() after.
+    let countries: FiresSummary | null = null;
     // The scope of the totals the status line is currently showing — updated
     // with them, in onAggregate, so heading and numbers can never disagree.
     let seasonScope: SeasonScope = "all";
@@ -346,6 +341,11 @@ async function boot() {
       manifest,
     );
     if (season) {
+      // Per-fire countries for the EU-27 scope. Started here — inside the
+      // only branch that can use it — and left unawaited: it resolves null on
+      // any failure, and a reader who never touches the scope toggle must not
+      // wait a round-trip for it.
+      const firesP = loadFiresSummary(seasonYear, BASE);
       seasonFilter = createSeasonFilter({
         onAggregate: (agg) => {
           seasonScope = agg.scope;
@@ -367,20 +367,23 @@ async function boot() {
       seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"), fetch, {
         onLoaded: (cells, sizes) => { seasonFilter?.setCells(cells, sizes); switcher.refresh(); },
         onGaveUp: () => { seasonFilter?.setUnavailable(); switcher.refresh(); },
-        // The EU-27 tag the cell filter reads on the GPU. Evaluated at install
-        // time and again on retag(), so it always reflects the countries file
-        // as it is NOW, not as it was when the cells arrived.
-        cellProps: (id) => ({ eu: isEuFire(countries, id) ? 1 : 0 }),
+        // The EU-27 tag the cell filter reads on the GPU: the fire's own km²
+        // when it burned in the EU, 0 when it did not. A size, not a flag —
+        // cellFeatures maxes it across claimants, so a cell ends up carrying
+        // the size of its LARGEST EU claimant, which is the number the
+        // "EU-27, ≥ t km²" filter has to compare against for the cells to
+        // match the hexes. Evaluated at install time and again on retag(), so
+        // it always reflects the countries file as it is NOW.
+        cellProps: (id, km2) => ({ eu_km2: isEuFire(countries, id) ? km2 : 0 }),
       });
       // The two files race. Whichever order they land in, the scope button
-      // enables, the already-installed cells get their tag, and the panel
-      // redraws — a full refresh here (not refreshStatus) because the control
-      // itself changes: a disabled button becomes a live one.
+      // enables (setCountries repaints the live button itself, so no panel
+      // rebuild is needed — and a rebuild here would steal focus) and the
+      // already-installed cells, if any, get their tag.
       void firesP.then((s) => {
         countries = s;
         seasonFilter?.setCountries(s);
         seasonLoader?.retag();
-        switcher.refresh();
       });
       void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
       // The size histogram needs the cells file wherever the camera is, so
