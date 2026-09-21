@@ -184,9 +184,12 @@ pipeline/      data pipeline
   export.py      writes the static artifacts + manifest
   run.py         orchestration (process / refresh / watch / bench)
 web/           frontend (src/layer_*.ts, firecard.ts, timeline.ts)
+worker/        Cloudflare Worker: /data/* from R2, /hd tile proxy, /api/* lookups
 tests/         pipeline tests (pytest)
-web/tests/     frontend tests (vitest)
-scripts/       make_sample.py — keyless demo dataset
+web/tests/     frontend + worker unit tests (vitest)
+web/smoke/     browser smoke tests against the built bundle (Playwright)
+scripts/       make_sample (keyless demo dataset), refresh_remote (CI refresh
+               entrypoint), watchdog, replay_static_sources, purge_offshore_hotspots
 docs/          this file, cartography rules, deployment
 ```
 
@@ -194,8 +197,10 @@ docs/          this file, cartography rules, deployment
 
 ```bash
 make test    # pytest + tsc --noEmit + vitest
+cd web && npm run smoke   # Playwright, drives the built bundle in Chromium
 ```
 
-CI runs the same on every push and pull request. Behaviour changes should come
+CI runs the same on every push and pull request, plus a build check that the
+maplibre worker files were emitted. Behaviour changes should come
 with a test; the pipeline's trickier invariants (clustering equivalence, atomic
 publish, dedup, source failure handling) are covered that way.

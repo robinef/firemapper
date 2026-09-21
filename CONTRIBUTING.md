@@ -5,7 +5,7 @@ and issues are welcome.
 
 ## Development
 
-Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12) and Node 20.
+Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12) and Node 24.
 
 ```bash
 # Pipeline
@@ -16,6 +16,7 @@ uv run python -m scripts.make_sample   # local demo dataset, no API key needed
 cd web && npm ci
 npm run dev            # http://localhost:5173
 npx tsc --noEmit && npm test
+npm run smoke          # browser smoke tests (Playwright, Chromium)
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the architecture and conventions.
@@ -24,7 +25,8 @@ See [`AGENTS.md`](AGENTS.md) for the architecture and conventions.
 
 - Keep changes focused; one concern per PR.
 - Add or update tests for any behaviour change. CI (`.github/workflows/ci.yml`)
-  runs pytest, `tsc --noEmit`, and vitest — keep them green.
+  runs pytest, `tsc --noEmit`, vitest, a build check, and the browser smoke
+  suite — keep them green.
 - Never commit secrets or generated data (`.env`, `data/`, `web/public/data/`
   are gitignored). Use synthetic data in tests.
 - Match the surrounding code style; `.editorconfig` covers indentation.
@@ -55,7 +57,8 @@ gh api -X POST repos/robinef/firemapper/rulesets --input - <<'JSON'
         "strict_required_status_checks_policy": false,
         "required_status_checks": [
           { "context": "pipeline (pytest)" },
-          { "context": "web (tsc + vitest)" }
+          { "context": "web (tsc + vitest + build)" },
+          { "context": "web (browser smoke)" }
         ]
       }
     }
@@ -64,7 +67,7 @@ gh api -X POST repos/robinef/firemapper/rulesets --input - <<'JSON'
 JSON
 ```
 
-That blocks force-pushes and deletion of `main` and requires both CI jobs to pass.
+That blocks force-pushes and deletion of `main` and requires all three CI jobs to pass.
 Deliberately no required review count, so a solo maintainer isn't blocked.
 
 ## Code of Conduct
