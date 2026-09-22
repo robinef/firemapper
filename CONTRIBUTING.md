@@ -38,8 +38,8 @@ Open an issue with steps to reproduce and, if relevant, the generation manifest
 
 ## Maintainer notes
 
-`main` is protected by a GitHub ruleset ("main protection", applied
-2026-09-22 once the repo went public). It blocks force-pushes and deletion of
+`main` is protected by a GitHub ruleset ("main protection", applied once the
+repo went public). It blocks force-pushes and deletion of
 `main`, allows squash or rebase merges only, and requires the three CI jobs
 (`pipeline (pytest)`, `web (tsc + vitest + build)`, `web (browser smoke)`) to
 pass. Deliberately no required review count, so a solo maintainer isn't
