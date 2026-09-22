@@ -9,8 +9,10 @@ from pipeline.config import (
     ARCHIVE_TRACKS_INDEX,
     SEASON_STATE_KEY,
     Settings,
+    scale_blob_fires_key,
     season_cells_key,
     season_key,
+    season_sizes_key,
 )
 from pipeline.export_season import aggregate_r6, first_bin_date, run_export_season
 
@@ -537,3 +539,110 @@ def test_the_run_log_counts_static_exclusions(tmp_path, capsys):
 
     assert "static_excluded=1 " in capsys.readouterr().err
 
+
+# --- per-fire sizes sidecar -------------------------------------------------
+
+def _write_fires_summary(settings: Settings, year: int, summary: dict) -> None:
+    path = settings.out_dir / scale_blob_fires_key(year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary))
+
+
+def test_the_sizes_sidecar_holds_each_fires_area_country_and_first_date(tmp_path):
+    from pipeline.geo_local import dedup_nested_cells, true_area_km2
+    settings = _settings(tmp_path)
+    cells = _two_cells()
+    child = h3.latlng_to_cell(45.0, 5.0, 8)
+    nested = [h3.cell_to_parent(child, 7), child]  # a Meteosat parent over its VIIRS child
+    _make_local_archive(settings.out_dir, {
+        "fr": _track_body("fr", cells, "2026-07-25T00:00:00+00:00", "2026-08-06T00:00:00+00:00"),
+        "nested": _track_body("nested", nested, "2026-07-02T00:00:00+00:00", "2026-07-04T00:00:00+00:00"),
+    })
+    _write_fires_summary(settings, 2026, {"fr": {"country": "FR", "area_km2": 1.5}})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    sidecar = _read(settings, season_sizes_key(2026))
+    assert sidecar["year"] == 2026
+    assert set(sidecar["fires"]) == {"fr", "nested"}
+    km2 = lambda cs: round(sum(h3.cell_area(c, unit="km^2") for c in dedup_nested_cells(cs)), 3)
+    assert sidecar["fires"]["fr"] == [km2(cells), "FR", "2026-07-25"]
+    # The nested fire counts its ground once, like true_area_km2 (and the web).
+    assert sidecar["fires"]["nested"] == [round(h3.cell_area(child, unit="km^2"), 3), None, "2026-07-02"]
+    for fid, cs in (("fr", cells), ("nested", nested)):
+        assert round(sidecar["fires"][fid][0], 1) == true_area_km2(cs)
+
+
+def test_the_sizes_sidecar_has_null_countries_without_a_fires_summary(tmp_path):
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "fr": _track_body("fr", _two_cells(), "2026-07-25T00:00:00+00:00", "2026-08-06T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_sizes_key(2026))["fires"]["fr"][1] is None
+
+
+def test_the_sizes_sidecar_reads_the_target_years_fires_summary(tmp_path):
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "fr": _track_body("fr", _two_cells(), "2026-07-25T00:00:00+00:00", "2026-08-06T00:00:00+00:00"),
+    })
+    _write_fires_summary(settings, 2025, {"fr": {"country": "ES", "area_km2": 1.5}})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_sizes_key(2026))["fires"]["fr"][1] is None
+
+
+def test_the_sizes_sidecar_leaves_out_static_tracks(tmp_path):
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "plant": _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1),
+        "good": _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_sizes_key(2026))["fires"]) == {"good"}
+
+
+def test_the_sizes_sidecar_is_rewritten_from_the_stored_cells_on_a_run_that_read_nothing(tmp_path):
+    # Like the summary, the sidecar is derived from the whole cells file, not
+    # from this run's bodies: an idle run must not publish an empty sidecar.
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "good": _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    run_export_season(settings, target_year=2026, now=NOW)
+    (settings.out_dir / season_sizes_key(2026)).unlink()
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_sizes_key(2026))["fires"]) == {"good"}
+
+
+def test_the_sizes_sidecar_is_written_after_the_cells_and_before_the_summary(tmp_path, monkeypatch):
+    import pipeline.export_season as mod
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "good": _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    order = []
+    original = mod._save_json
+
+    def record(path, data):
+        order.append(path.name)
+        original(path, data)
+
+    monkeypatch.setattr(mod, "_save_json", record)
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert order == [
+        Path(season_cells_key(2026)).name,
+        Path(season_sizes_key(2026)).name,
+        Path(season_key(2026)).name,
+        Path(SEASON_STATE_KEY).name,
+    ]

@@ -109,8 +109,11 @@ generation pruning never touches: the permanent per-fire track archive
 incrementally-maintained year files built from it — the scale-comparison blob
 (`pipeline/export_scale_blob.py`) and the "Burned this year" season layer
 (`pipeline/export_season.py`: `season_{year}.json` with res-6 hex aggregates
-and the season floor date, `season_{year}_cells.json` with every fire's real
-cells). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
+and the season floor date, `season_{year}_sizes.json` with every fire's km²,
+country and first date — what the size filter boots from — and
+`season_{year}_cells.json` with every fire's real cells, fetched only on
+approach to the cells zoom or on the first filter interaction; archived static
+heat sources are left out of all three). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
 not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
 restores these by name, so a fresh CI runner continues where the last left off.
 

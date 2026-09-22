@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadEvents, loadFiresSummary, loadFootprint, loadManifest, loadSeason, loadTrack } from "../src/data";
+import { loadEvents, loadFiresSummary, loadFootprint, loadManifest, loadSeason, loadSeasonSizes, loadTrack } from "../src/data";
 import type { Manifest } from "../src/types";
 
 const manifest = {
@@ -163,5 +163,47 @@ describe("loadFiresSummary", () => {
   it("returns null when the fetch throws", async () => {
     const fetchFn = async () => { throw new Error("offline"); };
     expect(await loadFiresSummary(2026, "/data", fetchFn as never)).toBeNull();
+  });
+});
+
+describe("loadSeasonSizes", () => {
+  const good = { year: 2026, fires: { "fire-a": [3.2, "ES", "2026-07-01"], "fire-b": [0.7, null, "2026-08-02"] } };
+
+  it("returns the sidecar when the file is well-formed", async () => {
+    const fetchFn = async (url: string) => {
+      expect(url).toBe("/data/archive/season_2026_sizes.json");
+      return { ok: true, json: async () => good };
+    };
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toEqual(good);
+  });
+
+  it("accepts a sidecar with no fires in it", async () => {
+    const empty = { year: 2026, fires: {} };
+    const fetchFn = async () => ({ ok: true, json: async () => empty });
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toEqual(empty);
+  });
+
+  it("returns null on a non-ok response even when the body is well-formed", async () => {
+    const fetchFn = async () => ({ ok: false, json: async () => good });
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", [good]],
+    ["missing its year", { fires: good.fires }],
+    ["missing its fires", { year: 2026 }],
+    ["holding fires as an array", { year: 2026, fires: [[3.2, "ES", "2026-07-01"]] }],
+    ["holding an entry that is an object", { year: 2026, fires: { a: { km2: 3.2, country: "ES", first: "2026-07-01" } } }],
+    ["holding an entry of the wrong length", { year: 2026, fires: { a: [3.2, "ES"] } }],
+    ["holding an entry whose km2 is not a number", { year: 2026, fires: { a: ["3.2", "ES", "2026-07-01"] } }],
+  ])("returns null when the body is %s", async (_what, body) => {
+    const fetchFn = async () => ({ ok: true, json: async () => body });
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toBeNull();
+  });
+
+  it("returns null when the fetch throws", async () => {
+    const fetchFn = async () => { throw new Error("offline"); };
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toBeNull();
   });
 });

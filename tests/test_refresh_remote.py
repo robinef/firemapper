@@ -14,10 +14,13 @@ from scripts import refresh_remote
 
 
 @pytest.fixture
-def r2_env(monkeypatch):
+def r2_env(monkeypatch, tmp_path):
+    # OUT_DIR/DATA_DIR too: main() runs the real archive exports, and with the
+    # defaults they rewrite the developer's web/public/data/archive/ files.
     for var, value in (
         ("R2_ACCOUNT_ID", "a"), ("R2_ACCESS_KEY_ID", "k"),
         ("R2_SECRET_ACCESS_KEY", "s"), ("R2_BUCKET", "b"),
+        ("OUT_DIR", str(tmp_path / "out")), ("DATA_DIR", str(tmp_path / "data")),
     ):
         monkeypatch.setenv(var, value)
 

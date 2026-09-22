@@ -1,11 +1,13 @@
 """Incremental export of the current year's archived fires into the
 "Burned this year" overview layer files (web/src/layer_season.ts).
 
-Two published files per year, both under archive/ (gen-pruning immune,
+Three published files per year, all under archive/ (gen-pruning immune,
 uploaded by remote.publish()'s archive/ walk, restored by name in
 remote.hydrate()):
 
   season_{year}.json        boot-time summary: res-6 hex aggregates + totals
+  season_{year}_sizes.json  boot-time: {year, fires: {fire_id: [km2, country, first]}},
+                            the size filter's input (histogram, EU-27 scope)
   season_{year}_cells.json  lazy: {fire_id: {digest, first, cells}}
 
 plus season_state.json, the per-track bookkeeping that makes this run
@@ -38,8 +40,10 @@ from .config import (
     SEASON_STATIC_MAX_CELLS,
     SEASON_STATIC_SPAN_DAYS,
     Settings,
+    scale_blob_fires_key,
     season_cells_key,
     season_key,
+    season_sizes_key,
 )
 from .export_scale_blob import _load_json, _load_track_body, _save_json, year_of_track
 from .geo_local import dedup_nested_cells
@@ -81,7 +85,16 @@ def is_static_track(span_days: int, cells: list[str]) -> bool:
     return span_days > SEASON_STATIC_SPAN_DAYS and len(set(cells)) <= SEASON_STATIC_MAX_CELLS
 
 
-def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
+def dedup_by_fire(cells_by_fire: dict[str, dict]) -> dict[str, list[str]]:
+    """Each fire's nested-deduped cells. ~1.5 s over a full season, and both
+    the aggregate and the sizes sidecar need it, so a run computes it once."""
+    return {fid: dedup_nested_cells(entry["cells"]) for fid, entry in cells_by_fire.items()}
+
+
+def aggregate_r6(
+    cells_by_fire: dict[str, dict],
+    deduped: dict[str, list[str]] | None = None,
+) -> list[list]:
     """[[res-6 cell, km2], ...] sorted by cell: the real area of every
     (nested-deduped) burned cell, rolled up to its res-6 parent — ground
     burned once, however many fires touched it.
@@ -89,9 +102,10 @@ def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
     The union is taken across fires BEFORE the roll-up: fires overlap (the
     same cell is claimed by up to 8 archived fires in the prod sample), and
     summing per fire published a km2 that over-counted by ~10 %."""
+    deduped = dedup_by_fire(cells_by_fire) if deduped is None else deduped
     seen: set[str] = set()
-    for entry in cells_by_fire.values():
-        seen.update(dedup_nested_cells(entry["cells"]))
+    for cells in deduped.values():
+        seen.update(cells)
     totals: dict[str, float] = {}
     for cell in seen:
         parent = h3.cell_to_parent(cell, AGG_RES) if h3.get_resolution(cell) > AGG_RES else cell
@@ -99,8 +113,13 @@ def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
     return [[cell, round(km2, 1)] for cell, km2 in sorted(totals.items())]
 
 
-def summarize(year: int, cells_by_fire: dict[str, dict], now: datetime) -> dict:
-    r6 = aggregate_r6(cells_by_fire)
+def summarize(
+    year: int,
+    cells_by_fire: dict[str, dict],
+    now: datetime,
+    deduped: dict[str, list[str]] | None = None,
+) -> dict:
+    r6 = aggregate_r6(cells_by_fire, deduped)
     return {
         "year": year,
         "generated_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -109,6 +128,28 @@ def summarize(year: int, cells_by_fire: dict[str, dict], now: datetime) -> dict:
         "km2": round(sum(km2 for _, km2 in r6), 1),
         "r6": r6,
     }
+
+
+def sizes_sidecar(
+    year: int,
+    cells_by_fire: dict[str, dict],
+    fires_summary: dict[str, dict],
+    deduped: dict[str, list[str]] | None = None,
+) -> dict:
+    """Per-fire [km2, country, first] for the web's size filter. km2 is the
+    same per-fire nested-dedup sum the web's fireSizes() computes (and
+    geo_local.true_area_km2 before its 0.1 rounding), kept to 3 decimals so a
+    fire sitting on a slider edge lands on the same side as it would from the
+    cells. Country comes from the scale blob's fires summary (written earlier
+    in the same refresh); null where it has none. Arrays, not objects, to
+    keep ~22k entries small."""
+    deduped = dedup_by_fire(cells_by_fire) if deduped is None else deduped
+    fires = {}
+    for fid, entry in cells_by_fire.items():
+        km2 = sum(h3.cell_area(c, unit="km^2") for c in deduped[fid])
+        country = (fires_summary.get(fid) or {}).get("country")
+        fires[fid] = [round(km2, 3), country, entry["first"]]
+    return {"year": year, "fires": fires}
 
 
 def run_export_season(
@@ -132,6 +173,7 @@ def run_export_season(
     state_path = settings.out_dir / SEASON_STATE_KEY
     cells_path = settings.out_dir / season_cells_key(target_year)
     summary_path = settings.out_dir / season_key(target_year)
+    sizes_path = settings.out_dir / season_sizes_key(target_year)
     state: dict[str, dict] = _load_json(state_path, {})
     cells_by_fire: dict[str, dict] = _load_json(cells_path, {})
 
@@ -230,6 +272,11 @@ def run_export_season(
             f"malformed={malformed}",
             file=sys.stderr,
         )
+    deduped = dedup_by_fire(cells_by_fire)
+    fires_summary = _load_json(settings.out_dir / scale_blob_fires_key(target_year), {})
     _save_json(cells_path, cells_by_fire)  # contributions first...
-    _save_json(summary_path, summarize(target_year, cells_by_fire, now))  # ...then the summary...
+    # ...then the two files derived from them (the sidecar first: the summary
+    # is what makes the web offer the layer at all)...
+    _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, deduped))
+    _save_json(summary_path, summarize(target_year, cells_by_fire, now, deduped))
     _save_json(state_path, state)  # ...then commit state — the recovery contract

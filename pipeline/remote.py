@@ -30,6 +30,7 @@ from .config import (
     scale_blob_key,
     season_cells_key,
     season_key,
+    season_sizes_key,
 )
 
 ARCHIVE_PREFIX = "archive/"
@@ -194,11 +195,12 @@ def hydrate(settings: Settings, client) -> str | None:
         SCALE_BLOB_STATE_KEY,
         scale_blob_key(current_year),
         scale_blob_fires_key(current_year),
-        # The season layer's state, summary and per-fire cells
-        # (pipeline/export_season.py) — same rationale as the scale blob.
+        # The season layer's state, summary, per-fire cells and per-fire
+        # sizes (pipeline/export_season.py) — same rationale as the scale blob.
         SEASON_STATE_KEY,
         season_key(current_year),
         season_cells_key(current_year),
+        season_sizes_key(current_year),
     ):
         body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{extra_key}")
         if body is not None:

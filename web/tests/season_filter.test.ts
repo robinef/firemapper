@@ -14,8 +14,9 @@ import {
   isEuFire,
   thresholdFor,
   tickPos,
+  withKnownSizes,
 } from "../src/season_filter";
-import type { FiresSummary, SeasonCells } from "../src/types";
+import type { FiresSummary, SeasonCells, SeasonSizes } from "../src/types";
 
 const km2 = (c: string) => cellArea(c, UNITS.km2);
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -767,5 +768,219 @@ describe("createSeasonFilter control", () => {
     const label = el.querySelector(".season-filter-label")?.textContent;
     const ariaText = range.getAttribute("aria-valuetext");
     expect(ariaText).toBe(label);
+  });
+});
+
+describe("createSeasonFilter fed by the sizes sidecar", () => {
+  // Same three fires as the control suite: `l` is the biggest, the earliest,
+  // and the only one outside the EU-27.
+  const cells: SeasonCells = {
+    s: entry([a], "2026-06-02"),
+    m: entry([a, b, far], "2026-04-21"),
+    l: entry([...gridDisk(far, 2)], "2026-02-09"),
+  };
+  const sizes = fireSizes(cells);
+  const sidecar: SeasonSizes = {
+    year: 2026,
+    fires: {
+      s: [sizes.get("s")!, "ES", "2026-06-02"],
+      m: [sizes.get("m")!, "FR", "2026-04-21"],
+      l: [sizes.get("l")!, "UA", "2026-02-09"],
+    },
+  };
+  const scopeButtons = (el: HTMLElement) => ({
+    all: el.querySelector<HTMLButtonElement>('.season-scope button[data-scope="all"]')!,
+    eu: el.querySelector<HTMLButtonElement>('.season-scope button[data-scope="eu"]')!,
+  });
+  const heights = (el: HTMLElement) =>
+    [...el.querySelectorAll<SVGRectElement>(".season-hist rect")].map((r) => Number(r.getAttribute("height")));
+  const label = (el: HTMLElement) => el.querySelector(".season-filter-label")!.textContent!;
+  const slide = (el: HTMLElement, i: number) => {
+    const range = el.querySelector<HTMLInputElement>(".season-range")!;
+    range.value = String(i);
+    range.dispatchEvent(new Event("input"));
+  };
+  function mount() {
+    const sched = manualScheduler();
+    const onAggregate = vi.fn();
+    const onSelect = vi.fn();
+    const filter = createSeasonFilter({ onAggregate, onSelect, schedule: sched.schedule });
+    const el = document.createElement("div");
+    filter.control(el);
+    return { filter, el, onAggregate, onSelect, sched };
+  }
+
+  it("is ready from the sidecar alone: histogram drawn, slider and both scopes enabled", () => {
+    const { filter, el } = mount();
+    filter.setSizes(sidecar);
+    expect(el.querySelector(".season-filter")!.classList.contains("is-ready")).toBe(true);
+    expect(el.querySelector<HTMLInputElement>(".season-range")!.disabled).toBe(false);
+    expect(scopeButtons(el).all.disabled).toBe(false);
+    expect(scopeButtons(el).eu.disabled).toBe(false);
+    // The same bars the cells file would have drawn.
+    const fromCells = mount();
+    fromCells.filter.setCells(cells, sizes);
+    expect(heights(el)).toEqual(heights(fromCells.el));
+    expect(label(el)).toBe("all sizes · 3 fires");
+  });
+
+  it("a sidecar with no known country leaves the EU-27 scope off", () => {
+    const { filter, el } = mount();
+    const unplaced: SeasonSizes = {
+      year: 2026,
+      fires: Object.fromEntries(Object.entries(sidecar.fires).map(([id, [k, , f]]) => [id, [k, null, f]])),
+    };
+    filter.setSizes(unplaced);
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    expect(scopeButtons(el).eu.title).toBe("countries unavailable");
+  });
+
+  it("a slider move before the cells arrive updates the count and floor at once, km² pending", () => {
+    const { filter, el, onAggregate, onSelect, sched } = mount();
+    filter.setSizes(sidecar);
+    slide(el, 6); // ≥ 4 km²: only `l`
+    expect(label(el)).toBe("≥ 4 km² · 1 fires · … km² footprint");
+    expect(filter.preview()).toEqual({ fires: 1, floor: "2026-02-09", scope: "all" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    sched.flush();
+    // Nothing to aggregate without geometry: no hexes, no invented km².
+    expect(onAggregate).not.toHaveBeenCalled();
+    expect(filter.summary()).toBeNull();
+    expect(label(el)).toBe("≥ 4 km² · 1 fires · … km² footprint");
+  });
+
+  it("the floor follows the threshold: dropping the earliest fire moves it", () => {
+    const { filter, el } = mount();
+    // Here the EARLIEST fire is the smallest, so a threshold can drop it.
+    filter.setSizes({
+      year: 2026,
+      fires: { tiny: [0.6, "ES", "2026-01-05"], mid: [2, "FR", "2026-04-21"], big: [13, "UA", "2026-02-09"] },
+    });
+    slide(el, 1); // ≥ 0.7 km²
+    expect(filter.preview()).toEqual({ fires: 2, floor: "2026-02-09", scope: "all" });
+    slide(el, 15); // ≥ 600 km²: nothing
+    expect(filter.preview()).toEqual({ fires: 0, floor: null, scope: "all" });
+  });
+
+  it("a scope click before the cells arrive re-bins from the sidecar and counts the EU fires", () => {
+    const { filter, el, onSelect } = mount();
+    filter.setSizes(sidecar);
+    const lBin = binIndex(sizes.get("l")!);
+    expect(heights(el)[lBin]).toBeGreaterThan(0);
+    scopeButtons(el).eu.click();
+    expect(heights(el)[lBin]).toBe(0);
+    expect(filter.scope()).toBe("eu");
+    expect(filter.preview()).toEqual({ fires: 2, floor: "2026-04-21", scope: "eu" });
+    expect(label(el)).toBe("EU-27 · all sizes · 2 fires · … km² footprint");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("preview() is null at the default selection, where the pipeline's totals are exact", () => {
+    const { filter, el } = mount();
+    filter.setSizes(sidecar);
+    expect(filter.preview()).toBeNull();
+    slide(el, 6);
+    slide(el, 0);
+    expect(filter.preview()).toBeNull();
+  });
+
+  it("once the cells arrive the full aggregate replaces the preview", () => {
+    const { filter, el, onAggregate, sched } = mount();
+    filter.setSizes(sidecar);
+    scopeButtons(el).eu.click();
+    slide(el, 1);
+    filter.setCells(cells, sizes);
+    sched.flush();
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+    const keep = (id: string) => isEuFire({ s: { country: "ES", area_km2: 0 }, m: { country: "FR", area_km2: 0 } }, id);
+    const want = aggregate(cells, sizes, 0.7, keep, "eu");
+    expect(onAggregate.mock.calls[0][0]).toEqual(want);
+    expect(filter.summary()).toEqual({ fires: want.fires, km2: want.km2, floor: want.floor });
+    expect(filter.preview()).toBeNull();
+    expect(label(el)).toBe(filterLabel(1, want, "eu"));
+  });
+
+  it("keeps the sidecar's sizes when the cells arrive with a map of their own", () => {
+    const { filter, el, onAggregate, sched } = mount();
+    filter.setSizes(sidecar);
+    slide(el, 6);
+    // A cells-side map that disagrees: the sidecar was set first and stays the
+    // one source of sizes, so the bars and the aggregate cannot drift apart.
+    filter.setCells(cells, new Map([["s", 999], ["m", 999], ["l", 999]]));
+    sched.flush();
+    expect((onAggregate.mock.calls[0][0] as { fires: number }).fires).toBe(1);
+  });
+
+  it("a sidecar landing after the cells adopts its countries and keeps the cells' aggregate", () => {
+    const { filter, el, onAggregate, sched } = mount();
+    filter.setCells(cells, sizes);
+    sched.flush();
+    expect(scopeButtons(el).eu.disabled).toBe(true);
+    filter.setSizes(sidecar);
+    expect(scopeButtons(el).eu.disabled).toBe(false);
+    expect(filter.summary()).toEqual({ fires: 3, km2: aggregate(cells, sizes, 0).km2, floor: "2026-02-09" });
+    expect(onAggregate).toHaveBeenCalledTimes(1);
+  });
+
+  it("a late sidecar never replaces the sizes the cells already gave", () => {
+    const { filter, el, onAggregate, sched } = mount();
+    filter.setCells(cells, sizes);
+    sched.flush();
+    filter.setSizes({ year: 2026, fires: { ...sidecar.fires, l: [0.1, "UA", "2026-02-09"] } });
+    slide(el, 6); // ≥ 4 km²: `l` by its cells (~13 km²), not the sidecar's 0.1
+    sched.flush();
+    expect((onAggregate.mock.calls[1][0] as { fires: number }).fires).toBe(1);
+    expect(filter.knownSizes()).toBeNull();
+  });
+
+  it("knownSizes() hands the loader the sidecar's sizes, and nothing without a sidecar", () => {
+    const withSidecar = mount();
+    withSidecar.filter.setSizes(sidecar);
+    expect([...withSidecar.filter.knownSizes()!]).toEqual([...sizes]);
+    const without = mount();
+    without.filter.setCells(cells, sizes);
+    expect(without.filter.knownSizes()).toBeNull();
+  });
+
+  it("a fire the cells hold but the sidecar lacks is sized from its cells, not read as 0 km²", () => {
+    const { filter, el, onAggregate, sched } = mount();
+    const { l: _dropped, ...rest } = sidecar.fires;
+    filter.setSizes({ year: 2026, fires: rest });
+    slide(el, 6); // ≥ 4 km²: only `l`, which the sidecar does not know
+    filter.setCells(cells, new Map());
+    sched.flush();
+    expect((onAggregate.mock.calls[0][0] as { fires: number }).fires).toBe(1);
+  });
+
+  it("a sidecar landing after the cells gave up does not re-enable the control", () => {
+    const { filter, el } = mount();
+    filter.setUnavailable();
+    filter.setSizes(sidecar);
+    expect(el.querySelector<HTMLInputElement>(".season-range")!.disabled).toBe(true);
+    expect(label(el)).toBe("sizes unavailable");
+  });
+
+  it("with cells present, a slider move reports the selection too, so the caller can refresh", () => {
+    const { filter, el, onSelect } = mount();
+    filter.setCells(cells, sizes);
+    slide(el, 6);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("withKnownSizes", () => {
+  const cells: SeasonCells = { f1: entry([a, b]), f2: entry([far]) };
+
+  it("returns the known map untouched when it covers every fire", () => {
+    const known = new Map([["f1", 1.5], ["f2", 0.7]]);
+    expect(withKnownSizes(cells, known)).toBe(known);
+  });
+
+  it("computes only the fires the known map lacks", () => {
+    const known = new Map([["f1", 99]]);
+    const out = withKnownSizes(cells, known);
+    expect(out.get("f1")).toBe(99);
+    expect(out.get("f2")).toBeCloseTo(km2(far), 6);
+    expect(known.has("f2")).toBe(false); // the caller's map is not mutated
   });
 });

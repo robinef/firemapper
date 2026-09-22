@@ -70,6 +70,13 @@ def season_cells_key(year: int) -> str:
     return f"archive/season_{year}_cells.json"
 
 
+# {"year", "fires": {fire_id: [km2, country | null, first YYYY-MM-DD]}} — the
+# size filter's boot-time input, so the histogram and the EU-27 scope need
+# neither the multi-MB cells file nor the scale blob's fires summary.
+def season_sizes_key(year: int) -> str:
+    return f"archive/season_{year}_sizes.json"
+
+
 # Cluster over a longer window than the live layer so fires that have gone quiet
 # still surface as historical ("past") scars. Lives here (not run.py, which
 # uses it) so export.py's coverage.py can read it too without run.py <-> export.py

@@ -8,6 +8,7 @@ import {
   loadIsochrones,
   loadManifest,
   loadSeason,
+  loadSeasonSizes,
   loadWind,
 } from "./data";
 import { badgeText } from "./freshness";
@@ -46,7 +47,7 @@ import {
   setCellsThreshold,
   setSeasonAggregate,
 } from "./layer_season";
-import { createSeasonFilter, isEuFire, type SeasonScope } from "./season_filter";
+import { createSeasonFilter, isEuFire, sidecarCountries, type SeasonScope } from "./season_filter";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -145,6 +146,10 @@ async function boot() {
     // never reject while it sits unawaited.
     const seasonYear = Number(manifest.generated_at.slice(0, 4));
     const seasonP = loadSeason(seasonYear, BASE);
+    // The size filter's input (~300 KB): histogram, counts and EU-27 scope,
+    // with no cells file. Started beside the summary for the same reason and
+    // equally unable to reject (null on any failure → the old cells-file path).
+    const sizesP = loadSeasonSizes(seasonYear, BASE);
 
     const frp =
       manifest.frp_points != null
@@ -183,12 +188,16 @@ async function boot() {
     // The scope of the totals the status line is currently showing — updated
     // with them, in onAggregate, so heading and numbers can never disagree.
     let seasonScope: SeasonScope = "all";
-    // The one load of archive/blob_{year}_fires.json. Declared out here, not
-    // inside the `if (season)` that starts it, because the scale-comparison
-    // blob's country breakdown reads the same file and takes this promise
-    // rather than downloading its own copy. Null when there is no season: then
-    // nobody has started a load and the panel fetches for itself, as before.
+    // The one load of archive/blob_{year}_fires.json, started on first use.
+    // With the sizes sidecar the season layer no longer needs it (the sidecar
+    // carries each fire's country), so it is fetched only if the sidecar fails
+    // or places no fire — or when the scale-comparison panel opens, which
+    // shares this promise rather than downloading its own copy.
     let firesP: Promise<FiresSummary | null> | null = null;
+    const firesSummary = (): Promise<FiresSummary | null> => (firesP ??= loadFiresSummary(seasonYear, BASE));
+    // Where the filter's sizes come from, once sizesP settles: the sidecar, or
+    // (it failed) the cells file, fetched on idle exactly as before it existed.
+    let sizesFrom: "pending" | "sidecar" | "fallback" = "pending";
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -331,20 +340,27 @@ async function boot() {
             // threshold that drops the earliest fire has to move the date. The
             // pipeline's floor stands only until the first aggregate lands —
             // before that there is no filtered selection to date.
+            //
+            // Before the first aggregate, a selection made from the sizes
+            // sidecar alone (no cells yet) prints its own count and floor with
+            // a pending km² — the pipeline's totals would describe fires the
+            // reader has just filtered out.
             status: () => {
               const s = seasonFilter?.summary();
-              return seasonStatus(
-                s ? { ...season, fires: s.fires, km2: s.km2, floor: s.floor } : season,
-                seasonScope,
-              );
+              if (s) return seasonStatus({ ...season, fires: s.fires, km2: s.km2, floor: s.floor }, seasonScope);
+              const p = seasonFilter?.preview();
+              if (p) return seasonStatus({ ...season, fires: p.fires, km2: null, floor: p.floor }, p.scope);
+              return seasonStatus(season, seasonScope);
             },
             control: (el: HTMLElement) => seasonFilter?.control(el),
             legend: seasonLegend(season.floor, season.year),
-            // `force`: the zoom gate is about painting cells, but the size
-            // histogram is needed at any zoom. Toggling the layer off before
-            // the idle prefetch ran (ensure() returns early while it is off)
-            // otherwise strands the control on "loading sizes…" for good.
-            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: true }); },
+            // `force` only on the fallback path: there the size histogram
+            // needs the cells file at any zoom, and toggling the layer off
+            // before the idle prefetch ran (ensure() returns early while it is
+            // off) would strand the control on "loading sizes…" for good. With
+            // the sidecar the histogram needs no cells, and an unforced
+            // ensure() still covers toggling on past the prefetch zoom.
+            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: sizesFrom === "fallback" }); },
           } as LayerModule]
         : []),
     ];
@@ -356,13 +372,6 @@ async function boot() {
       manifest,
     );
     if (season) {
-      // Per-fire countries for the EU-27 scope. Started here — the season is
-      // what makes the file worth loading at boot — and left unawaited: it
-      // resolves null on any failure, and a reader who never touches the scope
-      // toggle must not wait a round-trip for it. The scale-comparison blob's
-      // country breakdown then reads THIS promise, so the file is fetched and
-      // parsed once for the whole session.
-      firesP = loadFiresSummary(seasonYear, BASE);
       seasonFilter = createSeasonFilter({
         onAggregate: (agg) => {
           seasonScope = agg.scope;
@@ -372,6 +381,14 @@ async function boot() {
           // the reader a brand-new range input mid-interaction, dropping
           // keyboard focus to <body> and breaking a paused drag's pointer
           // capture. The filter repaints its own label after this returns.
+          switcher.refreshStatus("season");
+        },
+        // A slider move or scope click. The hex rebuild needs the cells file,
+        // so the first one fetches it wherever the camera is (ensure() is
+        // idempotent after that); the status line shows the sidecar's count
+        // and floor meanwhile.
+        onSelect: () => {
+          void seasonLoader?.ensure({ force: true });
           switcher.refreshStatus("season");
         },
       });
@@ -392,20 +409,14 @@ async function boot() {
         // match the hexes. Evaluated at install time and again on retag(), so
         // it always reflects the countries file as it is NOW.
         cellProps: (id, km2) => ({ eu_km2: isEuFire(countries, id) ? km2 : 0 }),
-      });
-      // The two files race. Whichever order they land in, the scope button
-      // enables (setCountries repaints the live button itself, so no panel
-      // rebuild is needed — and a rebuild here would steal focus) and the
-      // already-installed cells, if any, get their tag.
-      void firesP.then((s) => {
-        countries = s;
-        seasonFilter?.setCountries(s);
-        seasonLoader?.retag();
+        // The sidecar's sizes, so a cells file landing after it costs no
+        // fireSizes pass (~565 ms at 4× CPU throttle on the full season).
+        knownSizes: () => seasonFilter?.knownSizes() ?? null,
       });
       void seasonLoader.ensure(); // a deep link may boot already past the prefetch zoom
-      // The size histogram needs the cells file wherever the camera is, so
-      // fetch it once the boot work has drained — after first paint, never
-      // before it.
+      // Fallback only (no sizes sidecar): the size histogram then needs the
+      // cells file wherever the camera is, so fetch it once the boot work has
+      // drained — after first paint, never before it.
       // The timeout caps the wait: on a page that never goes idle the
       // histogram would otherwise never arrive.
       const idle: (fn: () => void) => void =
@@ -427,13 +438,44 @@ async function boot() {
       }).connection;
       const constrained =
         conn?.saveData === true || conn?.effectiveType === "2g" || conn?.effectiveType === "slow-2g";
-      if (!constrained) idle(() => { void seasonLoader?.ensure({ force: true }); });
+      // Per-fire countries from the scale blob's summary: the fallback's only
+      // source, and the sidecar's backup when it places no fire at all. The
+      // files race; whichever order they land in, the scope button enables
+      // (setCountries repaints the live button itself, so no panel rebuild is
+      // needed — and a rebuild here would steal focus) and the
+      // already-installed cells, if any, get their tag.
+      const countriesFromBlob = () => {
+        void firesSummary().then((s) => {
+          countries = s;
+          seasonFilter?.setCountries(s);
+          seasonLoader?.retag();
+        });
+      };
+      void sizesP.then((sizes) => {
+        if (sizes) {
+          // Histogram, counts and EU-27 scope, ready now. The cells file now
+          // loads only on approach to the prefetch zoom or on the first
+          // slider/scope interaction (onSelect) — never on idle.
+          sizesFrom = "sidecar";
+          countries = sidecarCountries(sizes);
+          seasonFilter?.setSizes(sizes);
+          seasonLoader?.retag();
+          if (!countries) countriesFromBlob();
+          return;
+        }
+        // No sidecar: exactly the pre-sidecar boot.
+        sizesFrom = "fallback";
+        countriesFromBlob();
+        if (!constrained) idle(() => { void seasonLoader?.ensure({ force: true }); });
+      });
     }
     wireScaleBlobToggle(
       map,
       document.getElementById("scale-blob-toggle") as HTMLButtonElement,
       document.getElementById("scale-blob-breakdown") as HTMLElement,
-      firesP ? { year: seasonYear, promise: firesP } : undefined,
+      // A getter: the panel reads `promise` only when it opens, so the file is
+      // fetched then (once, shared with the season layer's fallback), not at boot.
+      season ? { year: seasonYear, get promise() { return firesSummary(); } } : undefined,
     );
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
@@ -783,9 +825,10 @@ async function boot() {
  * rule below is testable: boot() needs a WebGL map, a manifest and a network,
  * and none of that can run under jsdom.
  *
- * `fires`: the per-fire country summary boot() already loads for the season
- * layer's EU-27 scope, so the breakdown panel costs no second download of the
- * same ~1.1 MB file. It carries the year it was loaded for and is used only
+ * `fires`: the per-fire country summary boot() shares with the season layer's
+ * fallback EU-27 scope (loaded on first use by whichever needs it — `promise`
+ * may be a getter, read only when the panel opens), so the breakdown panel
+ * costs no second download of the same ~1.1 MB file. It carries the year it was loaded for and is used only
  * when that matches the blob's: the blob is always the CURRENT year's, the
  * season's year comes from the manifest, and across a new year those disagree
  * — last season's countries under this season's shape would be a wrong answer

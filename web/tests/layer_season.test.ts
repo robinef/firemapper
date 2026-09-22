@@ -21,6 +21,14 @@ import {
   setSeasonAggregate,
 } from "../src/layer_season";
 import type { SeasonSummary } from "../src/types";
+import { fireSizes } from "../src/season_filter";
+
+// Pass-through spy: every test runs the real fireSizes; the sidecar tests
+// below assert on whether the loader called it at all.
+vi.mock("../src/season_filter", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/season_filter")>();
+  return { ...real, fireSizes: vi.fn(real.fireSizes) };
+});
 
 /** Stub map in the style of tests/layer_scale_blob.test.ts: records sources
  * and layer defs so tests can assert on what was added and in what order. */
@@ -161,6 +169,11 @@ describe("legend + status", () => {
     expect(seasonStatus({ ...SUMMARY, fires: 1203, km2: 9812 }, "all"))
       .toBe("1,203 fires · 9,812 km² footprint since 13 Jul");
     expect(seasonStatus({ ...SUMMARY, floor: null, fires: 5, km2: 4 }, "eu")).toBe("EU-27 · 5 fires · 4 km² footprint");
+  });
+
+  it("says the km² is pending, not zero, when only the count is known yet", () => {
+    expect(seasonStatus({ ...SUMMARY, fires: 12, km2: null, floor: "2026-07-20" }, "eu"))
+      .toBe("EU-27 · 12 fires · … km² footprint since 20 Jul");
   });
 
   it("formatFloor renders a UTC day-month", () => {
@@ -728,5 +741,56 @@ describe("loader cellProps + retag", () => {
     expect(props(map).eu_km2).toBeUndefined();
     loader.retag();
     expect(props(map).eu_km2).toBeUndefined();
+  });
+});
+
+describe("loader with the sizes sidecar", () => {
+  const a = latLngToCell(45.0, 5.0, 8);
+  const b = latLngToCell(45.0, 5.02, 8);
+  const body = {
+    "fire-1": { digest: "d", first: "2026-07-01", cells: [a] },
+    "fire-2": { digest: "d", first: "2026-07-02", cells: [b] },
+  };
+  const okFetch = () => vi.fn(async () => ({ ok: true, json: async () => body }));
+
+  it("reuses the sidecar's sizes and never runs fireSizes when they cover every fire", async () => {
+    vi.mocked(fireSizes).mockClear();
+    const map = stubMap(8);
+    addSeason(map as never, SUMMARY);
+    const known = new Map([["fire-1", 42], ["fire-2", 7]]);
+    const onLoaded = vi.fn();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never, {
+      onLoaded, knownSizes: () => known,
+    });
+    await loader.ensure();
+    expect(fireSizes).not.toHaveBeenCalled();
+    expect(onLoaded.mock.calls[0][1]).toBe(known);
+    // The GPU filter's per-cell km² is the sidecar's number too.
+    const props = map._sources[SEASON_CELLS_SOURCE].data.features.map((f: any) => f.properties.km2).sort((x: number, y: number) => x - y);
+    expect(props).toEqual([7, 42]);
+  });
+
+  it("sizes a fire the sidecar lacks from its own cells", async () => {
+    const map = stubMap(8);
+    addSeason(map as never, SUMMARY);
+    const onLoaded = vi.fn();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never, {
+      onLoaded, knownSizes: () => new Map([["fire-1", 42]]),
+    });
+    await loader.ensure();
+    const sizes = onLoaded.mock.calls[0][1] as Map<string, number>;
+    expect(sizes.get("fire-1")).toBe(42);
+    expect(sizes.get("fire-2")).toBeGreaterThan(0.5);
+  });
+
+  it("without a sidecar computes the sizes from the cells, as before", async () => {
+    vi.mocked(fireSizes).mockClear();
+    const map = stubMap(8);
+    addSeason(map as never, SUMMARY);
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, okFetch() as never, {
+      knownSizes: () => null,
+    });
+    await loader.ensure();
+    expect(fireSizes).toHaveBeenCalledTimes(1);
   });
 });
