@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { cellToLatLng, cellToParent, latLngToCell } from "h3-js";
+import { cellArea, cellToLatLng, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
 import {
   HEX_OPACITY_PENDING,
   HEX_OPACITY_INSTALLED,
@@ -21,7 +21,8 @@ import {
   setSeasonAggregate,
 } from "../src/layer_season";
 import type { SeasonSummary } from "../src/types";
-import { fireSizes } from "../src/season_filter";
+import { aggregate, fireSizes } from "../src/season_filter";
+import { ndayFor, precompute } from "../src/season_playback";
 
 // Pass-through spy: every test runs the real fireSizes; the sidecar tests
 // below assert on whether the loader called it at all.
@@ -517,6 +518,82 @@ describe("cells carry km2 and filter GPU-side", () => {
     expect((second[0].geometry as GeoJSON.Polygon).coordinates[0]).toBe(
       (first[0].geometry as GeoJSON.Polygon).coordinates[0],
     );
+  });
+});
+
+// Season playback: the cells band has to show day d's season too, and it does
+// it on the GPU — a `nday` tag (minus the first qualifying claimant's day)
+// written once, and a day clause added to the threshold filter per frame.
+describe("setCellsThreshold with a playback day", () => {
+  const both = ["season-cells-fill", "season-cells-line"];
+  const dayClause = (d: number) => [">=", ["get", "nday"], -d];
+
+  it("adds the day clause to whatever the threshold and scope ask", () => {
+    const map = stubMap(10);
+    addSeason(map as never, SUMMARY);
+    setCellsThreshold(map as never, 0, "all", 5);
+    for (const id of both) expect(map._filters[id]).toEqual(dayClause(5));
+    setCellsThreshold(map as never, 4, "all", 5);
+    for (const id of both) expect(map._filters[id]).toEqual(["all", [">=", ["get", "km2"], 4], dayClause(5)]);
+    setCellsThreshold(map as never, 0, "eu", 0);
+    for (const id of both) expect(map._filters[id]).toEqual(["all", [">", ["get", "eu_km2"], 0], dayClause(0)]);
+    // no day: exactly the static filter, day clause gone
+    setCellsThreshold(map as never, 4, "eu");
+    for (const id of both) expect(map._filters[id]).toEqual([">=", ["get", "eu_km2"], 4]);
+  });
+
+  // Evaluates the handful of expression shapes setCellsThreshold emits.
+  const evalExpr = (expr: unknown, props: Record<string, unknown>): boolean => {
+    if (expr === null) return true;
+    const [op, ...args] = expr as [string, ...unknown[]];
+    if (op === "all") return args.every((e) => evalExpr(e, props));
+    const [get, v] = args as [[string, string], number];
+    const value = Number(props[get[1]]);
+    if (op === ">=") return value >= v;
+    if (op === ">") return value > v;
+    throw new Error(`unexpected op ${op}`);
+  };
+
+  // The equivalence that matters: on day d, the drawn cells rolled up to res 6
+  // ARE aggregate(until = day d)'s hexes — for every (threshold, scope).
+  it("nday + threshold filter selects exactly the cells aggregate(until) counts", () => {
+    const a = latLngToCell(45.0, 5.0, 8);
+    const b = latLngToCell(45.0, 5.02, 8);
+    const es = latLngToCell(40.1, -4.1, 8);
+    const cells = {
+      // big foreign fire early on ground a small EU fire burns later
+      ua: { digest: "d", first: "2026-07-02", cells: [es, ...gridDisk(latLngToCell(48.0, 30.0, 8), 1)] },
+      es: { digest: "d", first: "2026-07-06", cells: [es] },
+      late: { digest: "d", first: "2026-07-09", cells: [a, b] },
+      early: { digest: "d", first: "2026-07-01", cells: [a] },
+      rekindle: { digest: "d", first: "2026-07-12", cells: [b] },
+    };
+    const sizes = fireSizes(cells);
+    const eu = new Set(["es", "late", "early", "rekindle"]);
+    for (const [t, scope] of [[0, "all"], [0, "eu"], [sizes.get("late")!, "all"], [sizes.get("late")!, "eu"]] as const) {
+      const keep = scope === "eu" ? (id: string) => eu.has(id) : undefined;
+      const p = precompute({ cells, sizes, threshold: t, keep, scope }, "2026-07-14")!;
+      const feats = cellFeatures(cells, sizes, (id, km2) => ({
+        eu_km2: eu.has(id) ? km2 : 0,
+        nday: ndayFor(p, id),
+      }));
+      const map = stubMap(10);
+      addSeason(map as never, SUMMARY);
+      for (let d = 0; d < p.days.length; d += 1) {
+        setCellsThreshold(map as never, t, scope, d);
+        const expr = map._filters["season-cells-fill"];
+        const totals = new Map<string, number>();
+        for (const f of feats) {
+          const props = f.properties as Record<string, unknown> & { cell: string };
+          if (!evalExpr(expr, props)) continue;
+          const parent = cellToParent(props.cell, 6);
+          totals.set(parent, (totals.get(parent) ?? 0) + cellArea(props.cell, UNITS.km2));
+        }
+        const drawn = [...totals].map(([c, v]) => [c, Math.round(v * 10) / 10]).sort();
+        const ref = aggregate(cells, sizes, t, keep, scope, p.days[d]).r6;
+        expect(drawn, `t=${t} ${scope} ${p.days[d]}`).toEqual(ref);
+      }
+    }
   });
 });
 

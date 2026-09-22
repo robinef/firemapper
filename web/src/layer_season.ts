@@ -215,18 +215,26 @@ export function setSeasonAggregate(map: maplibregl.Map, r6: [string, number][]):
  *
  * `null` (no filter) only at threshold 0 under all-Europe. At threshold 0
  * under EU-27 the filter still has work to do: a cell with no EU claimant at
- * all has `eu_km2 = 0`. */
+ * all has `eu_km2 = 0`.
+ *
+ * `day` (season playback) adds `nday >= -day`: the cells carry minus the day
+ * index of their first QUALIFYING claimant (season_playback.ts::ndayFor), so
+ * the clause admits exactly the cells day `day`'s hex column counts. Omitted:
+ * the static filter, no day clause. */
 export function setCellsThreshold(
   map: maplibregl.Map,
   threshold: number,
   scope: SeasonScope = "all",
+  day?: number,
 ): void {
   const key = scope === "eu" ? "eu_km2" : "km2";
-  const expr = (threshold > 0
+  const base = threshold > 0
     ? [">=", ["get", key], threshold]
     : scope === "eu"
       ? [">", ["get", key], 0]
-      : null) as maplibregl.FilterSpecification | null;
+      : null;
+  const byDay = day === undefined ? null : [">=", ["get", "nday"], -day];
+  const expr = (base && byDay ? ["all", base, byDay] : (byDay ?? base)) as maplibregl.FilterSpecification | null;
   for (const id of ["season-cells-fill", "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
