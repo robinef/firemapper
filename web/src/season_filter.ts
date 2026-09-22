@@ -171,6 +171,9 @@ export function aggregate(
   threshold: number,
   keep?: (id: string) => boolean,
   scope: SeasonScope = "all",
+  /** YYYY-MM-DD: only fires first detected on or before it — the season as
+   * it stood that day (season_playback.ts's reference). Omitted: every fire. */
+  until?: string,
 ): SeasonAggregate {
   const union = new Set<string>();
   let fires = 0;
@@ -184,6 +187,7 @@ export function aggregate(
     // A second gate on the same loop, so a rejected fire leaves the count, the
     // union and the km² alike — not merely the map.
     if (keep && !keep(id)) continue;
+    if (until !== undefined && entry.first > until) continue;
     fires += 1;
     if (floor === null || entry.first < floor) floor = entry.first;
     for (const c of dedupNested(new Set(entry.cells))) union.add(c);

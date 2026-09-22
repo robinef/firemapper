@@ -210,6 +210,33 @@ describe("aggregate", () => {
     const kept = aggregate(cells, sizes, t, (id) => id !== "big");
     expect(kept.fires).toBe(1); // `shared` alone: `big` is dropped, `small` is under t
   });
+
+  // Season playback: "the season as it stood on day D" is the same selection
+  // with a third gate — only fires first seen on or before D.
+  describe("until", () => {
+    it("keeps only fires first detected on or before the date (inclusive)", () => {
+      const agg = aggregate(cells, sizes, 0, undefined, "all", "2026-05-19");
+      expect(agg.fires).toBe(2); // small + shared; big starts 2026-08-12
+      expect(agg.r6.map(([c]) => c)).not.toContain(cellToParent(far, 6));
+      // shared ground still counted once: a and b only
+      expect(agg.r6).toEqual([[cellToParent(a, 6), r1(km2(a) + km2(b))]].sort());
+    });
+
+    it("the day before a fire's first detection leaves it out", () => {
+      expect(aggregate(cells, sizes, 0, undefined, "all", "2026-05-18").fires).toBe(1);
+      expect(aggregate(cells, sizes, 0, undefined, "all", "2026-03-03").fires).toBe(0);
+    });
+
+    it("composes with threshold and keep", () => {
+      const t = sizes.get("shared")!;
+      expect(aggregate(cells, sizes, t, undefined, "all", "2026-06-01").fires).toBe(1);
+      expect(aggregate(cells, sizes, 0, (id) => id !== "small", "all", "2026-06-01").fires).toBe(1);
+    });
+
+    it("a date past every fire equals the full aggregate", () => {
+      expect(aggregate(cells, sizes, 0, undefined, "all", "2026-12-31")).toEqual(aggregate(cells, sizes, 0));
+    });
+  });
 });
 
 describe("EU-27 membership", () => {
