@@ -98,9 +98,10 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     cluster_report: dict = {}
     scar_events = cluster(rows, now, window_days=SCAR_WINDOW_DAYS, report=cluster_report)
     static_events = cluster_report.get("static_events", {})
-    # By src_id, not by cell: a cell can host a real, kept event alongside a
-    # dropped static one (see timeline.build_timeline's docstring), so only
-    # the detections belonging to DROPPED events are excluded elsewhere.
+    # By src_id, not by cell: the exact detections cluster() removed (every
+    # polar row in a static zone, see events.static_zone) are what the
+    # timeline and day slices exclude — one set, derived once, rather than
+    # each consumer re-deriving the zone and risking a different answer.
     static_src_ids = {m["src_id"] for ms in static_events.values() for m in ms}
     if static_events:
         n_cells = len(cluster_report.get("static_cells", set()))

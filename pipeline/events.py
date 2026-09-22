@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import h3
 
-from .config import H3_RES, MAX_FIRE_DAYS, STATIC_CELL_DAYS, STATIC_EVENT_FRAC
+from .config import H3_RES, MAX_FIRE_DAYS, STATIC_CELL_DAYS
 from .metrics import CELL_KM2
 from .store import cell_at
 
@@ -59,6 +59,18 @@ METEOSAT_CELL_KM2 = 5.2
 WINDOW_DAYS = 14
 ACTIVE_H_VIIRS = 24
 ACTIVE_H_METEOSAT = 2
+# The exclusion zone around a static cell (static_zone): the cell plus this
+# many rings. VIIRS geolocation jitter puts a plant's pings on a neighbouring
+# cell on some days — Bellara steelworks (El Milia, DZ) 2026-09: 61 days on the
+# core, 8-9 on two neighbours, both below STATIC_CELL_DAYS — enough to keep an
+# event "live" or to stand as a one-cell fire on their own. Measured on the
+# prod archive (Sep 21): ring 1 adds 1086 detected cells to 908 static ones,
+# with distinct-day counts spread evenly from 1 to 19 (no gap to threshold
+# on); dropping them changes Europe-wide live events 14680 -> 14677 and
+# removes no event of >= 20 cells other than by trimming its edge (El Milia
+# 1006 -> 992 cells). Dropping static cells ALONE instead leaks the jitter
+# into 684 extra events, mostly live.
+STATIC_RING_K = 1
 
 
 def cell_km2_for(members: list[dict]) -> float:
@@ -267,16 +279,19 @@ def static_cells(rows: list[dict], res: int) -> set[str]:
     return {c for c, ds in days.items() if len(ds) >= STATIC_CELL_DAYS}
 
 
-def is_static(members: list[dict], static: set[str]) -> bool:
-    """True when >= STATIC_EVENT_FRAC of an event's members sit in static
-    cells — event-level, not cell-level, so a flare's non-static jitter cells
-    (chained in by 48h adjacency) are dropped with it, while a real fire that
-    spreads into a static cell keeps its identity as long as that stays a
-    minority of its detections."""
-    if not members:
-        return False
-    hits = sum(1 for m in members if m["cell"] in static)
-    return hits / len(members) >= STATIC_EVENT_FRAC
+def static_zone(static: set[str]) -> set[str]:
+    """The cells whose detections are excluded from events: every static cell
+    plus its STATIC_RING_K ring. Cell-level and global, not event-level: an
+    earlier rule dropped an EVENT once >= 50% of its members sat in static
+    cells, which let a real fire that spread past a plant keep the plant's
+    pings as a minority of its own members — and with them a `started` from
+    before its ignition, an FRP series that never went to zero, and an
+    `active` status for as long as the plant ran (El Milia 2026-09: three
+    weeks after the fire's last real detection)."""
+    zone: set[str] = set()
+    for c in static:
+        zone.update(h3.grid_disk(c, STATIC_RING_K))
+    return zone
 
 
 def cluster(
@@ -295,9 +310,10 @@ def cluster(
     (no FIRMS key), every event comes from Meteosat.
 
     `report`, when given, is filled with `{"static_cells": set, "static_events":
-    dict}` — the fixed heat sources dropped from the result (see static_cells /
-    is_static), for callers that need the same classification elsewhere (the
-    timeline histogram and day-slices exclude the same cells).
+    dict}` — the fixed heat sources removed from the result (see static_cells /
+    static_zone): every polar detection inside a static zone, clustered on
+    their own, for callers that need the same exclusion elsewhere (the
+    timeline histogram and day-slices drop the same detections by src_id).
     """
     # The window is on a fire's LATEST detection, applied to events after
     # clustering — not to rows before it. Cutting rows at the window made a
@@ -315,16 +331,20 @@ def cluster(
 
     # Static heat sources (flares, refineries, oil fields, volcanoes) are
     # classified over the FULL in-window polar set — before the recency
-    # filter — and removed from events. They still feed the Meteosat mask
-    # below regardless of their own recency: a flare that paused for weeks is
-    # still a flare, and an MTG pixel landing on it must not read as a fresh
-    # fire the moment its polar event ages out of the live window.
-    polar_events = _cluster_one(polar, H3_RES, bridge=True)
+    # filter — and their zone's detections removed from the rows BEFORE
+    # clustering, so no event, whatever its size, inherits a plant's pings.
+    # They still feed the Meteosat mask below regardless of their own
+    # recency: a flare that paused for weeks is still a flare, and an MTG
+    # pixel landing on it must not read as a fresh fire the moment its polar
+    # event ages out of the live window.
     static = static_cells(polar, H3_RES)
-    non_static: dict[str, list[dict]] = {}
-    static_events: dict[str, list[dict]] = {}
-    for eid, members in polar_events.items():
-        (static_events if is_static(members, static) else non_static)[eid] = members
+    zone = static_zone(static)
+    kept: list[dict] = []
+    excluded: list[dict] = []
+    for r in polar:
+        (excluded if cell_at(r, H3_RES) in zone else kept).append(r)
+    non_static = _cluster_one(kept, H3_RES, bridge=True)
+    static_events = _cluster_one(excluded, H3_RES)
     if report is not None:
         report["static_cells"] = static
         report["static_events"] = static_events

@@ -6,7 +6,7 @@
  *  - CSV parsing + confidence filtering: pipeline/fetch_firms.py's
  *    parse_firms_csv/_LOW_CONF.
  *  - Static heat-source detection: pipeline/events.py's static_cells and
- *    is_static (event-level majority rule, not per-row).
+ *    static_zone (cell + ring 1, removed from the rows before clustering).
  *  - Clustering: pipeline/events.py's _edges_sql union-find (same-cell
  *    time-consecutive chains + adjacent-cell any-pair, both gated by
  *    CLOSE_AFTER_H=48h). The pipeline's second-pass "bridging"
@@ -110,21 +110,26 @@ export function staticCells(rows: HistoricalRow[]): Set<string> {
   return flagged;
 }
 
-export function dropStaticSources(rows: HistoricalRow[]): HistoricalRow[] {
-  const flagged = staticCells(rows);
-  return rows.filter((row) => !flagged.has(cellAt(row)));
+export const STATIC_RING_K = 1;
+
+/** The cells whose detections are excluded: every static cell plus its
+ *  STATIC_RING_K ring. Ports pipeline/events.py's static_zone exactly —
+ *  cell-level and global, not event-level. Geolocation jitter puts a plant's
+ *  pings on a neighbouring cell on some days, never enough days to be static
+ *  itself but enough to keep a track "live"; and an earlier event-level
+ *  majority rule let a real fire that spread past a plant keep the plant's
+ *  pings as a minority of its members — with them a `started` from before
+ *  its ignition and an FRP series that never went to zero. */
+export function staticZone(flagged: Set<string>): Set<string> {
+  const zone = new Set<string>();
+  for (const cell of flagged) for (const c of gridDisk(cell, STATIC_RING_K)) zone.add(c);
+  return zone;
 }
 
-const STATIC_EVENT_FRAC = 0.5;
-
-/** True when >= STATIC_EVENT_FRAC of a cluster's members sit in a static
- *  cell -- ports pipeline/events.py's is_static exactly: event-level, not
- *  cell-level, so a real fire that spreads into a static cell keeps its
- *  identity as long as that stays a minority of its detections. */
-export function isClusterStatic(rows: HistoricalRow[], staticCellSet: Set<string>): boolean {
-  if (rows.length === 0) return false;
-  const hits = rows.filter((r) => staticCellSet.has(latLngToCell(r.lat, r.lon, H3_RES))).length;
-  return hits / rows.length >= STATIC_EVENT_FRAC;
+/** Every row outside the static zone — what gets clustered. */
+export function dropStaticSources(rows: HistoricalRow[]): HistoricalRow[] {
+  const zone = staticZone(staticCells(rows));
+  return rows.filter((row) => !zone.has(cellAt(row)));
 }
 
 export interface ClusterGroup {
@@ -292,14 +297,12 @@ export function reconstructHistoricalFire(csvText: string, id: string): Reconstr
   const parsed = parseFirmsCsv(csvText);
   if (parsed.length === 0) return { status: "no_data" };
 
-  // Static-source filtering is event-level (isClusterStatic), not row-level
-  // (dropStaticSources): cluster everything first, then drop whole clusters
-  // that are majority-static, so a real fire that spreads into a static cell
-  // keeps its full footprint as long as that stays a minority of its
-  // detections. dropStaticSources/staticCells stay exported as-is, just no
-  // longer on this path.
-  const staticSet = staticCells(parsed);
-  const clusters = splitIntoClusters(parsed).filter((c) => !isClusterStatic(c.rows, staticSet));
+  // Static-source filtering is row-level and global, BEFORE clustering, as
+  // in pipeline/events.py::cluster: a fire that spread past a plant gets its
+  // own rows only, never the plant's daily pings (which would put its
+  // `started` before its ignition and keep its FRP series from ever
+  // reaching zero). A cluster that was only a plant has no rows left.
+  const clusters = splitIntoClusters(dropStaticSources(parsed));
   if (clusters.length === 0) return { status: "no_data" };
 
   if (clusters.length > 1) {

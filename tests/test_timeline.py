@@ -36,10 +36,10 @@ def test_excludes_dropped_static_source_detections_by_src_id():
 
 
 def test_excluding_by_src_id_keeps_a_real_detection_that_shares_a_cell_with_a_dropped_one():
-    """A cell can host a real, KEPT event alongside a dropped static one (a
-    fire that spread into a flare's cell but stayed under STATIC_EVENT_FRAC).
-    Excluding by cell would undercount the real event here even though the
-    map still shows it in full; excluding by src_id must not."""
+    """Exclusion is by src_id, not by cell: only the exact detections
+    cluster() reported go, so a same-cell detection it did NOT report is
+    still counted. Pins the mechanism so the histogram can never exclude
+    more than the map does."""
     now = T(20, 12)
     flare = hs(45.0, 8.0, T(20, 1))
     real_same_cell = hs(45.0, 8.0, T(20, 6))  # same cell as the flare, different detection
