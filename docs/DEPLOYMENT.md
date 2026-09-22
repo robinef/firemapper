@@ -285,6 +285,14 @@ queries with an allowed `Origin` from one IP, 1.2 s apart, must return ten
 `retry-after: 1`). If the map ever moves to a custom domain, a dashboard rule
 can be added on top without touching any of this.
 
+Adding a Durable Object class (a new `new_sqlite_classes` migration) makes
+the PR's **Workers Builds check go red**: previews use `wrangler versions
+upload`, which cannot apply a migration
+([workers-sdk#15387](https://github.com/cloudflare/workers-sdk/issues/15387)).
+The `main` build runs `wrangler deploy`, which applies it. Confirm the config
+locally with `wrangler deploy --dry-run`, merge on the three GitHub checks,
+and verify the migration landed with `wrangler versions view`.
+
 ## Running the whole thing somewhere else
 
 Nothing here is Cloudflare-specific except the Worker. The published bucket is
