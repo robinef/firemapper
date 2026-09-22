@@ -837,6 +837,36 @@ describe("createSeasonFilter fed by the sizes sidecar", () => {
     return { filter, el, onAggregate, onSelect, sched };
   }
 
+  // Season playback replays exactly what the filter would aggregate: the
+  // same inputs and the same two gates, read through one getter.
+  it("playbackInput is null while loading, then carries the selection's inputs and gates", () => {
+    const { filter, el } = mount();
+    expect(filter.playbackInput()).toBeNull();
+    filter.setSizes(sidecar);
+    const first = filter.playbackInput()!;
+    expect(first.cells).toBeNull(); // the sizes alone make it ready
+    expect(first.threshold).toBe(0);
+    expect(first.scope).toBe("all");
+    expect(first.keep).toBeUndefined();
+    expect([...first.sizes.keys()].sort()).toEqual(["l", "m", "s"]);
+    slide(el, 3);
+    scopeButtons(el).eu.click();
+    filter.setCells(cells, sizes);
+    const now = filter.playbackInput()!;
+    expect(now.cells).toBe(cells);
+    expect(now.threshold).toBe(thresholdFor(3));
+    expect(now.scope).toBe("eu");
+    expect(["s", "m", "l"].filter((id) => now.keep!(id))).toEqual(["s", "m"]);
+  });
+
+  it("playbackInput is null once the filter is unavailable, sizes or not", () => {
+    // The cells gave up for good: a playback would wait on them forever.
+    const { filter } = mount();
+    filter.setSizes(sidecar);
+    filter.setUnavailable();
+    expect(filter.playbackInput()).toBeNull();
+  });
+
   it("is ready from the sidecar alone: histogram drawn, slider and both scopes enabled", () => {
     const { filter, el } = mount();
     filter.setSizes(sidecar);

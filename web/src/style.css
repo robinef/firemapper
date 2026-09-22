@@ -604,6 +604,14 @@ body.compare-mode #timeline { display: none; }
 .season-ticks span { position: absolute; transform: translateX(-50%); }
 .season-range { width: 100%; accent-color: #d1874f; margin: 0; }
 .season-filter-label { font-size: 10.5px; color: #8fd8ff; }
+/* Season playback (season_playback.ts): the scrubber's row, sized for the
+   layer panel — the bottom bar's 150px label would squeeze the slider out. */
+.season-play { margin-top: 6px; gap: 8px; }
+.season-play .scrub-play { width: 28px; height: 28px; font-size: 11px; background: #8a3d1c; }
+.season-play .scrub-play:hover { background: #a5501f; }
+.season-play .scrub-play:disabled { opacity: .4; cursor: default; }
+.season-play .scrub-range { accent-color: #d1874f; }
+.season-play .scrub-label { min-width: 0; font-size: 10.5px; color: #8fd8ff; }
 .season-filter.is-loading .season-hist rect,
 .season-filter.is-unavailable .season-hist rect { fill: #555; opacity: .4; }
 .season-filter.is-loading .season-filter-label,

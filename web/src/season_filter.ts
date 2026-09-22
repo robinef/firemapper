@@ -529,6 +529,12 @@ export function createSeasonFilter(opts: {
     },
     scope: (): SeasonScope => scope,
     threshold: () => thresholdFor(index),
+    /** What a season playback replays: the inputs, and the two gates,
+     * runAggregate hands aggregate(). Null until the filter is ready; `cells`
+     * stays null until the cells file lands (the sizes alone make it ready). */
+    playbackInput: () => (status === "ready" && sizes
+      ? { cells, sizes, threshold: thresholdFor(index), keep: keepFn(), scope }
+      : null),
     /** The landed aggregate's headline numbers AND its floor date — the three
      * the panel's status line prints together, so they always describe the
      * same selection of fires. */
