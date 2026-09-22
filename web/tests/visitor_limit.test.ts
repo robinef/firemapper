@@ -36,7 +36,16 @@ describe("visitorLimited", () => {
   });
 
   it("fails open when the limiter throws — a limiter outage must not take the feature down", async () => {
-    const l: RateLimiterLike = { limit: async () => { throw new Error("boom"); } };
-    expect(await visitorLimited(req(), l)).toBeNull();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const l: RateLimiterLike = { limit: async () => { throw new Error("boom"); } };
+      expect(await visitorLimited(req(), l)).toBeNull();
+      // Open, but never silent: the log line is what distinguishes "binding
+      // broken" from "nobody over budget" in production.
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.join(" "))).toContain("boom");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
