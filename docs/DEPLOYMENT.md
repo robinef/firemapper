@@ -240,9 +240,9 @@ configuration; the cap is the backstop for plain tile-scraping.
 
 ## Historical fire lookup (`/api/historical-hotspots`, `/api/geocode`)
 
-**Not yet provisioned as of 2026-09-17.** Both routes are deployed and live,
-but incomplete without two manual steps only a Cloudflare dashboard login can
-do — `wrangler` has no API scope for either.
+**Map key not yet provisioned as of 2026-09-22.** Both routes are deployed and
+live, but the FIRMS lookup stays a 503 until one manual step only the account
+owner can do.
 
 **`FIRMS_HISTORICAL_MAP_KEY`** (Worker secret) — a NASA FIRMS map key for the
 Standard Processing archive (`worker/historical_hotspots.ts`), separate from
@@ -255,18 +255,26 @@ returns 503 and the "find a past fire" panel's search always fails with
 wrangler secret put FIRMS_HISTORICAL_MAP_KEY
 ```
 
-**Per-visitor rate-limit rules** (Security → WAF → Rate limiting rules, on the
-Cloudflare dashboard) — defense-in-depth on top of code-level protections that
-are already live:
+**Per-visitor rate limits** are in code, not the dashboard. The Worker runs
+on its `workers.dev` hostname, which is Cloudflare's zone rather than ours, so
+Security → WAF → Rate limiting rules cannot be attached to it. The Workers
+[Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+is backed by the same infrastructure and works on `workers.dev`, so
+`wrangler.jsonc` declares one `ratelimits` binding per route and
+`worker/visitor_limit.ts` applies it, keyed on client IP (counters are per
+Cloudflare location and eventually consistent — a bound on abuse, not
+accounting). Deploys with the code; nothing to click.
 
-| Route | Existing code-level protection | Dashboard rule needed |
-|---|---|---|
-| `/api/historical-hotspots` | none (relies on the map key + FIRMS's own limits) | match `URI Path equals /api/historical-hotspots`, count per visitor, a few requests/minute |
-| `/api/geocode` | a `GeocodeRateGate` Durable Object enforces a **global** 1 req/sec cap across all visitors (Nominatim's usage policy requires this) | match `URI Path equals /api/geocode`, count per visitor, ~5 requests/minute — stops one visitor from starving the shared global budget for everyone else |
+| Route | Layers, in order |
+|---|---|
+| `/api/historical-hotspots` | origin allowlist → input validation → **20 req/min per visitor** → FIRMS (map key + FIRMS's own limits) |
+| `/api/geocode` | origin allowlist → 7-day edge cache → **10 req/min per visitor** → `GeocodeRateGate` Durable Object's **global** 1 req/s cap (Nominatim's usage policy) → Nominatim |
 
-Neither route works end-to-end for a real user until both the key and the
-`/api/geocode` rate-limit rule exist; the historical-hotspots rule is
-lower-stakes (no shared global budget to protect) but still recommended.
+The per-visitor layer fails open (no binding or a limiter error lets the
+request through); the Durable Object gate fails closed, because it enforces
+an upstream policy rather than protecting our own quota. If the map ever
+moves to a custom domain, a dashboard rule can be added on top without
+touching any of this.
 
 ## Running the whole thing somewhere else
 

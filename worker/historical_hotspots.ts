@@ -8,6 +8,8 @@
  * this file changes when FIRMS' own limits or source lineup change.
  */
 
+import { visitorLimited, type RateLimiterLike } from "./visitor_limit";
+
 export const MAX_SPAN_DAYS = 90;
 export const MAX_BBOX_DEG = 0.5;
 
@@ -128,6 +130,8 @@ const RESPONSE_CACHE = "public, max-age=604800, immutable";
 
 export interface HistoricalHotspotsEnv {
   FIRMS_HISTORICAL_MAP_KEY?: string;
+  /** Per-visitor cap (wrangler.jsonc `ratelimits`); optional, see visitor_limit.ts. */
+  HISTORICAL_VISITOR_LIMITER?: RateLimiterLike;
   /** Seam for tests; defaults to global fetch. */
   HISTORICAL_HOTSPOTS_UPSTREAM?: (request: Request) => Promise<Response>;
 }
@@ -175,6 +179,11 @@ export async function handleHistoricalHotspots(
   if ("error" in range) {
     return new Response(range.error, { status: 400 });
   }
+
+  // After validation (a malformed request should not eat budget) and before
+  // anything that costs FIRMS map-key quota.
+  const limited = await visitorLimited(request, env.HISTORICAL_VISITOR_LIMITER);
+  if (limited) return limited;
 
   // Forward the raw bbox text (already validated west,south,east,north by
   // parseBbox) rather than reformatting the parsed floats — stringifying a

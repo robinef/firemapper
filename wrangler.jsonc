@@ -46,6 +46,17 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["GeocodeRateGate"] }
   ],
+  // Per-visitor caps on the /api/* proxies (worker/visitor_limit.ts). A
+  // dashboard WAF rate-limiting rule cannot be attached to a workers.dev
+  // hostname, so the same infrastructure is used through this binding
+  // instead. Counters are per Cloudflare location and keyed on client IP;
+  // both handlers make ONE upstream call per user action, so these numbers
+  // are "a human clicking around", not a quota. period must be 10 or 60.
+  // namespace_id is any positive integer unique within this Worker.
+  "ratelimits": [
+    { "name": "HISTORICAL_VISITOR_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "GEOCODE_VISITOR_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+  ],
   // Required for the Worker to write logs at all: without it, console output
   // exists only in a live `wrangler tail`, i.e. only while someone is watching.
   // The scheduled handler THROWS on a failed dispatch rather than logging,

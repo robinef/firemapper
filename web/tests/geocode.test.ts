@@ -186,4 +186,36 @@ describe("handleGeocode", () => {
     expect(res.status).toBe(502);
     expect(upstream).not.toHaveBeenCalled();
   });
+
+  it("429s an over-budget visitor before touching the global gate or upstream", async () => {
+    const upstream = vi.fn();
+    const gate = fakeGate(true);
+    const gateFetch = vi.spyOn(gate!.get(gate!.idFromName("gate")), "fetch");
+    const limiter = { limit: vi.fn(async () => ({ success: false })) };
+    const res = await handleGeocode(req("q=Gironde"), {
+      GEOCODE_RATE_GATE: gate,
+      GEOCODE_UPSTREAM: upstream,
+      GEOCODE_CACHE: fakeCache(),
+      GEOCODE_VISITOR_LIMITER: limiter,
+    });
+    expect(res.status).toBe(429);
+    expect(gateFetch).not.toHaveBeenCalled();
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("serves a cached repeat without charging the visitor budget", async () => {
+    const upstream = vi.fn(async () => new Response('[{"lat":"44.8","lon":"-1.0"}]'));
+    const limiter = { limit: vi.fn(async () => ({ success: true })) };
+    const cache = fakeCache();
+    const env = {
+      GEOCODE_RATE_GATE: fakeGate(true),
+      GEOCODE_UPSTREAM: upstream,
+      GEOCODE_CACHE: cache,
+      GEOCODE_VISITOR_LIMITER: limiter,
+    };
+    await handleGeocode(req("q=Gironde"), env);
+    await handleGeocode(req("q=Gironde"), env);
+    expect(upstream).toHaveBeenCalledTimes(1);
+    expect(limiter.limit).toHaveBeenCalledTimes(1);
+  });
 });
