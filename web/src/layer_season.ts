@@ -84,12 +84,20 @@ export const HEX_OPACITY_INSTALLED = [
   "interpolate", ["linear"], ["zoom"], 5.5, 0, 6.5, 0.7, 8, 0.7, 8.5, 0,
 ];
 
+/** Res-6 centroids, computed once per hex: season playback rebuilds the heat
+ * points every frame. Shared arrays, like RING_CACHE's — never mutate. */
+const POINT_CACHE = new Map<string, number[]>();
+
 export function heatPointFeatures(r6: [string, number][]): GeoJSON.Feature[] {
   return r6.map(([cell, km2]) => {
-    const [lat, lng] = cellToLatLng(cell);
+    let coordinates = POINT_CACHE.get(cell);
+    if (!coordinates) {
+      const [lat, lng] = cellToLatLng(cell);
+      POINT_CACHE.set(cell, (coordinates = [lng, lat]));
+    }
     return {
       type: "Feature",
-      geometry: { type: "Point", coordinates: [lng, lat] },
+      geometry: { type: "Point", coordinates },
       properties: { km2, cell },
     };
   });

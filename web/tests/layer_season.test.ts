@@ -74,6 +74,15 @@ describe("season feature builders", () => {
     expect(f.properties).toEqual({ km2: 12.6, cell: r6cell });
   });
 
+  // Season playback rebuilds the heat points every frame (~9k hexes): the
+  // centroid is h3 math, so it is computed once per hex and reused.
+  it("heat points reuse each hex's centroid across calls", () => {
+    const [f1] = heatPointFeatures(SUMMARY.r6);
+    const [f2] = heatPointFeatures([[r6cell, 3]]);
+    expect((f2.geometry as GeoJSON.Point).coordinates).toBe((f1.geometry as GeoJSON.Point).coordinates);
+    expect(f2.properties).toEqual({ km2: 3, cell: r6cell });
+  });
+
   it("cell features flatten every fire's cells into closed hex polygons tagged with the fire id", () => {
     const a = latLngToCell(45.0, 5.0, 8);
     const b = latLngToCell(46.0, 6.0, 8);
