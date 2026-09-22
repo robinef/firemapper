@@ -428,6 +428,34 @@ describe("createSeasonPlayback", () => {
     expect(days(h.frames)).toEqual([0]);
   });
 
+  // The real loader calls onLoaded (→ dataChanged) INSIDE ensure(), before
+  // its promise resolves: both routes into the precompute fire for one click,
+  // and two timer chains would leave pause() able to stop only one of them.
+  it("cells landing inside ensureCells start ONE playback, which pause stops", async () => {
+    let pb: ReturnType<typeof createSeasonPlayback> | null = null;
+    const h = make({
+      ensureCells: async () => {
+        h.state.cells = CTRL_CELLS;
+        pb!.dataChanged();
+      },
+      // A task later, as the real default is (a frame, then a timeout): the
+      // precompute is still queued when ensureCells resolves.
+      defer: (fn) => { setTimeout(fn, 0); },
+    });
+    pb = h.pb;
+    h.state.cells = null;
+    h.q().play.click();
+    await settle();
+    vi.advanceTimersByTime(0);
+    expect(h.onPrepared).toHaveBeenCalledTimes(1);
+    expect(days(h.frames)).toEqual([0]);
+    vi.advanceTimersByTime(PLAY_STEP_MS);
+    expect(days(h.frames)).toEqual([0, 1]);
+    h.q().play.click(); // pause
+    vi.advanceTimersByTime(PLAY_STEP_MS * 10);
+    expect(days(h.frames)).toEqual([0, 1]);
+  });
+
   it("status line and aria-valuetext describe the day on screen, with the scope prefix", async () => {
     const h = make();
     h.state.keep = (id) => id !== "f2";

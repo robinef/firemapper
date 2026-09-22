@@ -235,6 +235,12 @@ export function createSeasonPlayback(opts: SeasonPlaybackOpts) {
   /** Bumped by invalidate(): a prepare started for an older selection must
    * not install its columns. */
   let gen = 0;
+  /** The generation a precompute is already queued for, -1 for none. One
+   * click reaches prepare() twice when the cells land inside ensureCells
+   * (the loader's onLoaded → dataChanged, then the resolved promise): two
+   * queued precomputes would start two timer chains, and pause() could only
+   * ever stop one of them. */
+  let queuedGen = -1;
   let container: HTMLElement | null = null;
 
   const last = (): number => (cols ? cols.days.length - 1 : 0);
@@ -313,6 +319,7 @@ export function createSeasonPlayback(opts: SeasonPlaybackOpts) {
     // Playing from idle (the full season, which is also where the last day
     // lands) starts over; a paused day resumes.
     if (day === null) day = 0;
+    stopTimer(); // one timer chain, ever
     frame();
     timer = setTimeout(tick, PLAY_STEP_MS);
   };
@@ -330,9 +337,13 @@ export function createSeasonPlayback(opts: SeasonPlaybackOpts) {
       return;
     }
     if (!sel.cells) return; // dataChanged() resumes once the cells land
+    if (queuedGen === mine) return;
+    queuedGen = mine;
     const cells = sel.cells;
     defer(() => {
-      if (mine !== gen || !wantPlay) {
+      if (queuedGen === mine) queuedGen = -1;
+      if (mine !== gen) return; // a newer selection owns the state now
+      if (!wantPlay) {
         preparing = false;
         paint();
         return;
