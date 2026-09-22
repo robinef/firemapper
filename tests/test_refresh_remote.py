@@ -163,3 +163,48 @@ def test_stage_timing_survives_a_failing_stage(tmp_path, capsys, monkeypatch):
         mod.main(["fast"], client=object())
 
     assert re.search(r"\[time\] hydrate took [\d.]+s", capsys.readouterr().out)
+
+
+def _stub_stages(monkeypatch, tmp_path, seen: dict):
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: None)
+    monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: None)
+    monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: None)
+    monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")
+    monkeypatch.setattr(refresh_remote, "run_export", lambda *a, **k: None)
+    monkeypatch.setattr(
+        refresh_remote, "run_export_season",
+        lambda *a, **k: seen.setdefault("static_zone", k.get("static_zone", "MISSING")),
+    )
+
+
+def test_the_full_tier_passes_the_raw_stores_static_zone_to_the_season_export(tmp_path, monkeypatch, r2_env):
+    seen: dict = {}
+    _stub_stages(monkeypatch, tmp_path, seen)
+    monkeypatch.setattr(refresh_remote, "season_static_zone", lambda s, year: {"zone-cell"})
+
+    refresh_remote.main(["full"], client=object())
+
+    assert seen["static_zone"] == {"zone-cell"}
+
+
+def test_the_full_tier_passes_no_zone_when_the_raw_store_is_missing(tmp_path, monkeypatch, r2_env):
+    seen: dict = {}
+    _stub_stages(monkeypatch, tmp_path, seen)  # DATA_DIR is an empty tmp dir: no parquet
+
+    refresh_remote.main(["full"], client=object())
+
+    assert seen["static_zone"] is None
+
+
+def test_a_failing_zone_read_still_runs_the_season_export_and_publishes(tmp_path, monkeypatch, capsys, r2_env):
+    seen: dict = {}
+    _stub_stages(monkeypatch, tmp_path, seen)
+
+    def boom(*_a, **_k):
+        raise OSError("truncated parquet")
+
+    monkeypatch.setattr(refresh_remote, "season_static_zone", boom)
+
+    assert refresh_remote.main(["full"], client=object()) == 0
+    assert seen["static_zone"] is None
+    assert "season-static-zone failed" in capsys.readouterr().err

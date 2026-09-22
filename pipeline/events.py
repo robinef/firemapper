@@ -294,6 +294,18 @@ def static_zone(static: set[str]) -> set[str]:
     return zone
 
 
+def static_classification(rows: list[dict]) -> tuple[set[str], set[str]]:
+    """(static cells, excluded zone) over the POLAR rows among `rows` — the one
+    rule both consumers apply: cluster() over its in-window rows, and the
+    season export (export_season.season_static_zone) over the whole year's
+    archive, so the season layer drops exactly what the live map drops.
+    Meteosat rows never classify a cell: they are ~2 km pixels at another
+    resolution, and cluster() masks them against the polar zone instead."""
+    polar = [r for r in rows if r["tier"] != "meteosat"]
+    static = static_cells(polar, H3_RES)
+    return static, static_zone(static)
+
+
 def cluster(
     rows: list[dict], now: datetime, window_days: int = WINDOW_DAYS,
     report: dict | None = None,
@@ -337,8 +349,7 @@ def cluster(
     # recency: a flare that paused for weeks is still a flare, and an MTG
     # pixel landing on it must not read as a fresh fire the moment its polar
     # event ages out of the live window.
-    static = static_cells(polar, H3_RES)
-    zone = static_zone(static)
+    static, zone = static_classification(polar)
     kept: list[dict] = []
     excluded: list[dict] = []
     for r in polar:

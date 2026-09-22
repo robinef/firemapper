@@ -45,8 +45,10 @@ from .config import (
     season_key,
     season_sizes_key,
 )
+from .events import static_classification
 from .export_scale_blob import _load_json, _load_track_body, _save_json, year_of_track
 from .geo_local import dedup_nested_cells
+from .store import read_hotspots
 
 AGG_RES = 6
 # Track bodies come from R2 one GET each; 8 concurrent fetches turn the
@@ -83,6 +85,77 @@ def is_static_track(span_days: int, cells: list[str]) -> bool:
     real fire in the archive, on a handful of cells. Both conditions, because
     each alone catches real fires — see SEASON_STATIC_* in config.py."""
     return span_days > SEASON_STATIC_SPAN_DAYS and len(set(cells)) <= SEASON_STATIC_MAX_CELLS
+
+
+def season_static_zone(settings: Settings, year: int) -> set[str] | None:
+    """The static heat-source zone over `year`'s raw detections — the live
+    map's own rule (events.static_classification: cells detected on >=
+    STATIC_CELL_DAYS distinct days, plus their STATIC_RING_K ring), applied to
+    the whole season rather than cluster()'s window.
+
+    From the raw store, not the archived tracks: a track's cell_bins records
+    each cell once, on its first bin, so the bodies cannot tell a plant lit
+    on 30 days from a cell burned once (measured 2026-09-22: no archived
+    cell reaches 5 days). None when the store is absent or empty — the export
+    then keeps whatever filtering it last applied (see apply_static_zone)."""
+    store = settings.data_dir / "raw" / "hotspots.parquet"
+    rows = [r for r in read_hotspots(store) if r["acq_time"].year == year]
+    if not rows:
+        print(f"[season] no raw hotspot store rows for {year} at {store}; static zone unknown this run", file=sys.stderr)
+        return None
+    return static_classification(rows)[1]
+
+
+def apply_static_zone(
+    target_year: int,
+    state: dict[str, dict],
+    cells_by_fire: dict[str, dict],
+    zone: set[str],
+) -> tuple[int, int]:
+    """Remove every zone cell from every target-year fire, in place, and
+    return (fires emptied, distinct cells removed).
+
+    Runs over the WHOLE store each run, not only this run's tracks: the zone
+    grows (a plant accrues days) and shrinks (old detections leave the raw
+    archive), and an unchanged fire is never re-read. So the removal must be
+    reversible without the track body. The cells file stores the FILTERED
+    list — it is also the file the web paints, so it cannot hold plant cells —
+    and each entry keeps what the zone took in `zone_cells` (the web ignores
+    it). Raw cells = cells + zone_cells, re-filtered against today's zone, so
+    a cell the zone no longer covers comes back. Keeping the removed cells in
+    the SAME entry makes the pair atomic under publish()'s unordered upload.
+
+    A fire the zone empties cannot stay in the cells file (the web counts
+    every entry as a fire), so its raw cells and first date move to its state
+    entry (`zone_empty`), which the reconcile treats as not wanted. If that
+    state upload is lost, the reconcile sees a wanted fire missing from the
+    cells file, re-reads the body and empties it again — self-healing."""
+    removed: set[str] = set()
+    emptied = 0
+    candidates = [(tid, e) for tid, e in cells_by_fire.items()] + [
+        (tid, {"digest": e["digest"], "first": e["first"], "cells": [], "zone_cells": e["zone_cells"]})
+        for tid, e in state.items()
+        if e.get("zone_empty") and e.get("year") == target_year
+    ]
+    for tid, entry in candidates:
+        raw = list(dict.fromkeys([*entry["cells"], *entry.get("zone_cells", [])]))
+        kept = [c for c in raw if c not in zone]
+        taken = [c for c in raw if c in zone]
+        removed.update(taken)
+        st = state.get(tid)
+        if kept:
+            cells_by_fire[tid] = {"digest": entry["digest"], "first": entry["first"], "cells": kept}
+            if taken:
+                cells_by_fire[tid]["zone_cells"] = taken
+            if st is not None:
+                for k in ("zone_empty", "zone_cells", "first"):
+                    st.pop(k, None)
+        else:
+            cells_by_fire.pop(tid, None)
+            emptied += 1
+            if st is not None:
+                st.update({"zone_empty": True, "zone_cells": taken, "first": entry["first"]})
+    return emptied, len(removed)
 
 
 def dedup_by_fire(cells_by_fire: dict[str, dict]) -> dict[str, list[str]]:
@@ -160,11 +233,15 @@ def run_export_season(
     time_budget_s: float = 300.0,
     clock: Callable[[], float] = time.monotonic,
     now: datetime | None = None,
+    static_zone: set[str] | None = None,
 ) -> None:
     """Bring season_{target_year}.json / _cells.json up to date with the
     track archive, within `time_budget_s`; whatever is not reached this run
     stays in `to_process` for the next one (see export_scale_blob.run_export
-    for why a budget, not a hard kill, is the right shape here)."""
+    for why a budget, not a hard kill, is the right shape here).
+
+    `static_zone` (season_static_zone): cells no published fire may keep —
+    see apply_static_zone. None leaves the last run's filtering as it is."""
     index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
     if not index_path.exists():
         return
@@ -193,7 +270,7 @@ def run_export_season(
     # wanted: a cells file that still holds it is a partial publish too.
     for tid, entry in list(state.items()):
         stored = cells_by_fire.get(tid)
-        wanted = entry.get("year") == target_year and not entry.get("static")
+        wanted = entry.get("year") == target_year and not entry.get("static") and not entry.get("zone_empty")
         if wanted != (stored is not None) or (stored is not None and stored.get("digest") != entry.get("digest")):
             del state[tid]
             cells_by_fire.pop(tid, None)
@@ -265,10 +342,14 @@ def run_export_season(
                     continue
                 cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
 
-    if processed or malformed:
+    zone_emptied = zone_removed = 0
+    if static_zone is not None:
+        zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, static_zone)
+    if processed or malformed or zone_emptied or zone_removed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
             f"of_which_<=10_cells={long_span_small} static_excluded={static_excluded} "
+            f"static_zone_fires_excluded={zone_emptied} static_zone_cells_removed={zone_removed} "
             f"malformed={malformed}",
             file=sys.stderr,
         )

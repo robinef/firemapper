@@ -646,3 +646,214 @@ def test_the_sizes_sidecar_is_written_after_the_cells_and_before_the_summary(tmp
         Path(season_key(2026)).name,
         Path(SEASON_STATE_KEY).name,
     ]
+
+
+# --- static heat-source zone from the raw detections -----------------------
+# The archived track bodies cannot carry this signal (cell_bins records a
+# cell once per track, on its first bin), so the zone comes from the raw
+# hotspot archive through the LIVE rule, events.static_classification.
+
+PLANT = h3.latlng_to_cell(52.48, 4.60, 8)  # a steelworks-sized source
+FAR = h3.latlng_to_cell(44.0, 3.0, 8)  # a real fire's ground, far away
+
+
+def _ring1(cell: str) -> list[str]:
+    return sorted(set(h3.grid_disk(cell, 1)) - {cell})
+
+
+def _rows(cell: str, n_days: int, tier: str = "viirs", start_day: int = 1) -> list[dict]:
+    from datetime import timedelta
+    lat, lon = h3.cell_to_latlng(cell)
+    first = datetime(2026, 7, start_day, 13, 0, tzinfo=timezone.utc)
+    return [
+        {"lat": lat, "lon": lon, "acq_time": first + timedelta(days=d), "tier": tier,
+         "satellite": "N", "confidence": "n", "frp": 5.0, "src_id": f"{cell}-{tier}-{d}"}
+        for d in range(n_days)
+    ]
+
+
+def _plant_zone(days: int = 25) -> set[str]:
+    from pipeline.events import static_classification
+    return static_classification(_rows(PLANT, days))[1]
+
+
+def _fire(tid: str, cells: list[str], day: int = 1) -> dict:
+    return _track_body(tid, cells, f"2026-07-{day:02d}T00:00:00+00:00", f"2026-07-{day + 2:02d}T00:00:00+00:00")
+
+
+def _all_published_cells(settings: Settings) -> set[str]:
+    cells = _read(settings, season_cells_key(2026))
+    return {c for e in cells.values() for c in e["cells"]}
+
+
+def test_the_zone_removes_a_plant_cell_and_its_ring_from_every_fire_including_earlier_ones(tmp_path):
+    settings = _settings(tmp_path)
+    ring = _ring1(PLANT)
+    early = [PLANT, ring[0], FAR]
+    _make_local_archive(settings.out_dir, {"early": _fire("early", early)})
+    run_export_season(settings, target_year=2026, now=NOW)  # no zone known yet
+    assert PLANT in _all_published_cells(settings)
+    late_far = h3.latlng_to_cell(44.2, 3.2, 8)
+    _make_local_archive(settings.out_dir, {
+        "early": _fire("early", early),
+        "late": _fire("late", [ring[1], late_far], day=5),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    cells = _read(settings, season_cells_key(2026))
+    assert cells["early"]["cells"] == [FAR]
+    assert cells["late"]["cells"] == [late_far]
+    sizes = _read(settings, season_sizes_key(2026))["fires"]
+    assert sizes["early"][0] == round(h3.cell_area(FAR, unit="km^2"), 3)
+    zone_r6 = {h3.cell_to_parent(c, 6) for c in [PLANT, *ring]} - {h3.cell_to_parent(c, 6) for c in (FAR, late_far)}
+    assert not zone_r6 & {cell for cell, _ in _read(settings, season_key(2026))["r6"]}
+
+
+def test_a_real_fire_detected_on_one_to_three_days_per_cell_loses_nothing(tmp_path):
+    from pipeline.events import static_classification
+    settings = _settings(tmp_path)
+    fire = sorted(h3.grid_disk(FAR, 5))[:60]
+    rows = _rows(PLANT, 25)
+    for i, c in enumerate(fire):
+        rows += _rows(c, 1 + i % 3, start_day=1 + i % 20)
+    zone = static_classification(rows)[1]
+    _make_local_archive(settings.out_dir, {"big": _fire("big", fire), "plant": _fire("plant", [PLANT])})
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=zone)
+
+    cells = _read(settings, season_cells_key(2026))
+    assert cells["big"]["cells"] == fire
+    assert "plant" not in cells
+
+
+def test_a_fire_made_only_of_zone_cells_is_excluded_and_counted(tmp_path, capsys):
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "plant": _fire("plant", [PLANT, *_ring1(PLANT)[:2]]),
+        "good": _fire("good", [FAR]),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert set(_read(settings, season_sizes_key(2026))["fires"]) == {"good"}
+    assert _read(settings, season_key(2026))["fires"] == 1
+    err = capsys.readouterr().err
+    assert "static_zone_fires_excluded=1 " in err
+    assert "static_zone_cells_removed=3" in err
+
+
+def test_a_zone_emptied_fire_is_not_reprocessed_every_run(tmp_path, capsys):
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {"plant": _fire("plant", [PLANT]), "good": _fire("good", [FAR])})
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+    capsys.readouterr()
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    import re
+    assert not re.search(r"processed=[1-9]", capsys.readouterr().err)  # nothing re-read
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+
+
+def test_cells_come_back_when_the_zone_no_longer_covers_them(tmp_path):
+    # The zone is recomputed from a rolling archive each run: a cell it drops
+    # must reappear, including in a fire the zone had emptied entirely.
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "mixed": _fire("mixed", [PLANT, FAR]),
+        "plant": _fire("plant", [PLANT]),
+    })
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=set())
+
+    cells = _read(settings, season_cells_key(2026))
+    assert sorted(cells["mixed"]["cells"]) == sorted([PLANT, FAR])
+    assert cells["plant"]["cells"] == [PLANT]
+    assert cells["plant"]["first"] == "2026-07-01"
+
+
+def test_a_run_without_a_zone_leaves_the_last_filtering_in_place(tmp_path):
+    # None = "the raw archive could not be read this run", not "no plants":
+    # re-publishing the plants for one run would flicker them back on.
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {"mixed": _fire("mixed", [PLANT, FAR])})
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None)
+
+    assert _read(settings, season_cells_key(2026))["mixed"]["cells"] == [FAR]
+
+
+def test_no_zone_publishes_exactly_what_it_did_before(tmp_path):
+    outputs = []
+    for name, kwargs in (("a", {}), ("b", {"static_zone": None})):
+        settings = _settings(tmp_path / name)
+        _make_local_archive(settings.out_dir, {"mixed": _fire("mixed", [PLANT, FAR]), "good": _fire("good", [FAR])})
+        run_export_season(settings, target_year=2026, now=NOW, **kwargs)
+        outputs.append([
+            (settings.out_dir / k).read_bytes()
+            for k in (season_cells_key(2026), season_sizes_key(2026), season_key(2026), SEASON_STATE_KEY)
+        ])
+    assert outputs[0] == outputs[1]
+    cells = _read(settings, season_cells_key(2026))
+    assert cells["mixed"] == {"digest": cells["mixed"]["digest"], "first": "2026-07-01", "cells": [PLANT, FAR]}
+    assert all(set(e) <= {"digest", "year", "static"} for e in _read(settings, SEASON_STATE_KEY).values())
+
+
+def test_a_lost_state_upload_heals_a_zone_emptied_fire(tmp_path):
+    # publish() is unordered: the filtered cells file can land while the state
+    # that records "emptied by the zone" does not. The reconcile then sees a
+    # wanted fire missing from the cells file, re-reads it, and empties it again.
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {"plant": _fire("plant", [PLANT]), "good": _fire("good", [FAR])})
+    run_export_season(settings, target_year=2026, now=NOW)
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    old_state = state_path.read_text()
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+    state_path.write_text(old_state)
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert _read(settings, SEASON_STATE_KEY)["plant"].get("zone_empty") is True
+
+
+def test_the_zone_follows_the_live_threshold(monkeypatch):
+    import pipeline.events as events
+    assert PLANT in _plant_zone(25)
+    monkeypatch.setattr(events, "STATIC_CELL_DAYS", 26)
+    assert _plant_zone(25) == set()
+
+
+def test_meteosat_rows_never_classify_a_cell():
+    from pipeline.events import static_classification
+    assert static_classification(_rows(PLANT, 40, tier="meteosat")) == (set(), set())
+
+
+def test_season_static_zone_reads_the_target_years_polar_rows_from_the_raw_store(tmp_path):
+    from pipeline.export_season import season_static_zone
+    from pipeline.store import append_hotspots
+    settings = _settings(tmp_path)
+    store = settings.data_dir / "raw" / "hotspots.parquet"
+    store.parent.mkdir(parents=True)
+    last_year = [dict(r, acq_time=r["acq_time"].replace(year=2025), src_id="old-" + r["src_id"]) for r in _rows(FAR, 25)]
+    append_hotspots(_rows(PLANT, 25) + last_year, store)
+
+    zone = season_static_zone(settings, 2026)
+
+    assert zone == set(h3.grid_disk(PLANT, 1))
+
+
+def test_season_static_zone_is_none_without_a_raw_store(tmp_path, capsys):
+    from pipeline.export_season import season_static_zone
+    assert season_static_zone(_settings(tmp_path), 2026) is None
+    assert "no raw hotspot store" in capsys.readouterr().err
+
+
+def test_the_zone_starts_exactly_at_the_live_day_count():
+    from pipeline.config import STATIC_CELL_DAYS
+    assert PLANT in _plant_zone(STATIC_CELL_DAYS)
+    assert _plant_zone(STATIC_CELL_DAYS - 1) == set()

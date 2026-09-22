@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pipeline.config import Settings, load_settings
 from pipeline.export_scale_blob import run_export
-from pipeline.export_season import run_export_season
+from pipeline.export_season import run_export_season, season_static_zone
 from pipeline.remote import hydrate, make_client, publish
 from pipeline.run import _safe, refresh
 
@@ -101,15 +101,29 @@ def main(argv: list[str], client=None) -> int:
     # Same _safe contract as the scale blob: a broken season export must
     # never block publish().
     if tier == "full":
+        season_year = datetime.now(timezone.utc).year
+        # The static heat-source zone, from the raw detections hydrate() and
+        # refresh() just brought up to date, by the live map's own rule. None
+        # (store missing, unreadable) leaves the season's last filtering in
+        # place — never a reason to skip the export or the publish.
+        zone = _timed(
+            "season_static_zone",
+            lambda: _safe(
+                lambda: season_static_zone(settings, season_year),
+                default=None,
+                label="season-static-zone",
+            ),
+        )
         _timed(
             "export_season",
             lambda: _safe(
                 lambda: run_export_season(
                     settings,
-                    target_year=datetime.now(timezone.utc).year,
+                    target_year=season_year,
                     client=client,
                     r2_bucket=settings.r2_bucket,
                     time_budget_s=300.0,
+                    static_zone=zone,
                 ),
                 default=None,
                 label="export-season",
