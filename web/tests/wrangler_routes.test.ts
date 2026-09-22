@@ -18,6 +18,7 @@ function parsedConfig(): {
   assets: { run_worker_first: string[] };
   durable_objects: { bindings: { name: string; class_name: string }[] };
   migrations: { tag: string; new_sqlite_classes?: string[] }[];
+  ratelimits: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
 } {
   const json = raw.replace(/^\s*\/\/.*$/gm, "");
   return JSON.parse(json);
@@ -58,5 +59,19 @@ describe("worker routing config", () => {
   it("declares a new_sqlite_classes migration for GeocodeRateGate (config drift has broken this before)", () => {
     const { migrations } = parsedConfig();
     expect(migrations.some((m) => m.new_sqlite_classes?.includes("GeocodeRateGate"))).toBe(true);
+  });
+
+  it("declares a per-visitor ratelimits binding for each /api handler, matching the env field names", () => {
+    const { ratelimits } = parsedConfig();
+    const byName = new Map(ratelimits.map((r) => [r.name, r]));
+    for (const name of ["HISTORICAL_VISITOR_LIMITER", "GEOCODE_VISITOR_LIMITER"]) {
+      const binding = byName.get(name);
+      expect(binding, `${name} missing — handler would silently run uncapped`).toBeDefined();
+      // The runtime only accepts 10 or 60; anything else fails at deploy, not in tests.
+      expect([10, 60]).toContain(binding!.simple.period);
+      expect(binding!.simple.limit).toBeGreaterThan(0);
+    }
+    const ids = ratelimits.map((r) => r.namespace_id);
+    expect(new Set(ids).size, "namespace_id must be unique per binding").toBe(ids.length);
   });
 });

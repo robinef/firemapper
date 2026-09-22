@@ -333,6 +333,45 @@ describe("handleHistoricalHotspots", () => {
     expect(res.status).toBe(403);
     expect(upstream).not.toHaveBeenCalled();
   });
+
+  it("429s an over-budget visitor before spending any FIRMS quota", async () => {
+    const upstream = vi.fn();
+    const limiter = { limit: vi.fn(async () => ({ success: false })) };
+    const res = await handleHistoricalHotspots(url(VALID_QS), {
+      FIRMS_HISTORICAL_MAP_KEY: "k",
+      HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+      HISTORICAL_VISITOR_LIMITER: limiter,
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("does not charge the visitor budget for a request that fails validation", async () => {
+    const limiter = { limit: vi.fn(async () => ({ success: true })) };
+    const res = await handleHistoricalHotspots(url("start=2022-07-01&end=2022-07-05"), {
+      FIRMS_HISTORICAL_MAP_KEY: "k",
+      HISTORICAL_VISITOR_LIMITER: limiter,
+    });
+    expect(res.status).toBe(400);
+    expect(limiter.limit).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to upstream when the limiter allows, keyed on the visitor's IP", async () => {
+    const upstream = vi.fn(async () => new Response("latitude,longitude\n44.5,-1.1\n"));
+    const limiter = { limit: vi.fn(async () => ({ success: true })) };
+    const req = new Request(`https://x/api/historical-hotspots?${VALID_QS}`, {
+      headers: { origin: "https://firemapper.robinef.workers.dev", "cf-connecting-ip": "203.0.113.7" },
+    });
+    const res = await handleHistoricalHotspots(req, {
+      FIRMS_HISTORICAL_MAP_KEY: "k",
+      HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+      HISTORICAL_VISITOR_LIMITER: limiter,
+    });
+    expect(res.status).toBe(200);
+    expect(limiter.limit).toHaveBeenCalledWith({ key: "203.0.113.7" });
+    expect(upstream).toHaveBeenCalled();
+  });
 });
 
 describe("isAllowedOrigin", () => {
