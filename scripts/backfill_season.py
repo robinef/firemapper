@@ -532,11 +532,18 @@ def rollback(
       its three files are deleted and the next refresh rebuilds it cold from
       the (cleaned) index over a few runs' budgets.
 
+    - each target id's track body is deleted too: publish never overwrites
+      an existing body key but does merge the new digest, so a body left
+      behind would outlive a re-publish of a changed build forever.
+
     Ids in the EARLIEST pre-backfill index backup were live before any
     backfill publish and are never removed. Every object written or deleted
-    is first copied to `<key>.pre-rollback-<stamp>`; the index is written
-    first, so a failure part-way leaves state an idempotent re-run finishes.
-    The track bodies stay (inert without index entries)."""
+    is first copied to `<key>.pre-rollback-<stamp>`. Order: the index first
+    (nothing reaches the fires any more), then season cells, sizes and state
+    LAST — the season export's recovery contract, since its reconcile walks
+    state and a state that led the cells would leave a ghost cells entry —
+    then the scale-blob deletes, then the bodies, which the index no longer
+    names. A failure part-way leaves a state an idempotent re-run finishes."""
     from pipeline.remote import _keys
 
     now = now or datetime.now(timezone.utc)
@@ -553,11 +560,12 @@ def rollback(
         return f"data/{k}"
 
     season_cells, season_sizes = key(season_cells_key(YEAR)), key(season_sizes_key(YEAR))
+    # Insertion order IS the write order (see the docstring).
     edits: dict[str, Callable] = {
         REMOTE_INDEX_KEY: lambda o: _drop(o, target),
-        key(SEASON_STATE_KEY): lambda o: _drop(o, target),
         season_cells: lambda o: _drop(o, target),
         season_sizes: lambda o: {**o, "fires": _drop(o.get("fires") or {}, target)},
+        key(SEASON_STATE_KEY): lambda o: _drop(o, target),
     }
     current: dict[str, dict] = {}
     for k in edits:
@@ -579,16 +587,18 @@ def rollback(
         if scale_state is not None and target & set(json.loads(scale_state)) else []
     )
     writes = [k for k in current if removed[k]]
-    plan = {"ids": sorted(target), "removed": removed, "delete": delete, "stamp": stamp}
+    # A 404 is nothing to do; any other head failure raises (_exists).
+    bodies = [b for b in (f"data/archive/tracks/{eid}.json" for eid in sorted(target)) if _exists(client, bucket, b)]
+    plan = {"ids": sorted(target), "removed": removed, "delete": delete, "bodies": bodies, "stamp": stamp}
     print(f"[info] rollback plan: {json.dumps({**plan, 'ids': len(target)})}")
     if dry_run:
         return plan
 
-    for k in writes + delete:
+    for k in writes + delete + bodies:
         client.copy_object(Bucket=bucket, Key=f"{k}.pre-rollback-{stamp}", CopySource={"Bucket": bucket, "Key": k})
-    for k in writes:  # REMOTE_INDEX_KEY is first in `edits`, so first here
+    for k in writes:  # index, cells, sizes, state — `edits` order
         client.put_object(Bucket=bucket, Key=k, Body=json.dumps(new[k]).encode(), ContentType="application/json")
-    for k in delete:
+    for k in delete + bodies:
         client.delete_object(Bucket=bucket, Key=k)
     print(f"[info] rolled back {len(target)} ids; backups at <key>.pre-rollback-{stamp}")
     return plan

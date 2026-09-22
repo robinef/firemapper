@@ -106,16 +106,27 @@ jobs:
    cancel-in-progress: false
    queue: max
   steps:
-   - name: Require the publish run id
-     # via env, not ${{ }} in the script: an input is never shell-interpolated
-     run: test -n "$RUN_ID" || { echo "rollback_run_id is required"; exit 1; }
-     env:
-      RUN_ID: ${{ inputs.rollback_run_id }}
    - uses: actions/checkout@v7
    - uses: astral-sh/setup-uv@v10.1.0
      with:
       enable-cache: true
    - run: uv sync
+   # Any run in the repo can upload an artifact called backfill-season (a
+   # fork PR's CI run, say). Only a manual dispatch of THIS workflow on main
+   # may name the ids to delete from prod. Inputs reach the shell via env only.
+   - name: Check the run is a backfill-season dispatch on main
+     env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.rollback_run_id }}
+      REPO: ${{ github.repository }}
+     run: |
+      case "$RUN_ID" in ''|*[!0-9]*) echo "rollback_run_id must be a numeric run id"; exit 1;; esac
+      gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.path, .event, .head_branch] | @tsv' > run.tsv
+      IFS=$'\t' read -r path event branch < run.tsv
+      echo "run $RUN_ID: path=$path event=$event branch=$branch"
+      case "$path" in *.github/workflows/backfill-season.yml) ;; *) echo "not a backfill-season run"; exit 1;; esac
+      [ "$event" = workflow_dispatch ] || { echo "not a workflow_dispatch run"; exit 1; }
+      [ "$branch" = main ] || { echo "not a run on main"; exit 1; }
    - uses: actions/download-artifact@v8
      with:
       name: backfill-season

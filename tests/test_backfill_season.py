@@ -532,6 +532,8 @@ SEASON_SIZES = "data/archive/season_2026_sizes.json"
 SCALE_STATE = "data/archive/scale_blob_state.json"
 SCALE_BLOB = "data/archive/blob_2026.json"
 SCALE_FIRES = "data/archive/blob_2026_fires.json"
+BODY_A = "data/archive/tracks/bfA.json"
+BODY_LIVE1 = "data/archive/tracks/live1.json"
 
 
 def _j(obj) -> bytes:
@@ -555,6 +557,9 @@ def _ingested_bucket(scale_has_backfill=True):
         SCALE_STATE: _j({i: {"digest": "d", "year": 2026} for i in scale_ids}),
         SCALE_BLOB: _j([{"fire_id": i, "index": n} for n, i in enumerate(scale_ids)]),
         SCALE_FIRES: _j({i: {"country": "ES", "area_km2": 1.0} for i in scale_ids}),
+        # bodies: bfA's was uploaded; bfB's never landed (a 404 is nothing to do)
+        BODY_A: b'{"id": "bfA", "v": 1}',
+        BODY_LIVE1: b'{"id": "live1"}',
     }
 
 
@@ -571,12 +576,22 @@ def test_rollback_removes_exactly_the_backfill_ids_from_every_file_after_backing
     assert json.loads(s3.objects[SEASON_SIZES]) == {"year": 2026, "fires": {"live1": [1.0, "ES", "2026-07-20"]}}
     for key in (SCALE_STATE, SCALE_BLOB, SCALE_FIRES):  # cold rebuild: packed spiral can't lose a fire
         assert key not in s3.objects
-    written = [INDEX_KEY, SEASON_STATE, SEASON_CELLS, SEASON_SIZES, SCALE_STATE, SCALE_BLOB, SCALE_FIRES]
-    for key in written:
+    # a stale body would be kept by a later publish (it never overwrites a key)
+    assert BODY_A not in s3.objects
+    assert s3.objects[BODY_LIVE1] == before[BODY_LIVE1]  # protected id: body untouched
+    touched = [INDEX_KEY, SEASON_STATE, SEASON_CELLS, SEASON_SIZES, SCALE_STATE, SCALE_BLOB, SCALE_FIRES, BODY_A]
+    for key in touched:
         assert s3.objects[f"{key}.pre-rollback-{STAMP}"] == before[key]
-    kinds = [k for k, _ in s3.ops]
-    assert kinds[:len(written)] == ["copy"] * len(written)  # every backup before any change
-    assert s3.ops[len(written)] == ("put", INDEX_KEY)       # the index goes first
+    n = len(touched)
+    assert [k for k, _ in s3.ops[:n]] == ["copy"] * n  # every backup before any change
+    # index first; state LAST of the season files (the export's recovery
+    # contract: its reconcile walks state, so state must never lead cells);
+    # then the scale-blob deletes; bodies after the index no longer names them
+    assert s3.ops[n:] == [
+        ("put", INDEX_KEY), ("put", SEASON_CELLS), ("put", SEASON_SIZES), ("put", SEASON_STATE),
+        ("delete", SCALE_STATE), ("delete", SCALE_BLOB), ("delete", SCALE_FIRES),
+        ("delete", BODY_A),
+    ]
     assert plan["ids"] == ["bfA", "bfB"]
 
 
@@ -585,13 +600,14 @@ def test_rollback_dry_run_writes_nothing(tmp_path):
     plan = bf.rollback(s3, "bucket", {"bfA", "bfB"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc), dry_run=True)
     assert s3.ops == []
     assert plan["removed"][INDEX_KEY] == 2 and plan["delete"] == [SCALE_STATE, SCALE_BLOB, SCALE_FIRES]
+    assert plan["bodies"] == [BODY_A]
 
 
 def test_rollback_leaves_the_scale_blob_alone_when_it_never_took_a_backfill_fire(tmp_path):
     s3 = PublishS3(_ingested_bucket(scale_has_backfill=False))
     bf.rollback(s3, "bucket", {"bfA", "bfB"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
     assert all(key in s3.objects for key in (SCALE_STATE, SCALE_BLOB, SCALE_FIRES))
-    assert not any(k == "delete" for k, _ in s3.ops)
+    assert [key for op, key in s3.ops if op == "delete"] == [BODY_A]  # the body only
 
 
 def test_rollback_refuses_without_a_pre_backfill_backup(tmp_path):
@@ -643,3 +659,35 @@ def test_rollback_aborts_on_a_read_error_rather_than_skipping_the_file(tmp_path)
     with pytest.raises(RuntimeError):
         bf.rollback(s3, "bucket", {"bfA"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
     assert s3.ops == []
+
+
+def test_rollback_aborts_on_a_body_head_error_rather_than_keeping_the_body(tmp_path):
+    class Flaky(PublishS3):
+        def head_object(self, Bucket, Key):
+            raise RuntimeError("R2 503")
+
+    s3 = Flaky(_ingested_bucket())
+    with pytest.raises(RuntimeError):
+        bf.rollback(s3, "bucket", {"bfA"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
+    assert s3.ops == []
+
+
+def test_publish_rollback_republish_lands_the_new_body(tmp_path):
+    """publish -> rollback -> a changed build (e.g. --modis) -> publish: the
+    second publish skips existing body keys but merges the new digest, so a
+    body rollback left behind would sit under the new index entry forever."""
+    live = {"live1": "a"}
+    s3 = PublishS3({INDEX_KEY: json.dumps(live).encode(), BODY_LIVE1: b'{"id": "live1"}'})
+    first, second = tmp_path / "b1", tmp_path / "b2"
+    _built(first, {"bfA": '{"id": "bfA", "v": 1}'})
+    bf.publish(s3, "bucket", first, now=U(2026, 9, 23, 10))
+    bf.rollback(s3, "bucket", bf.load_rollback_ids(first), now=U(2026, 9, 24, 10))
+    assert json.loads(s3.objects[INDEX_KEY]) == live
+    _built(second, {"bfA": '{"id": "bfA", "v": 2}', "live1": '{"id": "live1", "v": 2}'})
+
+    bf.publish(s3, "bucket", second, now=U(2026, 9, 25, 10))
+
+    assert s3.objects[BODY_A] == b'{"id": "bfA", "v": 2}'
+    assert json.loads(s3.objects[INDEX_KEY]) == {"live1": "a", "bfA": "sha-bfA"}
+    assert s3.objects[BODY_LIVE1] == b'{"id": "live1"}'  # live wins, never replaced
+    assert s3.objects[f"{BODY_A}.pre-rollback-20260924T100000Z"] == b'{"id": "bfA", "v": 1}'

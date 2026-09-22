@@ -41,7 +41,8 @@ fetch had failed windows, or that could not read the live season cells file
 **Rollback** is *not* copying that backup over the index: by then live
 refreshes have added ids of their own, and the season and scale exports have
 taken the backfilled fires into files the index no longer drives. Run the
-workflow with `rollback=true` and `rollback_run_id=<the publish run's id>`
+workflow with `rollback=true` and `rollback_run_id=<the publish run's id>` (it must
+be a manual `backfill-season` dispatch on `main`; any other run is refused)
 (`dry_run=true` first prints the plan). Inside the `refresh` group it removes
 exactly the published ids from the live track index, `archive/season_state.json`,
 `archive/season_2026_cells.json` and `archive/season_2026_sizes.json` (the next
@@ -49,6 +50,8 @@ export recomputes `season_2026.json`), and — if the scale blob took any of
 them — deletes `archive/scale_blob_state.json`, `archive/blob_2026.json` and
 `archive/blob_2026_fires.json`, which the next refreshes rebuild cold: the
 blob packs fires into one gap-free spiral that cannot lose a fire in place.
+It also deletes the published track bodies, so a later re-publish of a
+changed build uploads fresh ones instead of skipping the stale keys.
 Every object it changes or deletes is first copied to
 `<key>.pre-rollback-<UTC stamp>`. Ids already in the earliest pre-backfill
 index backup are never removed. Locally:
