@@ -114,6 +114,8 @@ Worker secret (set on Cloudflare, **not** a repository secret):
 | Secret | Used by | Notes |
 |---|---|---|
 | `GH_DISPATCH_TOKEN` | the Worker's cron trigger | fine-grained GitHub PAT, `Actions: read and write`, scoped to this repo only |
+| `SENTINELHUB_INSTANCE_ID` | `/hd` tile proxy | see "Secrets and public deploys" below |
+| `FIRMS_HISTORICAL_MAP_KEY` | `/api/historical-hotspots` | see "Historical fire lookup" below |
 
 ```bash
 npx wrangler secret put GH_DISPATCH_TOKEN
@@ -240,9 +242,9 @@ configuration; the cap is the backstop for plain tile-scraping.
 
 ## Historical fire lookup (`/api/historical-hotspots`, `/api/geocode`)
 
-**Map key not yet provisioned as of 2026-09-22.** Both routes are deployed and
-live, but the FIRMS lookup stays a 503 until one manual step only the account
-owner can do.
+**Provisioned 2026-09-22.** Both routes are live end to end: the map key
+below is set as a Worker secret and the per-visitor caps are deployed. What
+follows is what to redo if either ever has to be recreated.
 
 **`FIRMS_HISTORICAL_MAP_KEY`** (Worker secret) — a NASA FIRMS map key for the
 Standard Processing archive (`worker/historical_hotspots.ts`), separate from
