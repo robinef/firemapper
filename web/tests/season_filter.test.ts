@@ -911,6 +911,23 @@ describe("createSeasonFilter fed by the sizes sidecar", () => {
     expect((onAggregate.mock.calls[0][0] as { fires: number }).fires).toBe(1);
   });
 
+  it("drops sidecar fires the cells file does not hold, so the bars count what the aggregate counts", () => {
+    // Separate uploads can skew: a sidecar one publish ahead may list a fire
+    // (here a big one) that this cells file no longer has.
+    const skewed: SeasonSizes = { ...sidecar, fires: { ...sidecar.fires, ghost: [500, "FR", "2026-01-01"] } };
+    const a1 = mount();
+    a1.filter.setSizes(skewed);
+    a1.filter.setCells(cells, sizes);
+    a1.sched.flush();
+    const a2 = mount();
+    a2.filter.setSizes(sidecar);
+    a2.filter.setCells(cells, sizes);
+    a2.sched.flush();
+    expect([...a1.filter.knownSizes()!.keys()].sort()).toEqual(["l", "m", "s"]);
+    expect(heights(a1.el)).toEqual(heights(a2.el));
+    expect((a1.onAggregate.mock.calls[0][0] as { fires: number }).fires).toBe(3);
+  });
+
   it("a sidecar landing after the cells adopts its countries and keeps the cells' aggregate", () => {
     const { filter, el, onAggregate, sched } = mount();
     filter.setCells(cells, sizes);
@@ -971,9 +988,17 @@ describe("createSeasonFilter fed by the sizes sidecar", () => {
 describe("withKnownSizes", () => {
   const cells: SeasonCells = { f1: entry([a, b]), f2: entry([far]) };
 
-  it("returns the known map untouched when it covers every fire", () => {
+  it("returns the known map untouched when it covers exactly the cells' fires", () => {
     const known = new Map([["f1", 1.5], ["f2", 0.7]]);
     expect(withKnownSizes(cells, known)).toBe(known);
+  });
+
+  it("leaves out known fires the cells do not hold", () => {
+    const known = new Map([["f1", 1.5], ["f2", 0.7], ["gone", 9]]);
+    const out = withKnownSizes(cells, known);
+    expect([...out.keys()].sort()).toEqual(["f1", "f2"]);
+    expect(out.get("f1")).toBe(1.5);
+    expect(known.has("gone")).toBe(true); // the caller's map is not mutated
   });
 
   it("computes only the fires the known map lacks", () => {

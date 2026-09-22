@@ -70,18 +70,26 @@ export function fireSizes(cells: SeasonCells): Map<string, number> {
   return out;
 }
 
-/** Per-fire sizes for `cells`, reusing `known` (the sidecar's) wherever it has
- * the fire and computing only the rest. The sidecar and the cells file are
- * separate uploads, so a cells file one publish newer can hold a fire the
- * sidecar has not heard of yet; without its size that fire would read as 0 km²
- * and vanish at every threshold. Returns `known` itself when it is complete —
- * the common case, and the one that must cost no h3 math at all. */
+/** Per-fire sizes for exactly the fires in `cells`, reusing `known` (the
+ * sidecar's) wherever it has the fire and computing only the rest. The sidecar
+ * and the cells file are separate uploads, so they can skew either way: a
+ * cells file one publish newer can hold a fire the sidecar has not heard of
+ * yet (without its size it would read as 0 km² and vanish at every
+ * threshold), and a sidecar one publish newer can list a fire this cells file
+ * no longer has (the bars would count a fire the aggregate never can). Returns
+ * `known` itself when its fires are exactly the cells' — the common case, and
+ * the one that must cost no h3 math and no copy at all. */
 export function withKnownSizes(cells: SeasonCells, known: Map<string, number>): Map<string, number> {
+  const ids = Object.keys(cells);
   let missing: SeasonCells | null = null;
-  for (const id of Object.keys(cells)) if (!known.has(id)) (missing ??= {})[id] = cells[id];
-  if (!missing) return known;
-  const out = new Map(known);
-  for (const [id, v] of fireSizes(missing)) out.set(id, v);
+  for (const id of ids) if (!known.has(id)) (missing ??= {})[id] = cells[id];
+  if (!missing && known.size === ids.length) return known;
+  const out = new Map<string, number>();
+  for (const id of ids) {
+    const v = known.get(id);
+    if (v !== undefined) out.set(id, v);
+  }
+  if (missing) for (const [id, v] of fireSizes(missing)) out.set(id, v);
   return out;
 }
 
