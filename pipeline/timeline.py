@@ -21,8 +21,8 @@ def build_timeline(
     removed as static heat sources (flares, refineries, oil fields — every
     detection inside a static zone, see events.static_zone), so the
     histogram reads the trend in wildfire activity, not a constant
-    industrial floor: measured on the prod archive, such detections are
-    17.7% of the total (10-49% on any given day). By src_id rather than by
+    industrial floor: measured on the prod archive (2026-09-21, zone = cell
+    + ring 1), such detections are 21% of the total. By src_id rather than by
     cell so this stays one exclusion set shared with cluster() and the
     day-slices — whatever rule cluster() applies, the histogram agrees with
     the map by construction rather than re-deriving it."""

@@ -485,8 +485,8 @@ def test_fire_welded_to_a_static_source_keeps_only_its_own_detections():
     plant = _daily(*A, 1, 30)  # pings daily through day 30
     ring2 = h3.grid_ring(core, 2)
     # A fire on days 10-11, four passes a day, on the whole ring-2 crown —
-    # 96 members to the plant's 30 — touching ring 1 once so it welds to
-    # the plant by adjacency.
+    # 12 cells x 4 = 48 members to the plant's 30 — touching ring 1 once so
+    # it welds to the plant by adjacency.
     fire = [hs(*h3.cell_to_latlng(c), T(10 + i % 2, h)) for i, c in enumerate(ring2) for h in (0, 6, 12, 18)]
     touch = hs(*h3.cell_to_latlng(h3.grid_disk(core, 1)[1]), T(10, 12))
     ev = cluster(plant + fire + [touch], now=T(31, 0), window_days=45)

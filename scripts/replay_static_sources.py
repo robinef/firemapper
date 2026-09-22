@@ -14,12 +14,12 @@ from __future__ import annotations
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pipeline.config import H3_RES, MAX_FIRE_DAYS
 from pipeline.enrich import MIN_PLACES, Places, load_places, place_for
-from pipeline.events import _cluster_one, cluster, static_cells
+from pipeline.events import _cluster_one, cluster
 from pipeline.store import read_hotspots
 
 RUNTIME_BUDGET_PCT = 20
@@ -62,6 +62,12 @@ def main(argv: list[str]) -> int:
     for r in rows:
         if r["acq_time"].tzinfo is None:
             r["acq_time"] = r["acq_time"].replace(tzinfo=timezone.utc)
+    # Window once, up front, to the rows cluster() itself will see (it cuts at
+    # MAX_FIRE_DAYS before `now`), so the runtime baseline below clusters the
+    # SAME rows — on an archive longer than 90 days an unwindowed baseline saw
+    # more rows, ran slower, and the budget gate could never fire.
+    oldest = now - timedelta(days=MAX_FIRE_DAYS)
+    rows = [r for r in rows if oldest <= r["acq_time"] <= now]
 
     places_path = Path(__file__).parent.parent / "data" / "places" / "cities5000.txt"
     # Same min_places floor production uses (config.MIN_PLACES): a truncated
@@ -114,14 +120,11 @@ def main(argv: list[str]) -> int:
             print(f"[FAIL] expected to keep a fire matching {must!r}, none found among kept events")
             ok = False
 
-    # Runtime baseline: the same rows clustered with no static filter at all.
-    # `rows` is already non-meteosat (line 47); reuse it rather than re-filter.
+    # Runtime baseline: the same (windowed, non-meteosat) rows clustered with
+    # no static filter at all.
     t0 = time.time()
     _cluster_one(rows, H3_RES, bridge=True)
     baseline_s = time.time() - t0
-
-    static = static_cells(rows, H3_RES)
-    print(f"cells classified static: {len(static)}")
 
     slower_pct = 100 * (filtered_s - baseline_s) / baseline_s if baseline_s else 0
     print(f"runtime: filtered {filtered_s:.1f}s vs baseline {baseline_s:.1f}s ({slower_pct:+.0f}%)")

@@ -100,43 +100,33 @@ describe("dropStaticSources", () => {
   });
 });
 
-import { isClusterStatic } from "../src/historical_reconstruct";
+import { staticZone, STATIC_RING_K } from "../src/historical_reconstruct";
 
-describe("isClusterStatic", () => {
-  it("returns false for an empty cluster", () => {
-    expect(isClusterStatic([], new Set())).toBe(false);
-  });
-
-  it("returns true when all of a cluster's members sit in a static cell", () => {
+describe("staticZone", () => {
+  it("is the static cells plus one ring, matching pipeline/events.py's STATIC_RING_K", () => {
+    expect(STATIC_RING_K).toBe(1);
     const cell = latLngToCell(CELL_LAT, CELL_LON, 8);
-    const rows = rowsOnDistinctDays(4);
-    expect(isClusterStatic(rows, new Set([cell]))).toBe(true);
+    expect(staticZone(new Set([cell]))).toEqual(new Set(gridDisk(cell, 1)));
+    expect(staticZone(new Set())).toEqual(new Set());
   });
 
-  it("returns false when fewer than STATIC_EVENT_FRAC (50%) of members sit in a static cell", () => {
-    const staticCell = latLngToCell(CELL_LAT, CELL_LON, 8);
-    const rows: HistoricalRow[] = [
-      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() }, // in the static cell
-      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() }, // not
-      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
+  it("dropStaticSources also removes rows on the ring-1 jitter cells, however few days they have", () => {
+    const core = latLngToCell(CELL_LAT, CELL_LON, 8);
+    const [jLat, jLon] = cellToLatLng(gridDisk(core, 1)[1]);
+    const jitter: HistoricalRow[] = [
+      { lat: jLat, lon: jLon, frp: 1, time: new Date(Date.UTC(2022, 6, 25, 8)) },
     ];
-    expect(isClusterStatic(rows, new Set([staticCell]))).toBe(false);
-  });
-
-  it("treats exactly STATIC_EVENT_FRAC (50%) as static — >=, not >", () => {
-    const staticCell = latLngToCell(CELL_LAT, CELL_LON, 8);
-    const rows: HistoricalRow[] = [
-      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() },
-      { lat: CELL_LAT, lon: CELL_LON, frp: 1, time: new Date() },
-      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
-      { lat: 48.0, lon: 2.0, frp: 1, time: new Date() },
+    const [fLat, fLon] = cellToLatLng(gridDisk(core, 2).filter((c) => !gridDisk(core, 1).includes(c))[0]);
+    const twoAway: HistoricalRow[] = [
+      { lat: fLat, lon: fLon, frp: 1, time: new Date(Date.UTC(2022, 6, 25, 8)) },
     ];
-    expect(isClusterStatic(rows, new Set([staticCell]))).toBe(true);
+    const survivors = dropStaticSources([...rowsOnDistinctDays(STATIC_CELL_DAYS), ...jitter, ...twoAway]);
+    expect(survivors).toEqual(twoAway);
   });
 });
 
 import { splitIntoClusters } from "../src/historical_reconstruct";
-import { latLngToCell, cellToLatLng, gridDisk } from "h3-js";
+import { latLngToCell, cellToLatLng, gridDisk, gridRing } from "h3-js";
 
 // Build a small chain of adjacent res-8 cells around a real anchor, and a
 // second chain far enough away to never be adjacent to the first — avoids
@@ -307,69 +297,53 @@ describe("reconstructHistoricalFire", () => {
     }
   });
 
-  it("keeps the WHOLE cluster when static-cell rows are a minority of its members — event-level, not row-level, filtering", () => {
-    const anchor = latLngToCell(44.84, -1.03, 8);
-    const neighbors = gridDisk(anchor, 1).filter((c) => c !== anchor);
-    const realCells = [anchor, ...neighbors.slice(0, 5)]; // 6 real, non-static cells
-    const cellC = neighbors[5]; // 7th cell, directly adjacent to anchor -- the fire spreads into it
-
-    const realRows: HistoricalRow[] = realCells.map((cell, i) => {
+  it("keeps only the fire's own rows when it spread past a static source — the plant's pings never enter the track", () => {
+    // Mirrors tests/test_events.py::test_fire_welded_to_a_static_source_keeps_only_its_own_detections
+    // (El Milia 2026-09): a plant lit daily, a fire on its ring-2 crown one
+    // day, welded to the plant by one ring-1 touch. Under the old event-level
+    // majority rule the fire (13 rows) outweighed the plant (20) and kept its
+    // pings: a track that started on Jul 1 and never went quiet.
+    const plant = latLngToCell(44.84, -1.03, 8);
+    const [pLat, pLon] = cellToLatLng(plant);
+    const plantRows: HistoricalRow[] = Array.from({ length: STATIC_CELL_DAYS }, (_, i) => ({
+      lat: pLat, lon: pLon, frp: 5, time: new Date(Date.UTC(2022, 6, 1 + i, 12)),
+    }));
+    const crown = gridRing(plant, 2); // 12 contiguous cells
+    const fireRows: HistoricalRow[] = crown.map((cell, i) => {
       const [lat, lon] = cellToLatLng(cell);
-      return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 6, 1, i)) };
+      return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 6, 10, i)) };
     });
-    const [cLat, cLon] = cellToLatLng(cellC);
-    // 3 detections in cellC during the fire's active window -- connects to realRows via
-    // the 48h adjacent-cell rule. The minority share of this cluster.
-    const inWindowRows: HistoricalRow[] = [0, 1, 2].map((d) => ({
-      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 6, 1 + d, 8)),
-    }));
-    // 17 much-older detections in the SAME cell, >48h from the fire and from each other's
-    // day-neighbours -- only here to push cellC's distinct-day count to >= STATIC_CELL_DAYS
-    // so it gets independently flagged static (reuses rowsOnDistinctDays' fixture idea).
-    const oldRows: HistoricalRow[] = Array.from({ length: 17 }, (_, i) => ({
-      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 0, 1 + i, 8)),
-    }));
+    const [tLat, tLon] = cellToLatLng(gridDisk(plant, 1)[1]);
+    const touch: HistoricalRow = { lat: tLat, lon: tLon, frp: 1, time: new Date(Date.UTC(2022, 6, 10, 0)) };
 
-    const csv = [HEADER, ...[...realRows, ...inWindowRows, ...oldRows].map(toCsvRow)].join("\n");
+    const csv = [HEADER, ...[...plantRows, ...fireRows, touch].map(toCsvRow)].join("\n");
     const result = reconstructHistoricalFire(csv, "lookup-1");
 
     expect(result.status).toBe("ok");
     if (result.status === "ok") {
-      // 6 real cells + cellC = 7 distinct cells in the surviving cluster.
-      expect(result.track.cells).toHaveLength(7);
-      expect(result.track.cells).toContain(cellC);
-      // All 9 rows of the surviving cluster are present, not just the 6 non-static ones.
+      expect(new Set(result.track.cells)).toEqual(new Set(crown));
+      // Only the fire's day is in the series — no Jul 1-9 or Jul 11-20 plant bins.
+      expect(result.track.series.every((b) => b.bin.startsWith("2022-07-10"))).toBe(true);
       const totalFrp = result.track.series.reduce((sum, b) => sum + b.frp_sum, 0);
-      expect(totalFrp).toBe(9);
+      expect(totalFrp).toBe(crown.length);
     }
   });
 
-  it("drops the WHOLE cluster when static-cell rows are the majority -- contributes to no_data as the only surviving-candidate cluster", () => {
-    const anchor2 = latLngToCell(50.0, 3.0, 8);
-    const neighbors2 = gridDisk(anchor2, 1).filter((c) => c !== anchor2);
-    const realCells2 = [anchor2, ...neighbors2.slice(0, 4)]; // 5 real cells
-    const cellC2 = neighbors2[4]; // adjacent to anchor2
-
-    const realRows: HistoricalRow[] = realCells2.map((cell, i) => {
-      const [lat, lon] = cellToLatLng(cell);
-      return { lat, lon, frp: 1, time: new Date(Date.UTC(2022, 7, 1, i)) };
-    });
-    const [cLat, cLon] = cellToLatLng(cellC2);
-    // 15 distinct-day detections in cellC2 during the fire's active window, chained to
-    // each other (24h apart) and to realRows via the 48h adjacent-cell rule -- the
-    // MAJORITY of this cluster.
-    const inWindowRows: HistoricalRow[] = Array.from({ length: 15 }, (_, d) => ({
-      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 7, 1 + d, 12)),
+  it("returns no_data when the only detections were a plant and its ring-1 jitter", () => {
+    const plant = latLngToCell(50.0, 3.0, 8);
+    const [pLat, pLon] = cellToLatLng(plant);
+    const plantRows: HistoricalRow[] = Array.from({ length: STATIC_CELL_DAYS }, (_, i) => ({
+      lat: pLat, lon: pLon, frp: 5, time: new Date(Date.UTC(2022, 7, 1 + i, 12)),
     }));
-    // 5 much-older, disconnected detections in the same cell, only to push cellC2's
-    // distinct-day count to exactly STATIC_CELL_DAYS (15 + 5 = 20).
-    const oldRows: HistoricalRow[] = Array.from({ length: 5 }, (_, i) => ({
-      lat: cLat, lon: cLon, frp: 1, time: new Date(Date.UTC(2022, 0, 1 + i, 12)),
+    // Three pings on a neighbour, days after the plant's last — never static
+    // on their own and not chained to the plant either: a one-cell "fire"
+    // beside a refinery, which is exactly what the ring is for.
+    const [jLat, jLon] = cellToLatLng(gridDisk(plant, 1)[1]);
+    const jitterRows: HistoricalRow[] = [24, 25, 26].map((d) => ({
+      lat: jLat, lon: jLon, frp: 1, time: new Date(Date.UTC(2022, 7, d, 12)),
     }));
 
-    const csv = [HEADER, ...[...realRows, ...inWindowRows, ...oldRows].map(toCsvRow)].join("\n");
-    const result = reconstructHistoricalFire(csv, "lookup-1");
-
-    expect(result).toEqual({ status: "no_data" });
+    const csv = [HEADER, ...[...plantRows, ...jitterRows].map(toCsvRow)].join("\n");
+    expect(reconstructHistoricalFire(csv, "lookup-1")).toEqual({ status: "no_data" });
   });
 });
