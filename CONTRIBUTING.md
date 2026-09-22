@@ -38,37 +38,19 @@ Open an issue with steps to reproduce and, if relevant, the generation manifest
 
 ## Maintainer notes
 
-`main` is **not branch-protected yet** — GitHub requires a public repository or a
-paid plan for that, and this repo is currently private on the free tier. The
-intended rules, once either is true:
+`main` is protected by a GitHub ruleset ("main protection", applied once the
+repo went public). It blocks force-pushes and deletion of
+`main`, allows squash or rebase merges only, and requires the three CI jobs
+(`pipeline (pytest)`, `web (tsc + vitest + build)`, `web (browser smoke)`) to
+pass. Deliberately no required review count, so a solo maintainer isn't
+blocked. Inspect or edit it with:
 
 ```bash
-gh api -X POST repos/robinef/firemapper/rulesets --input - <<'JSON'
-{
-  "name": "main protection",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": false,
-        "required_status_checks": [
-          { "context": "pipeline (pytest)" },
-          { "context": "web (tsc + vitest + build)" },
-          { "context": "web (browser smoke)" }
-        ]
-      }
-    }
-  ]
-}
-JSON
+gh api repos/robinef/firemapper/rulesets            # list; edit via PUT on the id
 ```
 
-That blocks force-pushes and deletion of `main` and requires all three CI jobs to pass.
-Deliberately no required review count, so a solo maintainer isn't blocked.
+When a CI job is renamed in `ci.yml`, update the ruleset's required contexts
+in the same PR or `main` becomes unmergeable.
 
 ## Code of Conduct
 
