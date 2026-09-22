@@ -32,6 +32,11 @@ written; the season export reconciles new index entries on its own.
 
     uv run python -m scripts.backfill_season [--modis] [--preview-season]
     uv run python -m scripts.backfill_season --publish
+    uv run python -m scripts.backfill_season --rollback <build dir | ids.json> [--dry-run]
+
+--rollback removes a published backfill from the CURRENT bucket state (see
+rollback()); restoring the pre-backfill index backup would drop ids live
+refreshes added since and leave the fires in the season and scale files.
 """
 from __future__ import annotations
 
@@ -57,10 +62,15 @@ from pipeline.config import (
     ARCHIVE_TRACKS_INDEX,
     EUROPE_BBOX,
     MAX_FIRE_DAYS,
+    SCALE_BLOB_STATE_KEY,
     SCAR_WINDOW_DAYS,
+    SEASON_STATE_KEY,
     load_settings,
+    scale_blob_fires_key,
+    scale_blob_key,
     season_cells_key,
     season_key,
+    season_sizes_key,
 )
 from pipeline.events import CLOSE_AFTER_H, cluster
 from pipeline.fetch_firms import _fault, parse_firms_csv, scrub
@@ -230,7 +240,12 @@ def backfill_tracks(
         before = index
         index = archive_past_tracks(out_dir, events, now, before)
         changed = [eid for eid, d in index.items() if before.get(eid) != d]
-        for eid in changed:
+        # Every archived id this step still sees, not only those rewritten: a
+        # fire archived at an earlier step that has since rekindled (bridged,
+        # same id) and is still burning is NOT rewritten — archive_past_tracks
+        # skips an active fire — yet the guard must judge it by its latest
+        # detection, or it would publish a fire the live archive owns.
+        for eid in (e for e in index if e in events):
             ms = events[eid]
             meta[eid] = {
                 "first": min(m["acq_time"] for m in ms),
@@ -304,6 +319,8 @@ def _summary_md(s: dict) -> str:
         + ", ".join(f"{k}={len(v)}" for k, v in s["skipped"].items()),
         f"- first detection: {s['earliest_first']} .. {s['latest_first']}",
         f"- static cells excluded (union over steps): {s['static_cells']}",
+        (f"- overlap check: ran against {s['live_cells_fires']} live fires"
+         if s.get("overlap_checked") else "- overlap check: **DID NOT RUN** (not publishable)"),
         "",
         "| month | " + " | ".join(f["rows"]) + " | tracks |",
         "|---|" + "---|" * len(f["rows"]) + "---|",
@@ -332,7 +349,11 @@ def build(
     modis: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     preview: bool = False,
+    overlap_checked: bool = False,
 ) -> dict:
+    """`overlap_checked`: whether `live_cells` really is the live season
+    cells file (read from R2), not a stand-in for one that could not be read.
+    Recorded in the summary; --publish refuses a build without it."""
     if settings.firms_map_key is None:
         raise SystemExit("FIRMS_MAP_KEY missing")
     if (out_dir / "archive").exists():
@@ -374,6 +395,7 @@ def build(
         "static_cells": len(static),
         "live_index_ids": len(live_index),
         "live_cells_fires": len(live_cells),
+        "overlap_checked": overlap_checked,
     }
     if preview:
         summary["preview"] = preview_season(settings, out_dir)
@@ -415,9 +437,13 @@ def _read_live_index(client, bucket: str) -> dict[str, str] | None:
 
 def publish(client, bucket: str, out_dir: Path, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    kept: dict[str, str] = json.loads((out_dir / ARCHIVE_TRACKS_INDEX).read_text())
-    if _read_live_index(client, bucket) is None:
+    built: dict[str, str] = json.loads((out_dir / ARCHIVE_TRACKS_INDEX).read_text())
+    live_before = _read_live_index(client, bucket)
+    if live_before is None:
         raise SystemExit(f"no live {REMOTE_INDEX_KEY} — refusing to publish an index of backfill ids only")
+    # Live wins for the body too, not only the index entry: an id the live
+    # archive already holds is never uploaded.
+    kept = {eid: d for eid, d in built.items() if eid not in live_before}
 
     backup = f"{REMOTE_INDEX_KEY}.pre-backfill-{now.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}"
     client.copy_object(Bucket=bucket, Key=backup, CopySource={"Bucket": bucket, "Key": REMOTE_INDEX_KEY})
@@ -451,10 +477,121 @@ def publish(client, bucket: str, out_dir: Path, now: datetime | None = None) -> 
     )
     print(f"[info] uploaded {uploaded} track bodies; index {len(live)} -> {len(merged)} (+{added})")
     print(
-        f"[info] rollback: copy {backup} over {REMOTE_INDEX_KEY} "
-        "(the new bodies are inert without index entries)"
+        "[info] rollback: `--rollback <this build dir>` (backfill-season.yml with "
+        "rollback=true) — removes exactly these ids from the index, the season and "
+        "the scale files; do NOT restore the backup over a live index that has moved on"
     )
     return {"backup_key": backup, "uploaded": uploaded, "added": added}
+
+
+# --- rollback ---------------------------------------------------------------
+
+def load_rollback_ids(path: Path) -> set[str]:
+    """The ids a build published: a build dir (its archive/tracks_index.json)
+    or a JSON file holding a list of ids or an {id: digest} index."""
+    if path.is_dir():
+        path = path / ARCHIVE_TRACKS_INDEX
+    raw = json.loads(path.read_text())
+    return set(raw)
+
+
+def _get_strict(client, bucket: str, key: str) -> bytes | None:
+    """None only when the object does not exist; any other failure raises.
+    remote._get swallows everything, and a rollback that took a transient
+    error for "no such file" would silently leave the fires published."""
+    try:
+        return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - only a 404 means "absent"
+        code = str(((getattr(exc, "response", None) or {}).get("Error") or {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+
+
+def _drop(obj, ids: set[str]):
+    return {k: v for k, v in obj.items() if k not in ids}
+
+
+def rollback(
+    client, bucket: str, ids: set[str], now: datetime | None = None, dry_run: bool = False,
+) -> dict:
+    """Take a published backfill back out of the CURRENT bucket state.
+
+    Not "restore the pre-backfill index": by now live refreshes have added
+    ids of their own, and the season/scale exports have taken the backfill
+    fires into files the index no longer drives (their reconciles walk their
+    own state, not the index). So:
+
+    - the live index, season_state, season cells and season sizes lose
+      exactly `ids` (the next season export recomputes the summary from the
+      cells file);
+    - the scale blob packs every fire into one gap-free spiral, and cutting
+      fires out would leave holes in it, so if its state took any of `ids`
+      its three files are deleted and the next refresh rebuilds it cold from
+      the (cleaned) index over a few runs' budgets.
+
+    Ids in the EARLIEST pre-backfill index backup were live before any
+    backfill publish and are never removed. Every object written or deleted
+    is first copied to `<key>.pre-rollback-<stamp>`; the index is written
+    first, so a failure part-way leaves state an idempotent re-run finishes.
+    The track bodies stay (inert without index entries)."""
+    from pipeline.remote import _keys
+
+    now = now or datetime.now(timezone.utc)
+    stamp = f"{now.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}"
+    backups = sorted(_keys(client, bucket, f"{REMOTE_INDEX_KEY}.pre-backfill-"))
+    if not backups:
+        raise SystemExit("no pre-backfill index backup in the bucket — nothing was published to roll back")
+    first_backup = _get_strict(client, bucket, backups[0])
+    if first_backup is None:
+        raise SystemExit(f"cannot read {backups[0]}")
+    target = set(ids) - set(json.loads(first_backup))
+
+    def key(k: str) -> str:
+        return f"data/{k}"
+
+    season_cells, season_sizes = key(season_cells_key(YEAR)), key(season_sizes_key(YEAR))
+    edits: dict[str, Callable] = {
+        REMOTE_INDEX_KEY: lambda o: _drop(o, target),
+        key(SEASON_STATE_KEY): lambda o: _drop(o, target),
+        season_cells: lambda o: _drop(o, target),
+        season_sizes: lambda o: {**o, "fires": _drop(o.get("fires") or {}, target)},
+    }
+    current: dict[str, dict] = {}
+    for k in edits:
+        raw = _get_strict(client, bucket, k)
+        if raw is not None:
+            current[k] = json.loads(raw)
+    if REMOTE_INDEX_KEY not in current:
+        raise SystemExit(f"no live {REMOTE_INDEX_KEY}")
+    new = {k: edits[k](o) for k, o in current.items()}
+
+    def size(k: str, o: dict) -> int:
+        return len(o.get("fires") or {}) if k == season_sizes else len(o)
+
+    removed = {k: size(k, current[k]) - size(k, new[k]) for k in current}
+    scale_keys = [key(SCALE_BLOB_STATE_KEY), key(scale_blob_key(YEAR)), key(scale_blob_fires_key(YEAR))]
+    scale_state = _get_strict(client, bucket, scale_keys[0])
+    delete = (
+        [k for k in scale_keys if _get_strict(client, bucket, k) is not None]
+        if scale_state is not None and target & set(json.loads(scale_state)) else []
+    )
+    writes = [k for k in current if removed[k]]
+    plan = {"ids": sorted(target), "removed": removed, "delete": delete, "stamp": stamp}
+    print(f"[info] rollback plan: {json.dumps({**plan, 'ids': len(target)})}")
+    if dry_run:
+        return plan
+
+    for k in writes + delete:
+        client.copy_object(Bucket=bucket, Key=f"{k}.pre-rollback-{stamp}", CopySource={"Bucket": bucket, "Key": k})
+    for k in writes:  # REMOTE_INDEX_KEY is first in `edits`, so first here
+        client.put_object(Bucket=bucket, Key=k, Body=json.dumps(new[k]).encode(), ContentType="application/json")
+    for k in delete:
+        client.delete_object(Bucket=bucket, Key=k)
+    print(f"[info] rolled back {len(target)} ids; backups at <key>.pre-rollback-{stamp}")
+    return plan
 
 
 # --- CLI --------------------------------------------------------------------
@@ -465,7 +602,12 @@ def main(argv: list[str], client=None, http_get=None) -> int:
     p.add_argument("--modis", action="store_true", help="also fetch MODIS_SP")
     p.add_argument("--preview-season", action="store_true")
     p.add_argument("--out", type=Path, default=None)
+    p.add_argument("--rollback", type=Path, default=None, metavar="BUILD_DIR_OR_IDS_JSON",
+                   help="take a published backfill back out of R2")
+    p.add_argument("--dry-run", action="store_true", help="with --rollback: print the plan only")
     args = p.parse_args(argv)
+    if args.publish and args.rollback:
+        raise SystemExit("--publish and --rollback are mutually exclusive")
 
     settings = load_settings()
     out_dir = args.out or settings.data_dir / "backfill" / "out"
@@ -482,25 +624,42 @@ def main(argv: list[str], client=None, http_get=None) -> int:
         summary_path = out_dir / "summary.json"
         if not summary_path.exists():
             raise SystemExit(f"no build at {out_dir} — run without --publish first")
-        failed = json.loads(summary_path.read_text()).get("fetch", {}).get("failed")
+        built = json.loads(summary_path.read_text())
+        failed = built.get("fetch", {}).get("failed")
         if failed is None or failed:
             raise SystemExit(f"the build has {len(failed or [])} failed fetch windows — refusing")
+        # The overlap guard is what keeps SP/NRT duplicates out; a build that
+        # never saw the live cells file checked nothing.
+        if built.get("overlap_checked") is not True or not built.get("live_cells_fires"):
+            raise SystemExit("the build's overlap check did not run against live fires — refusing")
         publish(client, settings.r2_bucket, out_dir)
+        return 0
+
+    if args.rollback:
+        if not settings.r2_configured:
+            raise SystemExit("R2_* env vars missing — nothing to roll back")
+        rollback(client, settings.r2_bucket, load_rollback_ids(args.rollback), dry_run=args.dry_run)
         return 0
 
     live_index: dict[str, str] = {}
     live_cells: dict[str, dict] = {}
+    overlap_checked = False
     if client is not None:
-        from pipeline.remote import _get
-
         live = _read_live_index(client, settings.r2_bucket)
         if live is None:
             raise SystemExit(f"R2 is configured but has no {REMOTE_INDEX_KEY}")
         live_index = live
-        raw = _get(client, settings.r2_bucket, f"data/{season_cells_key(YEAR)}")
-        live_cells = json.loads(raw) if raw is not None else {}
+        cells_key = f"data/{season_cells_key(YEAR)}"
+        try:
+            raw = _get_strict(client, settings.r2_bucket, cells_key)
+        except Exception as exc:  # noqa: BLE001 - reported; the build then fails
+            print(f"[error] reading {cells_key}: {exc}", file=sys.stderr)
+            raw = None
         if raw is None:
-            print("[warn] no live season cells file — overlap check skipped", file=sys.stderr)
+            print(f"[error] no live {cells_key} — overlap check did not run", file=sys.stderr)
+        else:
+            live_cells = json.loads(raw)
+            overlap_checked = True
     else:
         print("[warn] no R2 credentials — live-id and overlap guards run against nothing", file=sys.stderr)
 
@@ -508,9 +667,14 @@ def main(argv: list[str], client=None, http_get=None) -> int:
     summary = build(
         settings, out_dir, store, live_index, live_cells,
         http_get=http_get, modis=args.modis, preview=args.preview_season,
+        overlap_checked=overlap_checked,
     )
     print((out_dir / "summary.md").read_text())
-    return 1 if summary["fetch"]["failed"] else 0
+    if summary["fetch"]["failed"]:
+        return 1
+    if client is not None and not overlap_checked:
+        return 2  # R2 configured, cells file unreadable: not a publishable build
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI

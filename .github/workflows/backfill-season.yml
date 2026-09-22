@@ -10,6 +10,12 @@ name: backfill-season
 # artifact and joins the `refresh` concurrency group: a refresh re-uploads the
 # whole index it hydrated, so one running beside the merge would overwrite the
 # merged index and orphan every backfilled track.
+#
+# `rollback=true` runs ONLY the `rollback` job (build and publish are skipped):
+# it downloads the `backfill-season` artifact of the publish run named by
+# `rollback_run_id` and removes exactly those ids from the live index and the
+# season/scale files, inside the same `refresh` group. With dry_run=true (the
+# default) it prints the plan and writes nothing.
 on:
  workflow_dispatch:
   inputs:
@@ -21,8 +27,17 @@ on:
     description: "Also fetch MODIS_SP"
     type: boolean
     default: false
+   rollback:
+    description: "Roll back a published backfill instead of building (see rollback_run_id)"
+    type: boolean
+    default: false
+   rollback_run_id:
+    description: "Run id of the publish run whose artifact lists the ids to roll back"
+    type: string
+    default: ""
 jobs:
  build:
+  if: ${{ !inputs.rollback }}
   runs-on: ubuntu-latest
   timeout-minutes: 60
   steps:
@@ -52,7 +67,7 @@ jobs:
       if-no-files-found: ignore
  publish:
   needs: build
-  if: ${{ !inputs.dry_run }}
+  if: ${{ !inputs.dry_run && !inputs.rollback }}
   runs-on: ubuntu-latest
   timeout-minutes: 30
   concurrency:
@@ -72,6 +87,44 @@ jobs:
    - name: Publish the build to R2
      timeout-minutes: 25
      run: uv run python -m scripts.backfill_season --publish
+     env:
+      PYTHONUNBUFFERED: "1"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+ rollback:
+  if: ${{ inputs.rollback }}
+  runs-on: ubuntu-latest
+  timeout-minutes: 20
+  permissions:
+   contents: read
+   actions: read  # download another run's artifact
+  concurrency:
+   group: refresh
+   cancel-in-progress: false
+   queue: max
+  steps:
+   - name: Require the publish run id
+     # via env, not ${{ }} in the script: an input is never shell-interpolated
+     run: test -n "$RUN_ID" || { echo "rollback_run_id is required"; exit 1; }
+     env:
+      RUN_ID: ${{ inputs.rollback_run_id }}
+   - uses: actions/checkout@v7
+   - uses: astral-sh/setup-uv@v10.1.0
+     with:
+      enable-cache: true
+   - run: uv sync
+   - uses: actions/download-artifact@v8
+     with:
+      name: backfill-season
+      path: data/backfill/published/
+      run-id: ${{ inputs.rollback_run_id }}
+      github-token: ${{ github.token }}
+   - name: Roll the backfill back out of R2
+     timeout-minutes: 15
+     run: uv run python -m scripts.backfill_season --rollback data/backfill/published ${{ inputs.dry_run && '--dry-run' || '' }}
      env:
       PYTHONUNBUFFERED: "1"
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

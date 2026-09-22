@@ -191,6 +191,25 @@ def test_a_rekindled_fire_keeps_one_id_and_the_later_body(tmp_path):
     assert meta[eid]["last"] == t0 + timedelta(days=4, hours=36)
 
 
+def test_an_archived_fire_that_rekindles_and_is_still_burning_at_the_last_step_is_too_recent(tmp_path):
+    """Review repro: a 37-cell fire quiet from Jul 4 is archived at the Jul 8
+    step, then rekindles two rings off its edge Jul 10-15 (bridged: same id).
+    Still burning at the last step, its body is never rewritten — but the
+    guard must see the Jul 15 detection, not the stale Jul 4 one."""
+    center = h3.latlng_to_cell(*MADRID, H3_RES)
+    t0 = U(2026, 7, 4, 12)
+    dets = [(*h3.cell_to_latlng(c), t0, 20.0) for c in sorted(h3.grid_disk(center, 3))]
+    lat, lon = h3.cell_to_latlng(sorted(h3.grid_ring(center, 5))[0])
+    dets += _fire(lat, lon, U(2026, 7, 10, 0), n=11)  # every 12 h, Jul 10 .. Jul 15 00:00
+    index, meta, _ = bf.backfill_tracks(_rows(dets), [U(2026, 7, 8), U(2026, 7, 16)], tmp_path)
+
+    assert len(index) == 1
+    (eid,) = index
+    assert meta[eid]["last"] == U(2026, 7, 15)
+    kept, skipped = bf.guard(index, meta, {}, {}, cutoff=U(2026, 7, 13))
+    assert kept == {} and skipped["too_recent"] == [eid]
+
+
 def test_default_steps_are_weekly_and_end_at_the_data_horizon():
     steps = bf.clustering_steps()
     assert steps[0] == U(2026, 1, 7)
@@ -335,8 +354,62 @@ def test_main_build_reads_the_live_index_and_cells_from_r2_read_only(tmp_path, m
     assert rc == 0 and s3.ops == []  # nothing written to R2 in a build
     summary = json.loads((tmp_path / "d" / "backfill" / "out" / "summary.json").read_text())
     assert summary["live_index_ids"] == 1
+    assert summary["overlap_checked"] is True and summary["live_cells_fires"] == 1
     assert summary["kept"] == 0 and len(summary["skipped"]["overlap"]) == 1
     assert summary["preview"]["fires"] == 0
+
+
+@pytest.mark.parametrize("flaky", [False, True], ids=["missing", "read-error"])
+def test_main_build_fails_when_the_live_cells_file_cannot_be_read(tmp_path, monkeypatch, flaky):
+    """Without the cells file the overlap guard checks nothing, and every
+    SP/NRT duplicate would be published: a build that could not read it must
+    not look like a good one."""
+    _r2_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FIRMS_MAP_KEY", KEY)
+    fake = FakeFirms({"VIIRS_SNPP_SP": _fire(*MADRID, U(2026, 2, 10, 1)) + _fire(*ZARAGOZA, U(2026, 7, 14, 1))})
+    s3 = (_FlakyCells if flaky else PublishS3)({INDEX_KEY: json.dumps({"live1": "a"}).encode()})
+    if flaky:
+        s3.objects["data/archive/season_2026_cells.json"] = b"{}"
+
+    rc = bf.main([], client=s3, http_get=fake)
+
+    assert rc != 0
+    summary = json.loads((tmp_path / "d" / "backfill" / "out" / "summary.json").read_text())
+    assert summary["overlap_checked"] is False and summary["live_cells_fires"] == 0
+
+
+def _publishable_build(out, **summary):
+    _built(out, {"bf1": "{}"})
+    base = {"fetch": {"failed": []}, "overlap_checked": True, "live_cells_fires": 5}
+    (out / "summary.json").write_text(json.dumps({**base, **summary}))
+
+
+@pytest.mark.parametrize("summary", [
+    {"overlap_checked": False},
+    {"live_cells_fires": 0},
+    {"overlap_checked": None},
+], ids=["unchecked", "no-live-fires", "missing"])
+def test_main_publish_refuses_a_build_whose_overlap_check_did_not_run(tmp_path, monkeypatch, summary):
+    out = tmp_path / "bf"
+    _publishable_build(out, **summary)
+    if summary.get("overlap_checked", True) is None:
+        s = json.loads((out / "summary.json").read_text())
+        del s["overlap_checked"]
+        (out / "summary.json").write_text(json.dumps(s))
+    s3 = PublishS3({INDEX_KEY: b"{}"})
+    _r2_env(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit):
+        bf.main(["--publish", "--out", str(out)], client=s3)
+    assert s3.ops == []
+
+
+def test_main_publishes_a_complete_build(tmp_path, monkeypatch):
+    out = tmp_path / "bf"
+    _publishable_build(out)
+    s3 = PublishS3({INDEX_KEY: b"{}"})
+    _r2_env(monkeypatch, tmp_path)
+    assert bf.main(["--publish", "--out", str(out)], client=s3) == 0
+    assert json.loads(s3.objects[INDEX_KEY]) == {"bf1": "sha-bf1"}
 
 
 def test_preview_season_counts_the_kept_tracks(tmp_path):
@@ -378,6 +451,10 @@ class PublishS3(FakeS3):
         self.ops.append(("put", Key))
         super().put_object(Bucket, Key, Body, **kw)
 
+    def delete_object(self, Bucket, Key):
+        self.ops.append(("delete", Key))
+        super().delete_object(Bucket, Key)
+
 
 INDEX_KEY = "data/archive/tracks_index.json"
 
@@ -408,7 +485,9 @@ def test_publish_backs_up_first_uploads_bodies_then_the_merged_index_last(tmp_pa
     assert result["backup_key"] == backup
     assert s3.ops[0] == ("copy", backup)
     assert s3.ops[-1] == ("put", INDEX_KEY)
-    assert set(s3.ops[1:-1]) == {("put", "data/archive/tracks/bf1.json"), ("put", "data/archive/tracks/shared.json")}
+    # `shared` is live's already: live wins for its body too, not only its entry
+    assert set(s3.ops[1:-1]) == {("put", "data/archive/tracks/bf1.json")}
+    assert "data/archive/tracks/shared.json" not in s3.objects
     assert json.loads(s3.objects[backup]) == live
     assert s3.objects["data/archive/tracks/bf2.json"] == b"old"  # existing body not overwritten
     merged = json.loads(s3.objects[INDEX_KEY])
@@ -434,4 +513,133 @@ def test_main_publish_refuses_a_build_with_failed_windows(tmp_path, monkeypatch)
     _r2_env(monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
         bf.main(["--publish", "--out", str(out)], client=s3)
+    assert s3.ops == []
+
+
+class _FlakyCells(PublishS3):
+    def get_object(self, Bucket, Key):
+        if Key == "data/archive/season_2026_cells.json":
+            raise RuntimeError("R2 503")
+        return super().get_object(Bucket, Key)
+
+
+# --- rollback ---------------------------------------------------------------
+
+STAMP = "20261001T080000Z"
+SEASON_STATE = "data/archive/season_state.json"
+SEASON_CELLS = "data/archive/season_2026_cells.json"
+SEASON_SIZES = "data/archive/season_2026_sizes.json"
+SCALE_STATE = "data/archive/scale_blob_state.json"
+SCALE_BLOB = "data/archive/blob_2026.json"
+SCALE_FIRES = "data/archive/blob_2026_fires.json"
+
+
+def _j(obj) -> bytes:
+    return json.dumps(obj).encode()
+
+
+def _ingested_bucket(scale_has_backfill=True):
+    """The bucket after publish + a few refreshes: the backfill ids bfA, bfB
+    are in the index and have been taken into the season and scale files; a
+    live refresh added liveNew after the publish."""
+    scale_ids = ["live1", "bfA"] if scale_has_backfill else ["live1"]
+    return {
+        INDEX_KEY: _j({"live1": "a", "bfA": "x", "bfB": "y", "liveNew": "n"}),
+        f"{INDEX_KEY}.pre-backfill-20260923T100000Z": _j({"live1": "a"}),
+        f"{INDEX_KEY}.pre-backfill-20260924T100000Z": _j({"live1": "a", "bfA": "x"}),
+        SEASON_STATE: _j({"live1": {"digest": "a", "year": 2026}, "bfA": {"digest": "x", "year": 2026},
+                          "__zone__": {"cells": [], "computed_at": "t"}}),
+        SEASON_CELLS: _j({"live1": {"digest": "a", "first": "2026-07-20", "cells": []},
+                          "bfA": {"digest": "x", "first": "2026-02-10", "cells": []}}),
+        SEASON_SIZES: _j({"year": 2026, "fires": {"live1": [1.0, "ES", "2026-07-20"], "bfA": [2.0, "ES", "2026-02-10"]}}),
+        SCALE_STATE: _j({i: {"digest": "d", "year": 2026} for i in scale_ids}),
+        SCALE_BLOB: _j([{"fire_id": i, "index": n} for n, i in enumerate(scale_ids)]),
+        SCALE_FIRES: _j({i: {"country": "ES", "area_km2": 1.0} for i in scale_ids}),
+    }
+
+
+def test_rollback_removes_exactly_the_backfill_ids_from_every_file_after_backing_each_up(tmp_path):
+    objects = _ingested_bucket()
+    before = dict(objects)
+    s3 = PublishS3(objects)
+    # live1 is listed too: it predates the publish (earliest backup), so it stays
+    plan = bf.rollback(s3, "bucket", {"bfA", "bfB", "live1"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
+
+    assert json.loads(s3.objects[INDEX_KEY]) == {"live1": "a", "liveNew": "n"}
+    assert set(json.loads(s3.objects[SEASON_STATE])) == {"live1", "__zone__"}
+    assert set(json.loads(s3.objects[SEASON_CELLS])) == {"live1"}
+    assert json.loads(s3.objects[SEASON_SIZES]) == {"year": 2026, "fires": {"live1": [1.0, "ES", "2026-07-20"]}}
+    for key in (SCALE_STATE, SCALE_BLOB, SCALE_FIRES):  # cold rebuild: packed spiral can't lose a fire
+        assert key not in s3.objects
+    written = [INDEX_KEY, SEASON_STATE, SEASON_CELLS, SEASON_SIZES, SCALE_STATE, SCALE_BLOB, SCALE_FIRES]
+    for key in written:
+        assert s3.objects[f"{key}.pre-rollback-{STAMP}"] == before[key]
+    kinds = [k for k, _ in s3.ops]
+    assert kinds[:len(written)] == ["copy"] * len(written)  # every backup before any change
+    assert s3.ops[len(written)] == ("put", INDEX_KEY)       # the index goes first
+    assert plan["ids"] == ["bfA", "bfB"]
+
+
+def test_rollback_dry_run_writes_nothing(tmp_path):
+    s3 = PublishS3(_ingested_bucket())
+    plan = bf.rollback(s3, "bucket", {"bfA", "bfB"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc), dry_run=True)
+    assert s3.ops == []
+    assert plan["removed"][INDEX_KEY] == 2 and plan["delete"] == [SCALE_STATE, SCALE_BLOB, SCALE_FIRES]
+
+
+def test_rollback_leaves_the_scale_blob_alone_when_it_never_took_a_backfill_fire(tmp_path):
+    s3 = PublishS3(_ingested_bucket(scale_has_backfill=False))
+    bf.rollback(s3, "bucket", {"bfA", "bfB"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
+    assert all(key in s3.objects for key in (SCALE_STATE, SCALE_BLOB, SCALE_FIRES))
+    assert not any(k == "delete" for k, _ in s3.ops)
+
+
+def test_rollback_refuses_without_a_pre_backfill_backup(tmp_path):
+    objects = {k: v for k, v in _ingested_bucket().items() if ".pre-backfill-" not in k}
+    s3 = PublishS3(objects)
+    with pytest.raises(SystemExit):
+        bf.rollback(s3, "bucket", {"bfA"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
+    assert s3.ops == []
+
+
+def test_rollback_ids_come_from_an_artifact_dir_or_an_ids_file(tmp_path):
+    out = tmp_path / "bf"
+    _built(out, {"bfA": "{}", "bfB": "{}"})
+    assert bf.load_rollback_ids(out) == {"bfA", "bfB"}
+    ids_file = tmp_path / "ids.json"
+    ids_file.write_text(json.dumps(["bfA"]))
+    assert bf.load_rollback_ids(ids_file) == {"bfA"}
+
+
+def test_main_rollback_and_publish_are_mutually_exclusive(tmp_path, monkeypatch):
+    out = tmp_path / "bf"
+    _publishable_build(out)
+    s3 = PublishS3(_ingested_bucket())
+    _r2_env(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit):
+        bf.main(["--publish", "--rollback", str(out), "--out", str(out)], client=s3)
+    assert s3.ops == []
+
+
+def test_main_rollback_dry_run(tmp_path, monkeypatch):
+    out = tmp_path / "bf"
+    _built(out, {"bfA": "{}", "bfB": "{}"})
+    s3 = PublishS3(_ingested_bucket())
+    _r2_env(monkeypatch, tmp_path)
+    assert bf.main(["--rollback", str(out), "--dry-run"], client=s3) == 0
+    assert s3.ops == []
+
+
+def test_rollback_aborts_on_a_read_error_rather_than_skipping_the_file(tmp_path):
+    """A transient R2 error on the season state must not read as "no such
+    file" — that would leave the backfill in the season layer for good."""
+    class Flaky(PublishS3):
+        def get_object(self, Bucket, Key):
+            if Key == SEASON_STATE:
+                raise RuntimeError("R2 503")
+            return super().get_object(Bucket, Key)
+
+    s3 = Flaky(_ingested_bucket())
+    with pytest.raises(RuntimeError):
+        bf.rollback(s3, "bucket", {"bfA"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
     assert s3.ops == []

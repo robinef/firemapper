@@ -34,8 +34,25 @@ runs `scripts/backfill_season.py`, rebuilding January–June 2026 fires from the
 FIRMS Standard Processing archive into `data/archive/tracks/`. `dry_run` (the
 default) only builds and reports; `dry_run=false` then publishes that build in
 the `refresh` concurrency group, backing the live track index up to
-`data/archive/tracks_index.json.pre-backfill-<UTC stamp>` first. Rollback is
-copying that key back over the index.
+`data/archive/tracks_index.json.pre-backfill-<UTC stamp>` first. A build whose
+fetch had failed windows, or that could not read the live season cells file
+(the SP/NRT duplicate check), is refused.
+
+**Rollback** is *not* copying that backup over the index: by then live
+refreshes have added ids of their own, and the season and scale exports have
+taken the backfilled fires into files the index no longer drives. Run the
+workflow with `rollback=true` and `rollback_run_id=<the publish run's id>`
+(`dry_run=true` first prints the plan). Inside the `refresh` group it removes
+exactly the published ids from the live track index, `archive/season_state.json`,
+`archive/season_2026_cells.json` and `archive/season_2026_sizes.json` (the next
+export recomputes `season_2026.json`), and — if the scale blob took any of
+them — deletes `archive/scale_blob_state.json`, `archive/blob_2026.json` and
+`archive/blob_2026_fires.json`, which the next refreshes rebuild cold: the
+blob packs fires into one gap-free spiral that cannot lose a fire in place.
+Every object it changes or deletes is first copied to
+`<key>.pre-rollback-<UTC stamp>`. Ids already in the earliest pre-backfill
+index backup are never removed. Locally:
+`uv run python -m scripts.backfill_season --rollback <build dir | ids.json> [--dry-run]`.
 
 Deploys are **not** a workflow. Cloudflare's git integration (Workers Builds)
 watches `main` and builds the app shell itself:
