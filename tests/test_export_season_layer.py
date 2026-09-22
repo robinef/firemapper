@@ -363,3 +363,22 @@ def test_bodies_are_fetched_from_r2_when_not_local(tmp_path):
     run_export_season(settings, target_year=2026, client=FakeS3(), r2_bucket="b", now=NOW)
 
     assert "fire-r2" in _read(settings, season_cells_key(2026))
+
+
+def test_a_track_whose_series_bin_is_unparsable_is_skipped_without_aborting_the_run(tmp_path):
+    # year_of_track and first_bin_date only slice the bin string; _span_days
+    # parses it. A bin that slices fine but does not parse must be counted
+    # malformed like any other bad body, not raise out of the whole run.
+    settings = _settings(tmp_path)
+    good = _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    bad = {
+        "id": "bad-bin",
+        "series": [{"bin": "not-a-date"}, {"bin": "2026-07-03T00:00:00+00:00"}],
+        "cells": _two_cells(), "cell_bins": [], "frp_live": [],
+    }
+    index = _make_local_archive(settings.out_dir, {"good": good, "bad-bin": bad})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert _read(settings, SEASON_STATE_KEY)["bad-bin"] == {"digest": index["bad-bin"], "year": None}

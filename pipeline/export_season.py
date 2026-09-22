@@ -171,6 +171,7 @@ def run_export_season(
                     year = year_of_track(body)
                     first = first_bin_date(body)
                     cells = body["cells"]
+                    span = _span_days(body)
                 except (ValueError, KeyError, TypeError):
                     # A body with no series or no cells can never contribute;
                     # record its digest so it is not re-fetched every run
@@ -189,7 +190,7 @@ def run_export_season(
                 if year != target_year:
                     continue
                 cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
-                if _span_days(body) > LONG_SPAN_DAYS:
+                if span > LONG_SPAN_DAYS:
                     long_span += 1
                     if len(body["cells"]) <= 10:
                         long_span_small += 1
