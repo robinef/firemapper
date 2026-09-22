@@ -204,6 +204,28 @@ describe("legend + status", () => {
     expect(legend.note).toContain("Zoom in for the real burned ground.");
   });
 
+  // The January-June backfill (scripts/backfill_season.py) moves the floor to
+  // the first days of the year; from then on there are no earlier fires to
+  // apologise for. SP detections start Jan 1 and a fire's `first` is its first
+  // 6 h bin, so the floor lands on or just after Jan 1, never exactly on it.
+  it("drops 'not yet archived' once the floor reaches the first two weeks of January", () => {
+    for (const floor of ["2026-01-01", "2026-01-03", "2026-01-14"]) {
+      const legend = seasonLegend(floor, 2026);
+      expect(legend.note).not.toContain("not yet archived");
+      expect(legend.note).toContain(`since ${formatFloor(floor)} 2026`);
+    }
+  });
+
+  it("keeps 'not yet archived' for a floor after mid-January or a missing one", () => {
+    expect(seasonLegend("2026-01-15", 2026).note).toContain("not yet archived");
+    expect(seasonLegend("2026-06-30", 2026).note).toContain("not yet archived");
+    expect(seasonLegend(null, 2026).note).toContain("not yet archived");
+  });
+
+  it("a floor in the previous year also reaches the start of the season", () => {
+    expect(seasonLegend("2025-12-30", 2026).note).not.toContain("not yet archived");
+  });
+
   it("the title names the season's year, not the floor's — a floor can sit in the year before", () => {
     const legend = seasonLegend("2025-12-30", 2026);
     expect(legend.title).toBe("Burned this year · 2026");

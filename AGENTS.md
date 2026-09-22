@@ -51,7 +51,8 @@ Python style is `ruff`, line length 100 (`pyproject.toml`); not enforced in CI.
   `wrangler_routes.test.ts`.
 - `scripts/` — `make_sample` (demo data), `refresh_remote` (what the CI refresh
   workflows actually run: hydrate from R2, refresh, publish), `watchdog`
-  (hourly liveness check), `replay_static_sources`, `purge_offshore_hotspots`.
+  (hourly liveness check), `replay_static_sources`, `purge_offshore_hotspots`,
+  `backfill_season` (one-off Jan–Jun 2026 track backfill from FIRMS SP).
 - `tests/synth.py` (`hs()`, `T()`) builds synthetic hotspots; `tests/conftest.py`
   has the `export_gen` fixture. Use these instead of real data in tests.
 
