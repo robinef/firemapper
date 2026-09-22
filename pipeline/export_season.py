@@ -35,6 +35,8 @@ import h3
 from .config import (
     ARCHIVE_TRACKS_INDEX,
     SEASON_STATE_KEY,
+    SEASON_STATIC_MAX_CELLS,
+    SEASON_STATIC_SPAN_DAYS,
     Settings,
     season_cells_key,
     season_key,
@@ -50,9 +52,9 @@ FETCH_WORKERS = 8
 FETCH_BATCH = 32
 # Static-source diagnostic (spec: "measure, do not guess"): a real fire's
 # series rarely spans more than a few weeks; a flare or refinery archived
-# before the #121 filter shipped spans months on a handful of cells. This
-# only LOGS the counts so the first prod runs give the number a gate would
-# need — it does not gate anything.
+# before the #121 filter shipped spans months on a handful of cells. These
+# counters LOG the population; the gate itself is is_static_track below,
+# with its measured thresholds in config.py.
 LONG_SPAN_DAYS = 30
 
 
@@ -70,6 +72,13 @@ def _span_days(body: dict) -> int:
     first = datetime.fromisoformat(str(series[0]["bin"]).replace("Z", "+00:00"))
     last = datetime.fromisoformat(str(series[-1]["bin"]).replace("Z", "+00:00"))
     return (last - first).days
+
+
+def is_static_track(span_days: int, cells: list[str]) -> bool:
+    """A fixed heat source archived as a "fire": detected for longer than any
+    real fire in the archive, on a handful of cells. Both conditions, because
+    each alone catches real fires — see SEASON_STATIC_* in config.py."""
+    return span_days > SEASON_STATIC_SPAN_DAYS and len(set(cells)) <= SEASON_STATIC_MAX_CELLS
 
 
 def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
@@ -137,16 +146,30 @@ def run_export_season(
     #   both, digests differ → the contribution was built from another body.
     # Only checking `year == target_year` left the demotion case invisible:
     # nothing re-read the track, so the ghost stayed published forever.
+    #
+    # A static track (is_static_track) is recorded with its year but is not
+    # wanted: a cells file that still holds it is a partial publish too.
     for tid, entry in list(state.items()):
         stored = cells_by_fire.get(tid)
-        wanted = entry.get("year") == target_year
+        wanted = entry.get("year") == target_year and not entry.get("static")
         if wanted != (stored is not None) or (stored is not None and stored.get("digest") != entry.get("digest")):
             del state[tid]
             cells_by_fire.pop(tid, None)
 
-    to_process = [(tid, digest) for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest]
+    def pending(tid: str, digest: str) -> bool:
+        entry = state.get(tid, {})
+        if entry.get("digest") != digest:
+            return True
+        # A target-year entry with no `static` verdict was recorded before the
+        # gate existed (prod's state held every static track that way, digest
+        # unchanged). Re-read it once. Its stored contribution is left in
+        # place until then: the re-check covers every 2026 track and can span
+        # several runs' budgets, and dropping first would blank the season.
+        return entry.get("year") == target_year and "static" not in entry
+
+    to_process = [(tid, digest) for tid, digest in index.items() if pending(tid, digest)]
     deadline = clock() + time_budget_s
-    processed = long_span = long_span_small = malformed = 0
+    processed = long_span = long_span_small = malformed = static_excluded = 0
 
     def load(item: tuple[str, str]):
         tid, digest = item
@@ -189,16 +212,22 @@ def run_export_season(
                 processed += 1
                 if year != target_year:
                     continue
-                cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
                 if span > LONG_SPAN_DAYS:
                     long_span += 1
                     if len(body["cells"]) <= 10:
                         long_span_small += 1
+                static = is_static_track(span, cells)
+                state[tid]["static"] = static
+                if static:
+                    static_excluded += 1
+                    continue
+                cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
 
     if processed or malformed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
-            f"of_which_<=10_cells={long_span_small} malformed={malformed}",
+            f"of_which_<=10_cells={long_span_small} static_excluded={static_excluded} "
+            f"malformed={malformed}",
             file=sys.stderr,
         )
     _save_json(cells_path, cells_by_fire)  # contributions first...

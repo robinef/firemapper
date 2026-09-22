@@ -120,7 +120,9 @@ def test_run_export_season_writes_cells_summary_and_state_for_the_target_year(tm
     assert summary["fires"] == 1
     assert summary["km2"] == round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
     assert summary["r6"] == aggregate_r6(stored)
-    assert _read(settings, SEASON_STATE_KEY) == {"fire-2026": {"digest": index["fire-2026"], "year": 2026}}
+    assert _read(settings, SEASON_STATE_KEY) == {
+        "fire-2026": {"digest": index["fire-2026"], "year": 2026, "static": False},
+    }
 
 
 def test_run_export_season_skips_tracks_outside_the_target_year_but_records_them(tmp_path):
@@ -200,7 +202,7 @@ def test_a_malformed_track_is_skipped_and_recorded_without_poisoning_the_run(tmp
 
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
     state = _read(settings, SEASON_STATE_KEY)
-    assert state["good"] == {"digest": index["good"], "year": 2026}
+    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False}
     assert state["bad"] == {"digest": index["bad"], "year": None}
 
 
@@ -382,3 +384,156 @@ def test_a_track_whose_series_bin_is_unparsable_is_skipped_without_aborting_the_
 
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
     assert _read(settings, SEASON_STATE_KEY)["bad-bin"] == {"digest": index["bad-bin"], "year": None}
+
+
+# --- static heat-source gate ------------------------------------------------
+
+def _disk_cells(n: int) -> list[str]:
+    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 6))[:n]
+    assert len(set(cells)) == n
+    return cells
+
+
+def _static_body(track_id: str, n_cells: int, span_days: int) -> dict:
+    from datetime import timedelta
+    first = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    last = first + timedelta(days=span_days)
+    return _track_body(track_id, _disk_cells(n_cells), first.isoformat(), last.isoformat())
+
+
+def test_a_long_lived_tiny_track_is_excluded_as_a_static_source_and_recorded(tmp_path):
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    index = _make_local_archive(settings.out_dir, {
+        "plant": _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1),
+        "good": _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    assert _read(settings, SEASON_STATE_KEY)["plant"] == {"digest": index["plant"], "year": 2026, "static": True}
+    assert _read(settings, season_key(2026))["fires"] == 1
+
+
+def test_a_long_lived_large_track_is_kept(tmp_path):
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    index = _make_local_archive(settings.out_dir, {
+        "big": _static_body("big", SEASON_STATIC_MAX_CELLS + 1, SEASON_STATIC_SPAN_DAYS + 1),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"big"}
+    assert _read(settings, SEASON_STATE_KEY)["big"] == {"digest": index["big"], "year": 2026, "static": False}
+
+
+def test_a_short_tiny_track_is_kept(tmp_path):
+    from pipeline.config import SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "small": _static_body("small", 1, SEASON_STATIC_SPAN_DAYS),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"small"}
+
+
+def test_the_static_gate_counts_unique_cells(tmp_path):
+    # A track body lists a cell once per claim it can repeat; the gate is
+    # about how much ground the source covers, so duplicates must not push a
+    # plant over the cell cap.
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    body = _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1)
+    body["cells"] = body["cells"] + body["cells"][:1]
+    _make_local_archive(settings.out_dir, {"plant": body})
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_cells_key(2026)) == {}
+
+
+def test_self_heal_removes_a_published_track_the_state_now_calls_static(tmp_path):
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    body = _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1)
+    index = _make_local_archive(settings.out_dir, {"plant": body})
+    # State (committed last) already says static, but the cells file that
+    # should have dropped it failed to land: the unordered-upload race.
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"plant": {"digest": index["plant"], "year": 2026, "static": True}}))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "plant": {"digest": index["plant"], "first": "2026-07-01", "cells": body["cells"]},
+    }))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_cells_key(2026)) == {}
+    assert _read(settings, SEASON_STATE_KEY)["plant"] == {"digest": index["plant"], "year": 2026, "static": True}
+
+
+def test_a_track_recorded_before_the_gate_existed_is_reclassified(tmp_path, monkeypatch):
+    # Prod's state already holds the static tracks as ordinary {digest, year}
+    # entries with unchanged digests. Without a re-check the gate would never
+    # see them and they would stay published forever.
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    plant = _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1)
+    good = _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    index = _make_local_archive(settings.out_dir, {"plant": plant, "good": good})
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "plant": {"digest": index["plant"], "year": 2026},
+        "good": {"digest": index["good"], "year": 2026},
+    }))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "plant": {"digest": index["plant"], "first": "2026-07-01", "cells": plant["cells"]},
+        "good": {"digest": index["good"], "first": "2026-07-01", "cells": good["cells"]},
+    }))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
+    state = _read(settings, SEASON_STATE_KEY)
+    assert state["plant"] == {"digest": index["plant"], "year": 2026, "static": True}
+    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False}
+
+
+def test_a_pre_gate_track_keeps_its_contribution_until_it_is_reprocessed(tmp_path, monkeypatch):
+    # The re-check is a one-off pass over every 2026 track and can take more
+    # than one run's budget. A track not yet reached must stay published —
+    # dropping it first would blank most of the season for a cycle.
+    import pipeline.export_season as mod
+    settings = _settings(tmp_path)
+    good = _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00")
+    index = _make_local_archive(settings.out_dir, {"good": good})
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"good": {"digest": index["good"], "year": 2026}}))
+    stored = {"good": {"digest": index["good"], "first": "2026-07-01", "cells": good["cells"]}}
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps(stored))
+    monkeypatch.setattr(mod, "_load_track_body", lambda *a: None)  # every fetch fails this run
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, season_cells_key(2026)) == stored
+    assert _read(settings, season_key(2026))["fires"] == 1
+
+
+def test_the_run_log_counts_static_exclusions(tmp_path, capsys):
+    from pipeline.config import SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "plant": _static_body("plant", SEASON_STATIC_MAX_CELLS, SEASON_STATIC_SPAN_DAYS + 1),
+        "good": _track_body("good", _two_cells(), "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert "static_excluded=1 " in capsys.readouterr().err
+
