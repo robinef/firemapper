@@ -114,9 +114,13 @@ country and first date — what the size filter boots from — and
 `season_{year}_cells.json` with every fire's real cells, fetched only on
 approach to the cells zoom or on the first filter interaction; archived static
 heat sources are left out of all three: whole long-lived tracks by a span gate,
-and every cell in the live map's static zone — `events.static_classification`
-run over the year's raw `hotspots.parquet` — by `apply_static_zone`, re-applied
-to every fire each run). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
+and every cell in the static zone by `apply_static_zone`, re-applied to every
+fire each run. The zone is the live map's rule asked of every live window:
+`events.static_classification(rows, window_days=MAX_FIRE_DAYS)` over the year's
+raw `hotspots.parquet` marks a cell static when some `MAX_FIRE_DAYS`
+consecutive days hold `STATIC_CELL_DAYS` distinct detection days on it, then
+adds the `STATIC_RING_K` ring; the last good zone is kept in the season state
+for runs where the raw store cannot be read). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
 not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
 restores these by name, so a fresh CI runner continues where the last left off.
 

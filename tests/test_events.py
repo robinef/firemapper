@@ -546,3 +546,49 @@ def test_reactivation_lineage():
     links = reactivation_links(ev, now=T(14, 6))
     ids = sorted(ev, key=lambda i: min(m["bin"] for m in ev[i]))
     assert links == {ids[1]: ids[0]}
+
+
+# --- windowed classification (the season export's rule) --------------------
+# cluster() classifies over rows already bounded to MAX_FIRE_DAYS; the season
+# export classifies a whole year, so it asks the same question per window: is
+# there ANY run of MAX_FIRE_DAYS consecutive days holding >= STATIC_CELL_DAYS
+# distinct detection days on the cell?
+
+def _on_days(offsets):
+    from pipeline.events import static_classification  # noqa: F401 - import check
+    lat, lon = A
+    return [hs(lat, lon, T(1, 12) + timedelta(days=d)) for d in offsets]
+
+
+def _windowed(rows):
+    from pipeline.config import MAX_FIRE_DAYS
+    from pipeline.events import static_classification
+    return static_classification(rows, window_days=MAX_FIRE_DAYS)[0]
+
+
+def test_detections_spread_thinner_than_the_threshold_per_window_are_not_static():
+    # 25 days over 200: any 90-day run holds at most 12 of them.
+    offsets = [round(i * 200 / 24) for i in range(25)]
+    assert len(set(offsets)) == 25
+    assert _windowed(_on_days(offsets)) == set()
+
+
+def test_the_threshold_inside_one_window_is_static():
+    offsets = [i * 3 for i in range(STATIC_CELL_DAYS)]  # 20 days within 60
+    assert _windowed(_on_days(offsets)) == {h3.latlng_to_cell(*A, 8)}
+
+
+def test_the_window_edge_is_max_fire_days_consecutive_days():
+    from pipeline.config import MAX_FIRE_DAYS
+    # STATIC_CELL_DAYS days whose first and last lie MAX_FIRE_DAYS - 1 apart
+    # fit one window; MAX_FIRE_DAYS apart, they do not.
+    inside = list(range(STATIC_CELL_DAYS - 1)) + [MAX_FIRE_DAYS - 1]
+    outside = list(range(STATIC_CELL_DAYS - 1)) + [MAX_FIRE_DAYS]
+    assert _windowed(_on_days(inside)) == {h3.latlng_to_cell(*A, 8)}
+    assert _windowed(_on_days(outside)) == set()
+
+
+def test_without_a_window_the_classification_is_the_live_one_unchanged():
+    offsets = [round(i * 200 / 24) for i in range(25)]
+    from pipeline.events import static_classification
+    assert static_classification(_on_days(offsets))[0] == {h3.latlng_to_cell(*A, 8)}

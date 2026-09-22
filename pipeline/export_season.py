@@ -36,6 +36,7 @@ import h3
 
 from .config import (
     ARCHIVE_TRACKS_INDEX,
+    MAX_FIRE_DAYS,
     SEASON_STATE_KEY,
     SEASON_STATIC_MAX_CELLS,
     SEASON_STATIC_SPAN_DAYS,
@@ -62,6 +63,12 @@ FETCH_BATCH = 32
 # counters LOG the population; the gate itself is is_static_track below,
 # with its measured thresholds in config.py.
 LONG_SPAN_DAYS = 30
+# season_state.json's one non-track entry: the last zone season_static_zone
+# computed, {"cells": [...sorted], "computed_at": iso}, applied on a run whose
+# raw store is unreadable. Track ids are 12 hex chars; this cannot collide.
+# Popped off the state as it loads and put back as it saves, so no per-track
+# loop (reconcile, pending, apply_static_zone) ever iterates over it.
+ZONE_STATE_KEY = "__zone__"
 
 
 def first_bin_date(body: dict) -> str:
@@ -88,22 +95,25 @@ def is_static_track(span_days: int, cells: list[str]) -> bool:
 
 
 def season_static_zone(settings: Settings, year: int) -> set[str] | None:
-    """The static heat-source zone over `year`'s raw detections — the live
-    map's own rule (events.static_classification: cells detected on >=
-    STATIC_CELL_DAYS distinct days, plus their STATIC_RING_K ring), applied to
-    the whole season rather than cluster()'s window.
+    """The static heat-source zone over `year`'s raw detections, by the live
+    map's rule (events.static_classification): a cell is static when some
+    MAX_FIRE_DAYS consecutive days — the live clustering window — hold >=
+    STATIC_CELL_DAYS distinct detection days on it; the zone is those cells
+    plus their STATIC_RING_K ring. So the season drops a cell iff some live
+    refresh this year would have dropped it, not merely because separate
+    episodes add up over the whole year.
 
     From the raw store, not the archived tracks: a track's cell_bins records
     each cell once, on its first bin, so the bodies cannot tell a plant lit
     on 30 days from a cell burned once (measured 2026-09-22: no archived
     cell reaches 5 days). None when the store is absent or empty — the export
-    then keeps whatever filtering it last applied (see apply_static_zone)."""
+    then applies the last good zone it stored (ZONE_STATE_KEY)."""
     store = settings.data_dir / "raw" / "hotspots.parquet"
     rows = [r for r in read_hotspots(store) if r["acq_time"].year == year]
     if not rows:
         print(f"[season] no raw hotspot store rows for {year} at {store}; static zone unknown this run", file=sys.stderr)
         return None
-    return static_classification(rows)[1]
+    return static_classification(rows, window_days=MAX_FIRE_DAYS)[1]
 
 
 def apply_static_zone(
@@ -116,9 +126,11 @@ def apply_static_zone(
     return (fires emptied, distinct cells removed).
 
     Runs over the WHOLE store each run, not only this run's tracks: the zone
-    grows (a plant accrues days) and shrinks (old detections leave the raw
-    archive), and an unchanged fire is never re-read. So the removal must be
-    reversible without the track body. The cells file stores the FILTERED
+    grows as a plant accrues days, and an unchanged fire is never re-read.
+    The raw store only grows, so the zone does not shrink on its own; it can
+    when STATIC_CELL_DAYS / MAX_FIRE_DAYS / STATIC_RING_K change or rows are
+    purged (store.delete_by_src_id). So the removal must be reversible
+    without the track body. The cells file stores the FILTERED
     list — it is also the file the web paints, so it cannot hold plant cells —
     and each entry keeps what the zone took in `zone_cells` (the web ignores
     it). Raw cells = cells + zone_cells, re-filtered against today's zone, so
@@ -129,7 +141,12 @@ def apply_static_zone(
     every entry as a fire), so its raw cells and first date move to its state
     entry (`zone_empty`), which the reconcile treats as not wanted. If that
     state upload is lost, the reconcile sees a wanted fire missing from the
-    cells file, re-reads the body and empties it again — self-healing."""
+    cells file, re-reads the body and empties it again — self-healing.
+
+    Only the cells' own ids are compared: the zone is res-8 (polar), so a
+    res-7 Meteosat cell in a fire would not be masked even on a plant. The
+    prod cells file has none today (every archived cell is res 8, measured
+    2026-09-22); revisit if Meteosat-only fires start being archived."""
     removed: set[str] = set()
     emptied = 0
     candidates = [(tid, e) for tid, e in cells_by_fire.items()] + [
@@ -241,7 +258,8 @@ def run_export_season(
     for why a budget, not a hard kill, is the right shape here).
 
     `static_zone` (season_static_zone): cells no published fire may keep —
-    see apply_static_zone. None leaves the last run's filtering as it is."""
+    see apply_static_zone. None applies the last good zone stored in state
+    (ZONE_STATE_KEY), or nothing if there has never been one."""
     index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
     if not index_path.exists():
         return
@@ -252,6 +270,7 @@ def run_export_season(
     summary_path = settings.out_dir / season_key(target_year)
     sizes_path = settings.out_dir / season_sizes_key(target_year)
     state: dict[str, dict] = _load_json(state_path, {})
+    stored_zone: dict | None = state.pop(ZONE_STATE_KEY, None)
     cells_by_fire: dict[str, dict] = _load_json(cells_path, {})
 
     # Self-heal a partial publish by reconciling what the state WANTS in the
@@ -342,9 +361,18 @@ def run_export_season(
                     continue
                 cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
 
-    zone_emptied = zone_removed = 0
+    # No zone this run (raw store missing or unreadable) → the last good one,
+    # so a fire re-read this run is filtered like every other. Never a zone
+    # at all → no filtering, exactly the pre-zone export.
     if static_zone is not None:
-        zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, static_zone)
+        stored_zone = {
+            "cells": sorted(static_zone),
+            "computed_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    zone = static_zone if static_zone is not None else (set(stored_zone["cells"]) if stored_zone else None)
+    zone_emptied = zone_removed = 0
+    if zone is not None:
+        zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, zone)
     if processed or malformed or zone_emptied or zone_removed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
@@ -360,4 +388,6 @@ def run_export_season(
     # is what makes the web offer the layer at all)...
     _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, deduped))
     _save_json(summary_path, summarize(target_year, cells_by_fire, now, deduped))
+    if stored_zone is not None:
+        state[ZONE_STATE_KEY] = stored_zone
     _save_json(state_path, state)  # ...then commit state — the recovery contract

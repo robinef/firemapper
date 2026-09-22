@@ -758,8 +758,9 @@ def test_a_zone_emptied_fire_is_not_reprocessed_every_run(tmp_path, capsys):
 
 
 def test_cells_come_back_when_the_zone_no_longer_covers_them(tmp_path):
-    # The zone is recomputed from a rolling archive each run: a cell it drops
-    # must reappear, including in a fire the zone had emptied entirely.
+    # The raw store only grows, but the zone can still shrink: a change to
+    # STATIC_CELL_DAYS / MAX_FIRE_DAYS / the ring, or purged rows. A cell it no
+    # longer covers must reappear, including in a fire it had emptied.
     settings = _settings(tmp_path)
     _make_local_archive(settings.out_dir, {
         "mixed": _fire("mixed", [PLANT, FAR]),
@@ -776,7 +777,7 @@ def test_cells_come_back_when_the_zone_no_longer_covers_them(tmp_path):
 
 
 def test_a_run_without_a_zone_leaves_the_last_filtering_in_place(tmp_path):
-    # None = "the raw archive could not be read this run", not "no plants":
+    # None = "the raw store could not be read this run", not "no plants":
     # re-publishing the plants for one run would flicker them back on.
     settings = _settings(tmp_path)
     _make_local_archive(settings.out_dir, {"mixed": _fire("mixed", [PLANT, FAR])})
@@ -857,3 +858,71 @@ def test_the_zone_starts_exactly_at_the_live_day_count():
     from pipeline.config import STATIC_CELL_DAYS
     assert PLANT in _plant_zone(STATIC_CELL_DAYS)
     assert _plant_zone(STATIC_CELL_DAYS - 1) == set()
+
+
+def _store_with_plant_days(settings: Settings, offsets: list[int]) -> None:
+    from datetime import timedelta
+    from pipeline.store import append_hotspots
+    lat, lon = h3.cell_to_latlng(PLANT)
+    start = datetime(2026, 1, 10, 13, 0, tzinfo=timezone.utc)
+    rows = [
+        {"lat": lat, "lon": lon, "acq_time": start + timedelta(days=d), "tier": "viirs",
+         "satellite": "N", "confidence": "n", "frp": 5.0, "src_id": f"p-{d}"}
+        for d in offsets
+    ]
+    store = settings.data_dir / "raw" / "hotspots.parquet"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    append_hotspots(rows, store)
+
+
+def test_the_season_zone_counts_days_per_live_window_not_per_year(tmp_path):
+    from pipeline.export_season import season_static_zone
+    settings = _settings(tmp_path)
+    _store_with_plant_days(settings, [round(i * 200 / 24) for i in range(25)])  # 25 days over 200
+
+    assert season_static_zone(settings, 2026) == set()
+
+
+def test_the_season_zone_window_is_the_live_max_fire_days(tmp_path, monkeypatch):
+    import pipeline.export_season as mod
+    from pipeline.config import STATIC_CELL_DAYS
+    settings = _settings(tmp_path)
+    _store_with_plant_days(settings, [i * 3 for i in range(STATIC_CELL_DAYS)])  # spans 57 days
+    assert PLANT in mod.season_static_zone(settings, 2026)
+
+    monkeypatch.setattr(mod, "MAX_FIRE_DAYS", 50)
+
+    assert mod.season_static_zone(settings, 2026) == set()
+
+
+def test_a_run_without_a_zone_filters_re_read_fires_by_the_last_good_zone(tmp_path):
+    # The raw store unreadable for one run must not publish a plant just
+    # because its track was re-archived (new digest) that same run.
+    settings = _settings(tmp_path)
+    far2 = h3.latlng_to_cell(44.3, 3.3, 8)
+    _make_local_archive(settings.out_dir, {"mixed": _fire("mixed", [PLANT, FAR]), "plant": _fire("plant", [PLANT])})
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+    _make_local_archive(settings.out_dir, {  # both bodies change
+        "mixed": _fire("mixed", [PLANT, FAR, far2]),
+        "plant": _fire("plant", [PLANT, _ring1(PLANT)[0]]),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None)
+
+    cells = _read(settings, season_cells_key(2026))
+    assert cells["mixed"]["cells"] == [FAR, far2]
+    assert "plant" not in cells
+    assert _read(settings, SEASON_STATE_KEY)["plant"]["zone_empty"] is True
+
+
+def test_the_last_good_zone_is_kept_in_state_under_a_reserved_key(tmp_path):
+    from pipeline.export_season import ZONE_STATE_KEY
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {"good": _fire("good", [FAR])})
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None)  # idle, no zone
+
+    stored = _read(settings, SEASON_STATE_KEY)[ZONE_STATE_KEY]
+    assert stored == {"cells": sorted(_plant_zone()), "computed_at": "2026-09-18T10:00:00Z"}
+    assert set(_read(settings, season_cells_key(2026))) == {"good"}
