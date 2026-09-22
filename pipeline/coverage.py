@@ -10,6 +10,12 @@ from .config import GENERATIONS_KEPT, SCAR_WINDOW_DAYS, Settings
 # that went quiet before this date have no archived footprint detail and
 # never will.
 ARCHIVE_FLOOR_DATE = "2026-08-27"
+# scripts/backfill_season.py rebuilds the fires that ended before the live
+# archive's reach (Jan 1 - Jul 12 2026) from the FIRMS Standard Processing
+# archive. None until that publish run has landed in R2; then set to
+# "2026-01-01" in a one-line follow-up commit, so the disclosure never claims
+# coverage the bucket does not hold yet.
+BACKFILL_FLOOR_DATE: str | None = None
 
 
 def _generation_timestamp(gen_dir: Path) -> datetime:
@@ -45,6 +51,7 @@ def build_coverage(settings: Settings, now: datetime) -> dict:
         "firms_lookback_days": settings.firms_history_days,
         "scar_window_days": SCAR_WINDOW_DAYS,
         "archive_floor_date": ARCHIVE_FLOOR_DATE,
+        "backfill_floor_date": BACKFILL_FLOOR_DATE,
         "effis_note": (
             "Burned-area boundaries follow EFFIS's own upstream history; "
             "no fixed window is enforced here."

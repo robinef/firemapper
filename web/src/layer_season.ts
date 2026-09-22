@@ -344,6 +344,12 @@ export function seasonStatus(
 
 export function seasonLegend(floor: string | null, year = new Date().getUTCFullYear()) {
   const since = floor ? `since ${formatFloor(floor)} ${floor.slice(0, 4)}` : "this year";
+  // Once the archive reaches the start of the season (the January backfill,
+  // scripts/backfill_season.py) there are no earlier fires left out. Two weeks
+  // of slack: the floor is the earliest fire's first bin, not Jan 1 itself.
+  // ISO dates compare as strings.
+  const fromStart = floor !== null && floor <= `${year}-01-14`;
+  const gap = fromStart ? "" : "; earlier fires this year are not yet archived";
   return {
     // The title names the season being shown, never the floor's year: the
     // earliest archived fire can sit in the previous year (a December start
@@ -360,8 +366,8 @@ export function seasonLegend(floor: string | null, year = new Date().getUTCFullY
     // the EU-27. Both are right; they measure different things. Saying so
     // here is cheaper than letting someone conclude one of them is broken.
     note:
-      `Every fire the satellites saw settle ${since}; earlier fires this year ` +
-      "are not yet archived. Area is the satellite heat footprint — each " +
+      `Every fire the satellites saw settle ${since}${gap}. ` +
+      "Area is the satellite heat footprint — each " +
       "detection claims a whole 0.7 km² cell and agricultural burning is " +
       "included — so it runs roughly double the mapped burn area EFFIS " +
       "reports for the same region. Zoom in for the real burned ground.",

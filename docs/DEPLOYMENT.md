@@ -29,6 +29,14 @@ Two consequences worth stating plainly:
 | [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/30`, driven by a Cloudflare Cron Trigger (see [`worker/index.ts`](../worker/index.ts)); its own `37 */6` schedule is only a fallback | MTG FRP, wind, then re-clusters against the archive |
 | [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | hourly at :07 | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
 
+One-off, manual: [`backfill-season.yml`](../.github/workflows/backfill-season.yml)
+runs `scripts/backfill_season.py`, rebuilding January–June 2026 fires from the
+FIRMS Standard Processing archive into `data/archive/tracks/`. `dry_run` (the
+default) only builds and reports; `dry_run=false` then publishes that build in
+the `refresh` concurrency group, backing the live track index up to
+`data/archive/tracks_index.json.pre-backfill-<UTC stamp>` first. Rollback is
+copying that key back over the index.
+
 Deploys are **not** a workflow. Cloudflare's git integration (Workers Builds)
 watches `main` and builds the app shell itself:
 

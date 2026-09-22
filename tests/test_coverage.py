@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 from pipeline.config import GENERATIONS_KEPT, SCAR_WINDOW_DAYS
-from pipeline.coverage import ARCHIVE_FLOOR_DATE, build_coverage
+import pipeline.coverage as coverage_mod
+from pipeline.coverage import ARCHIVE_FLOOR_DATE, BACKFILL_FLOOR_DATE, build_coverage
 
 from .test_export_footprint import _settings
 
@@ -60,3 +61,19 @@ def test_static_fields_pass_through(tmp_path):
     assert coverage["scar_window_days"] == SCAR_WINDOW_DAYS
     assert coverage["archive_floor_date"] == ARCHIVE_FLOOR_DATE
     assert "EFFIS" in coverage["effis_note"]
+
+
+def test_backfill_floor_is_unset_until_the_backfill_is_published(tmp_path):
+    """scripts/backfill_season.py extends the track archive back to January;
+    the disclosure only moves once that publish has actually landed."""
+    now = datetime(2026, 8, 31, 12, 0, 0, tzinfo=timezone.utc)
+    assert BACKFILL_FLOOR_DATE is None
+    assert build_coverage(_settings(tmp_path), now)["backfill_floor_date"] is None
+
+
+def test_backfill_floor_is_reported_when_set(tmp_path, monkeypatch):
+    now = datetime(2026, 8, 31, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(coverage_mod, "BACKFILL_FLOOR_DATE", "2026-01-01")
+    coverage = build_coverage(_settings(tmp_path), now)
+    assert coverage["backfill_floor_date"] == "2026-01-01"
+    assert coverage["archive_floor_date"] == ARCHIVE_FLOOR_DATE
