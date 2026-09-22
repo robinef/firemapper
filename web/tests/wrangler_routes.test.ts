@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 // ?raw rather than node:fs: the web tsconfig is DOM-only with no @types/node,
 // and vite/client already declares "*?raw".
 import raw from "../../wrangler.jsonc?raw";
+import * as entry from "../../worker/index";
 
 /**
  * Cloudflare serves static assets BEFORE the Worker. Any path not listed in
@@ -18,7 +19,7 @@ function parsedConfig(): {
   assets: { run_worker_first: string[] };
   durable_objects: { bindings: { name: string; class_name: string }[] };
   migrations: { tag: string; new_sqlite_classes?: string[] }[];
-  ratelimits: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
+  ratelimits?: unknown[];
 } {
   const json = raw.replace(/^\s*\/\/.*$/gm, "");
   return JSON.parse(json);
@@ -61,17 +62,30 @@ describe("worker routing config", () => {
     expect(migrations.some((m) => m.new_sqlite_classes?.includes("GeocodeRateGate"))).toBe(true);
   });
 
-  it("declares a per-visitor ratelimits binding for each /api handler, matching the env field names", () => {
-    const { ratelimits } = parsedConfig();
-    const byName = new Map(ratelimits.map((r) => [r.name, r]));
-    for (const name of ["HISTORICAL_VISITOR_LIMITER", "GEOCODE_VISITOR_LIMITER"]) {
-      const binding = byName.get(name);
-      expect(binding, `${name} missing — handler would silently run uncapped`).toBeDefined();
-      // The runtime only accepts 10 or 60; anything else fails at deploy, not in tests.
-      expect([10, 60]).toContain(binding!.simple.period);
-      expect(binding!.simple.limit).toBeGreaterThan(0);
+  it("binds VISITOR_RATE_GATE to VisitorRateGate — without it both /api handlers silently run uncapped", () => {
+    const { durable_objects } = parsedConfig();
+    const b = durable_objects.bindings.find((x) => x.name === "VISITOR_RATE_GATE");
+    expect(b?.class_name).toBe("VisitorRateGate");
+  });
+
+  it("declares a new_sqlite_classes migration for VisitorRateGate (a new DO class without one fails at deploy)", () => {
+    const { migrations } = parsedConfig();
+    expect(migrations.some((m) => m.new_sqlite_classes?.includes("VisitorRateGate"))).toBe(true);
+  });
+
+  it("exports every Durable Object class the config binds — a missing export fails only at deploy", () => {
+    const { durable_objects } = parsedConfig();
+    for (const b of durable_objects.bindings) {
+      expect(
+        typeof (entry as Record<string, unknown>)[b.class_name],
+        `${b.class_name} (binding ${b.name}) is not exported from worker/index.ts`,
+      ).toBe("function");
     }
-    const ids = ratelimits.map((r) => r.namespace_id);
-    expect(new Set(ids).size, "namespace_id must be unique per binding").toBe(ids.length);
+  });
+
+  it("does not carry a ratelimits binding — it never denied in production here (see worker/visitor_limit.ts)", () => {
+    // If someone re-adds it, they must also re-verify against prod, not just
+    // `wrangler dev`, where it works. This test is the reminder.
+    expect(parsedConfig().ratelimits).toBeUndefined();
   });
 });

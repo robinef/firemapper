@@ -8,7 +8,7 @@
  * this file changes when FIRMS' own limits or source lineup change.
  */
 
-import { visitorLimited, type RateLimiterLike } from "./visitor_limit";
+import { resolveLimiter, visitorLimited, type RateLimiterLike, type VisitorGateEnv } from "./visitor_limit";
 
 export const MAX_SPAN_DAYS = 90;
 export const MAX_BBOX_DEG = 0.5;
@@ -128,9 +128,9 @@ const FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
 // the edge is what stops a repeat viewer costing FIRMS map-key quota.
 const RESPONSE_CACHE = "public, max-age=604800, immutable";
 
-export interface HistoricalHotspotsEnv {
+export interface HistoricalHotspotsEnv extends VisitorGateEnv {
   FIRMS_HISTORICAL_MAP_KEY?: string;
-  /** Per-visitor cap (wrangler.jsonc `ratelimits`); optional, see visitor_limit.ts. */
+  /** Per-visitor cap override (tests); production uses VISITOR_RATE_GATE, see visitor_limit.ts. */
   HISTORICAL_VISITOR_LIMITER?: RateLimiterLike;
   /** Seam for tests; defaults to global fetch. */
   HISTORICAL_HOTSPOTS_UPSTREAM?: (request: Request) => Promise<Response>;
@@ -182,7 +182,10 @@ export async function handleHistoricalHotspots(
 
   // After validation (a malformed request should not eat budget) and before
   // anything that costs FIRMS map-key quota.
-  const limited = await visitorLimited(request, env.HISTORICAL_VISITOR_LIMITER);
+  const limited = await visitorLimited(
+    request,
+    resolveLimiter(env.HISTORICAL_VISITOR_LIMITER, env.VISITOR_RATE_GATE, "historical"),
+  );
   if (limited) return limited;
 
   // Forward the raw bbox text (already validated west,south,east,north by

@@ -1,6 +1,6 @@
 import { RateGateCore } from "./geocode_rate_gate";
 import { isAllowedOrigin } from "./historical_hotspots";
-import { visitorLimited, type RateLimiterLike } from "./visitor_limit";
+import { resolveLimiter, visitorLimited, type RateLimiterLike, type VisitorGateEnv } from "./visitor_limit";
 
 /** Enforces Nominatim's usage policy's global 1 req/sec cap (verified at
  *  operations.osmfoundation.org/policies/nominatim/) — "the sum of traffic
@@ -31,10 +31,11 @@ interface CacheLike {
   put(request: Request, response: Response): Promise<void>;
 }
 
-export interface GeocodeEnv {
+export interface GeocodeEnv extends VisitorGateEnv {
   GEOCODE_RATE_GATE?: DurableObjectNamespaceLike;
-  /** Per-visitor cap (wrangler.jsonc `ratelimits`); optional, see visitor_limit.ts.
-   * Stops one visitor from draining the GLOBAL 1 req/s budget above for everyone. */
+  /** Per-visitor cap override (tests); production uses VISITOR_RATE_GATE, see
+   * visitor_limit.ts. Stops one visitor from draining the GLOBAL 1 req/s
+   * budget above for everyone. */
   GEOCODE_VISITOR_LIMITER?: RateLimiterLike;
   /** Seam for tests; defaults to global fetch. */
   GEOCODE_UPSTREAM?: (request: Request) => Promise<Response>;
@@ -86,7 +87,10 @@ export async function handleGeocode(request: Request, env: GeocodeEnv): Promise<
   // Per-visitor cap sits AFTER the cache (a repeat of a cached query costs
   // nothing shared, so it should not count) and BEFORE the global gate, so a
   // single visitor cannot starve the shared Nominatim budget.
-  const limited = await visitorLimited(request, env.GEOCODE_VISITOR_LIMITER);
+  const limited = await visitorLimited(
+    request,
+    resolveLimiter(env.GEOCODE_VISITOR_LIMITER, env.VISITOR_RATE_GATE, "geocode"),
+  );
   if (limited) return limited;
 
   // The rate gate is required infrastructure, not optional: every other
