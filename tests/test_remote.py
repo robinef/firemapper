@@ -21,6 +21,7 @@ from pipeline.config import (
     scale_blob_fires_key,
     scale_blob_key,
     season_cells_key,
+    season_sizes_key,
     season_key,
 )
 from pipeline.remote import MANIFEST_KEY, archive_key, hydrate, prune_remote, publish
@@ -596,12 +597,14 @@ def test_hydrate_restores_season_state_summary_and_cells(tmp_path):
     state_body = json.dumps({"fire-1": {"digest": "abc", "year": year}}).encode()
     summary_body = json.dumps({"year": year, "floor": "2026-07-13", "fires": 1, "km2": 1.4, "r6": []}).encode()
     cells_body = json.dumps({"fire-1": {"digest": "abc", "first": "2026-07-13", "cells": ["x"]}}).encode()
+    sizes_body = json.dumps({"year": year, "fires": {"fire-1": [1.4, "FR", "2026-07-13"]}}).encode()
     objects = {
         MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
         f"data/{gen}/events.geojson": b"{}",
         f"data/{SEASON_STATE_KEY}": state_body,
         f"data/{season_key(year)}": summary_body,
         f"data/{season_cells_key(year)}": cells_body,
+        f"data/{season_sizes_key(year)}": sizes_body,
     }
     settings = _settings(tmp_path)
 
@@ -610,6 +613,7 @@ def test_hydrate_restores_season_state_summary_and_cells(tmp_path):
     assert (settings.out_dir / SEASON_STATE_KEY).read_bytes() == state_body
     assert (settings.out_dir / season_key(year)).read_bytes() == summary_body
     assert (settings.out_dir / season_cells_key(year)).read_bytes() == cells_body
+    assert (settings.out_dir / season_sizes_key(year)).read_bytes() == sizes_body
 
 
 def test_publish_uploads_the_permanent_archive(tmp_path):

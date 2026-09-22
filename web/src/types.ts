@@ -95,8 +95,16 @@ export interface SeasonSummary {
   r6: [string, number][];
 }
 
-/** archive/season_{year}_cells.json — one entry per settled fire. */
-export type SeasonCells = Record<string, { digest: string; first: string; cells: string[] }>;
+/** archive/season_{year}_cells.json — one entry per settled fire. `zone_cells`
+ * is pipeline bookkeeping (the cells the static heat-source zone removed, kept
+ * so they can return if the zone shrinks); the web never reads it. */
+export type SeasonCells = Record<string, { digest: string; first: string; cells: string[]; zone_cells?: string[] }>;
+
+/** archive/season_{year}_sizes.json — pipeline/export_season.py's per-fire
+ * [km², country or null, first-detection YYYY-MM-DD]. The size filter's
+ * boot-time input: the histogram, the counts and the EU-27 scope, without the
+ * multi-MB cells file. Arrays, not objects, to keep ~22k entries small. */
+export type SeasonSizes = { year: number; fires: Record<string, [number, string | null, string]> };
 
 /** archive/blob_{year}_fires.json — pipeline/export_scale_blob.py's per-fire
  * country + EFFIS-mapped area. Lives here rather than beside its first reader

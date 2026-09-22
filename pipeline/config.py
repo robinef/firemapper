@@ -70,6 +70,13 @@ def season_cells_key(year: int) -> str:
     return f"archive/season_{year}_cells.json"
 
 
+# {"year", "fires": {fire_id: [km2, country | null, first YYYY-MM-DD]}} — the
+# size filter's boot-time input, so the histogram and the EU-27 scope need
+# neither the multi-MB cells file nor the scale blob's fires summary.
+def season_sizes_key(year: int) -> str:
+    return f"archive/season_{year}_sizes.json"
+
+
 # Cluster over a longer window than the live layer so fires that have gone quiet
 # still surface as historical ("past") scars. Lives here (not run.py, which
 # uses it) so export.py's coverage.py can read it too without run.py <-> export.py
@@ -88,6 +95,27 @@ MAX_FIRE_DAYS = 90
 # that gap. Every detection in a static cell or its ring (events.STATIC_RING_K)
 # is removed from the rows before clustering — global, not per event.
 STATIC_CELL_DAYS = 20
+# Static-source gate for the season export (export_season.is_static_track),
+# the archive-side counterpart of STATIC_CELL_DAYS: tracks archived before that
+# filter shipped keep their plant pings forever, and a permanent archive is
+# never rewritten. A track is static when it spans MORE than SPAN_DAYS (first
+# to last bin) on AT MOST MAX_CELLS unique cells. Measured on the prod archive
+# (2026-09-22, 22,114 tracks): exactly 12 of 21.8k 2026 tracks span > 30 days,
+# on 3-19 cells, detected on 88-100 % of those days, and every one sits on an
+# industrial site (steelworks at Duisburg, IJmuiden, Iskenderun, Smederevo,
+# Zhlobin, Kehl; Kedzierzyn-Kozle chemicals; four near Algiers/Oran; one at
+# Arganda). No track of >= 50 cells spans more than 25 days, and the smallest
+# real fire lasting >= 20 days has 31 cells. So 30 days sits above every real
+# fire's span, and 30 cells above every long-lived source (19) and below the
+# multi-week fires the layer must keep. Span alone would already separate
+# 2026; the cell cap is what keeps a genuine month-long fire from ever being
+# dropped. Detection density (days seen / span) does NOT separate: big real
+# fires are seen daily too (0.67-1.08). Below 30 days, the 4.3k track bodies
+# sampled hold ~80 more tiny near-daily tracks (15-30 days, <= 10 cells), many
+# of them plants too; they are not gated, because at that span tiny real fires
+# exist as well and no measured second signal splits the two.
+SEASON_STATIC_SPAN_DAYS = 30
+SEASON_STATIC_MAX_CELLS = 30
 
 
 @dataclass(frozen=True)

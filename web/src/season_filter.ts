@@ -1,6 +1,6 @@
 import { cellArea, cellToParent, getResolution, UNITS } from "h3-js";
 import { isEuCountry } from "./eu27";
-import type { FiresSummary, SeasonCells } from "./types";
+import type { FiresSummary, SeasonCells, SeasonSizes } from "./types";
 
 /**
  * Size filter for the "Burned this year" layer — the math half.
@@ -68,6 +68,44 @@ export function fireSizes(cells: SeasonCells): Map<string, number> {
     out.set(id, sum);
   }
   return out;
+}
+
+/** Per-fire sizes for exactly the fires in `cells`, reusing `known` (the
+ * sidecar's) wherever it has the fire and computing only the rest. The sidecar
+ * and the cells file are separate uploads, so they can skew either way: a
+ * cells file one publish newer can hold a fire the sidecar has not heard of
+ * yet (without its size it would read as 0 km² and vanish at every
+ * threshold), and a sidecar one publish newer can list a fire this cells file
+ * no longer has (the bars would count a fire the aggregate never can). Returns
+ * `known` itself when its fires are exactly the cells' — the common case, and
+ * the one that must cost no h3 math and no copy at all. */
+export function withKnownSizes(cells: SeasonCells, known: Map<string, number>): Map<string, number> {
+  const ids = Object.keys(cells);
+  let missing: SeasonCells | null = null;
+  for (const id of ids) if (!known.has(id)) (missing ??= {})[id] = cells[id];
+  if (!missing && known.size === ids.length) return known;
+  const out = new Map<string, number>();
+  for (const id of ids) {
+    const v = known.get(id);
+    if (v !== undefined) out.set(id, v);
+  }
+  if (missing) for (const [id, v] of fireSizes(missing)) out.set(id, v);
+  return out;
+}
+
+/** The sidecar's countries in the shape isEuFire reads. Null when it places
+ * no fire at all (the pipeline had no fires summary that run): a scope that
+ * answers "not EU" for every fire would offer a guaranteed empty map.
+ * `area_km2` carries the footprint km², not the scale blob's EFFIS area —
+ * only `country` is ever read from this. */
+export function sidecarCountries(s: SeasonSizes): FiresSummary | null {
+  const out: FiresSummary = {};
+  let placed = false;
+  for (const [id, [km2, country]] of Object.entries(s.fires)) {
+    out[id] = { country, area_km2: km2 };
+    if (country) placed = true;
+  }
+  return placed ? out : null;
 }
 
 /** Bin holding `km2`: −1 below the first edge, else the largest i with
@@ -201,6 +239,10 @@ export function tickPos(km2: number): number {
  */
 export function createSeasonFilter(opts: {
   onAggregate: (agg: SeasonAggregate) => void;
+  /** Every slider move or scope change, before any aggregation. The caller
+   * uses it to fetch the cells (the aggregate needs them) and to refresh the
+   * status line from preview() while they are on their way. */
+  onSelect?: () => void;
   schedule?: (fn: () => void) => void;
 }) {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -220,6 +262,13 @@ export function createSeasonFilter(opts: {
    * never does — then the EU-27 button stays disabled and nothing else here
    * changes behaviour). */
   let countries: FiresSummary | null = null;
+  /** Per-fire first-detection dates from the sidecar — null without one. With
+   * the sizes, they make the fire count and the floor of any selection
+   * computable before the cells file (and its geometry) arrives. */
+  let firstById: Map<string, string> | null = null;
+  /** The sizes came from the sidecar: they stay the one source of sizes when
+   * the cells land, so the bars and the aggregate cannot disagree. */
+  let fromSidecar = false;
 
   /** Is there a usable countries file? An EMPTY summary is not one: it parses,
    * but it answers "not EU" for every fire, so offering the scope would offer
@@ -232,9 +281,36 @@ export function createSeasonFilter(opts: {
   const keepFn = (): ((id: string) => boolean) | undefined =>
     scope === "eu" ? (id: string) => isEuFire(countries, id) : undefined;
 
+  /** The current selection's fire count and floor from the sidecar alone. The
+   * same two gates, in the same order, as aggregate(): a fire must reach the
+   * threshold and pass the scope. */
+  const selection = (): { fires: number; floor: string | null } => {
+    const t = thresholdFor(index);
+    const keep = keepFn();
+    let fires = 0;
+    let floor: string | null = null;
+    for (const [id, v] of sizes ?? []) {
+      if (v < t) continue;
+      if (keep && !keep(id)) continue;
+      fires += 1;
+      const f = firstById?.get(id);
+      if (f !== undefined && (floor === null || f < floor)) floor = f;
+    }
+    return { fires, floor };
+  };
+
+  const isDefault = (): boolean => index <= 0 && scope === "all";
+
   const labelText = (): string => {
     if (status === "loading") return "loading sizes…";
     if (status === "unavailable") return "sizes unavailable";
+    // Sidecar only, and the reader has chosen something: the count is known,
+    // the deduped km² needs the union of the kept fires' cells. Say which is
+    // which rather than approximating the km² by a per-fire sum.
+    if (!cells && firstById && !isDefault()) {
+      const head = index <= 0 ? "all sizes" : `≥ ${thresholdFor(index)} km²`;
+      return `${scopePrefix(scope)}${head} · ${selection().fires.toLocaleString("en-GB")} fires · … km² footprint`;
+    }
     // `last` is only usable while it describes the threshold now on screen.
     // Between a slider move and the debounced re-aggregation it describes the
     // PREVIOUS one, and pairing the new head with those totals states a
@@ -318,6 +394,7 @@ export function createSeasonFilter(opts: {
     if (!Number.isFinite(v)) return;
     index = Math.max(0, Math.min(SIZE_EDGES.length - 1, Math.round(v)));
     paint();
+    opts.onSelect?.();
     schedule(runAggregate);
   };
 
@@ -344,6 +421,7 @@ export function createSeasonFilter(opts: {
     // not be dumped out of the control for using it, and a screen reader
     // announces the new aria-pressed state only if focus lands there.
     container?.querySelector<HTMLButtonElement>(`.season-scope button[data-scope="${s}"]`)?.focus();
+    opts.onSelect?.();
     schedule(runAggregate);
   };
 
@@ -402,10 +480,13 @@ export function createSeasonFilter(opts: {
 
   return {
     control,
+    /** The cells arrived. With a sidecar already set its sizes are kept (only
+     * fires it lacks are computed) and `s` is ignored; without one, `s` is the
+     * sizes, as before the sidecar existed. */
     setCells(c: SeasonCells, s: Map<string, number>): void {
       cells = c;
-      sizes = s;
-      bins = histogram(s, keepFn());
+      sizes = fromSidecar && sizes ? withKnownSizes(c, sizes) : s;
+      bins = histogram(sizes, keepFn());
       status = "ready";
       // Rebuild into the current container so the bars reflect real counts,
       // then aggregate once at threshold 0 (debounced, off the idle path) so
@@ -413,6 +494,24 @@ export function createSeasonFilter(opts: {
       if (container) control(container);
       schedule(runAggregate);
     },
+    /** The sizes sidecar: the histogram, the counts and the EU-27 scope are
+     * ready from it at once. The aggregate still waits for setCells. Landing
+     * after the cells (a deep link can fetch them first), it contributes its
+     * countries and dates only — the cells' sizes and aggregate stand. */
+    setSizes(sc: SeasonSizes): void {
+      const placed = sidecarCountries(sc);
+      if (placed) countries = placed;
+      firstById = new Map(Object.entries(sc.fires).map(([id, e]) => [id, e[2]]));
+      if (!cells) {
+        sizes = new Map(Object.entries(sc.fires).map(([id, e]) => [id, e[0]]));
+        fromSidecar = true;
+        bins = histogram(sizes, keepFn());
+        if (status === "loading") status = "ready";
+      }
+      if (container) control(container);
+    },
+    /** The sidecar's sizes, for the cells loader to reuse — null without one. */
+    knownSizes: (): Map<string, number> | null => (fromSidecar ? sizes : null),
     setUnavailable(): void {
       status = "unavailable";
       paint();
@@ -430,5 +529,13 @@ export function createSeasonFilter(opts: {
      * the panel's status line prints together, so they always describe the
      * same selection of fires. */
     summary: () => (last ? { fires: last.fires, km2: last.km2, floor: last.floor } : null),
+    /** Until the first aggregate lands: the chosen selection's count and floor
+     * from the sidecar, with the scope they describe. Null at the default
+     * selection (the pipeline's totals are exact there), without a sidecar,
+     * and once summary() has real numbers. */
+    preview: (): { fires: number; floor: string | null; scope: SeasonScope } | null => {
+      if (last || !firstById || isDefault()) return null;
+      return { ...selection(), scope };
+    },
   };
 }

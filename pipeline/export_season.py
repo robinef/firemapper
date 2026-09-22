@@ -1,11 +1,13 @@
 """Incremental export of the current year's archived fires into the
 "Burned this year" overview layer files (web/src/layer_season.ts).
 
-Two published files per year, both under archive/ (gen-pruning immune,
+Three published files per year, all under archive/ (gen-pruning immune,
 uploaded by remote.publish()'s archive/ walk, restored by name in
 remote.hydrate()):
 
   season_{year}.json        boot-time summary: res-6 hex aggregates + totals
+  season_{year}_sizes.json  boot-time: {year, fires: {fire_id: [km2, country, first]}},
+                            the size filter's input (histogram, EU-27 scope)
   season_{year}_cells.json  lazy: {fire_id: {digest, first, cells}}
 
 plus season_state.json, the per-track bookkeeping that makes this run
@@ -34,13 +36,20 @@ import h3
 
 from .config import (
     ARCHIVE_TRACKS_INDEX,
+    MAX_FIRE_DAYS,
     SEASON_STATE_KEY,
+    SEASON_STATIC_MAX_CELLS,
+    SEASON_STATIC_SPAN_DAYS,
     Settings,
+    scale_blob_fires_key,
     season_cells_key,
     season_key,
+    season_sizes_key,
 )
+from .events import static_classification
 from .export_scale_blob import _load_json, _load_track_body, _save_json, year_of_track
 from .geo_local import dedup_nested_cells
+from .store import read_hotspots
 
 AGG_RES = 6
 # Track bodies come from R2 one GET each; 8 concurrent fetches turn the
@@ -50,10 +59,16 @@ FETCH_WORKERS = 8
 FETCH_BATCH = 32
 # Static-source diagnostic (spec: "measure, do not guess"): a real fire's
 # series rarely spans more than a few weeks; a flare or refinery archived
-# before the #121 filter shipped spans months on a handful of cells. This
-# only LOGS the counts so the first prod runs give the number a gate would
-# need — it does not gate anything.
+# before the #121 filter shipped spans months on a handful of cells. These
+# counters LOG the population; the gate itself is is_static_track below,
+# with its measured thresholds in config.py.
 LONG_SPAN_DAYS = 30
+# season_state.json's one non-track entry: the last zone season_static_zone
+# computed, {"cells": [...sorted], "computed_at": iso}, applied on a run whose
+# raw store is unreadable. Track ids are 12 hex chars; this cannot collide.
+# Popped off the state as it loads and put back as it saves, so no per-track
+# loop (reconcile, pending, apply_static_zone) ever iterates over it.
+ZONE_STATE_KEY = "__zone__"
 
 
 def first_bin_date(body: dict) -> str:
@@ -72,7 +87,104 @@ def _span_days(body: dict) -> int:
     return (last - first).days
 
 
-def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
+def is_static_track(span_days: int, cells: list[str]) -> bool:
+    """A fixed heat source archived as a "fire": detected for longer than any
+    real fire in the archive, on a handful of cells. Both conditions, because
+    each alone catches real fires — see SEASON_STATIC_* in config.py."""
+    return span_days > SEASON_STATIC_SPAN_DAYS and len(set(cells)) <= SEASON_STATIC_MAX_CELLS
+
+
+def season_static_zone(settings: Settings, year: int) -> set[str] | None:
+    """The static heat-source zone over `year`'s raw detections, by the live
+    map's rule (events.static_classification): a cell is static when some
+    MAX_FIRE_DAYS consecutive days — the live clustering window — hold >=
+    STATIC_CELL_DAYS distinct detection days on it; the zone is those cells
+    plus their STATIC_RING_K ring. So the season drops a cell iff some live
+    refresh this year would have dropped it, not merely because separate
+    episodes add up over the whole year.
+
+    From the raw store, not the archived tracks: a track's cell_bins records
+    each cell once, on its first bin, so the bodies cannot tell a plant lit
+    on 30 days from a cell burned once (measured 2026-09-22: no archived
+    cell reaches 5 days). None when the store is absent or empty — the export
+    then applies the last good zone it stored (ZONE_STATE_KEY)."""
+    store = settings.data_dir / "raw" / "hotspots.parquet"
+    rows = [r for r in read_hotspots(store) if r["acq_time"].year == year]
+    if not rows:
+        print(f"[season] no raw hotspot store rows for {year} at {store}; static zone unknown this run", file=sys.stderr)
+        return None
+    return static_classification(rows, window_days=MAX_FIRE_DAYS)[1]
+
+
+def apply_static_zone(
+    target_year: int,
+    state: dict[str, dict],
+    cells_by_fire: dict[str, dict],
+    zone: set[str],
+) -> tuple[int, int]:
+    """Remove every zone cell from every target-year fire, in place, and
+    return (fires emptied, distinct cells removed).
+
+    Runs over the WHOLE store each run, not only this run's tracks: the zone
+    grows as a plant accrues days, and an unchanged fire is never re-read.
+    The raw store only grows, so the zone does not shrink on its own; it can
+    when STATIC_CELL_DAYS / MAX_FIRE_DAYS / STATIC_RING_K change or rows are
+    purged (store.delete_by_src_id). So the removal must be reversible
+    without the track body. The cells file stores the FILTERED
+    list — it is also the file the web paints, so it cannot hold plant cells —
+    and each entry keeps what the zone took in `zone_cells` (the web ignores
+    it). Raw cells = cells + zone_cells, re-filtered against today's zone, so
+    a cell the zone no longer covers comes back. Keeping the removed cells in
+    the SAME entry makes the pair atomic under publish()'s unordered upload.
+
+    A fire the zone empties cannot stay in the cells file (the web counts
+    every entry as a fire), so its raw cells and first date move to its state
+    entry (`zone_empty`), which the reconcile treats as not wanted. If that
+    state upload is lost, the reconcile sees a wanted fire missing from the
+    cells file, re-reads the body and empties it again — self-healing.
+
+    Only the cells' own ids are compared: the zone is res-8 (polar), so a
+    res-7 Meteosat cell in a fire would not be masked even on a plant. The
+    prod cells file has none today (every archived cell is res 8, measured
+    2026-09-22); revisit if Meteosat-only fires start being archived."""
+    removed: set[str] = set()
+    emptied = 0
+    candidates = [(tid, e) for tid, e in cells_by_fire.items()] + [
+        (tid, {"digest": e["digest"], "first": e["first"], "cells": [], "zone_cells": e["zone_cells"]})
+        for tid, e in state.items()
+        if e.get("zone_empty") and e.get("year") == target_year
+    ]
+    for tid, entry in candidates:
+        raw = list(dict.fromkeys([*entry["cells"], *entry.get("zone_cells", [])]))
+        kept = [c for c in raw if c not in zone]
+        taken = [c for c in raw if c in zone]
+        removed.update(taken)
+        st = state.get(tid)
+        if kept:
+            cells_by_fire[tid] = {"digest": entry["digest"], "first": entry["first"], "cells": kept}
+            if taken:
+                cells_by_fire[tid]["zone_cells"] = taken
+            if st is not None:
+                for k in ("zone_empty", "zone_cells", "first"):
+                    st.pop(k, None)
+        else:
+            cells_by_fire.pop(tid, None)
+            emptied += 1
+            if st is not None:
+                st.update({"zone_empty": True, "zone_cells": taken, "first": entry["first"]})
+    return emptied, len(removed)
+
+
+def dedup_by_fire(cells_by_fire: dict[str, dict]) -> dict[str, list[str]]:
+    """Each fire's nested-deduped cells. ~1.5 s over a full season, and both
+    the aggregate and the sizes sidecar need it, so a run computes it once."""
+    return {fid: dedup_nested_cells(entry["cells"]) for fid, entry in cells_by_fire.items()}
+
+
+def aggregate_r6(
+    cells_by_fire: dict[str, dict],
+    deduped: dict[str, list[str]] | None = None,
+) -> list[list]:
     """[[res-6 cell, km2], ...] sorted by cell: the real area of every
     (nested-deduped) burned cell, rolled up to its res-6 parent — ground
     burned once, however many fires touched it.
@@ -80,9 +192,10 @@ def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
     The union is taken across fires BEFORE the roll-up: fires overlap (the
     same cell is claimed by up to 8 archived fires in the prod sample), and
     summing per fire published a km2 that over-counted by ~10 %."""
+    deduped = dedup_by_fire(cells_by_fire) if deduped is None else deduped
     seen: set[str] = set()
-    for entry in cells_by_fire.values():
-        seen.update(dedup_nested_cells(entry["cells"]))
+    for cells in deduped.values():
+        seen.update(cells)
     totals: dict[str, float] = {}
     for cell in seen:
         parent = h3.cell_to_parent(cell, AGG_RES) if h3.get_resolution(cell) > AGG_RES else cell
@@ -90,8 +203,13 @@ def aggregate_r6(cells_by_fire: dict[str, dict]) -> list[list]:
     return [[cell, round(km2, 1)] for cell, km2 in sorted(totals.items())]
 
 
-def summarize(year: int, cells_by_fire: dict[str, dict], now: datetime) -> dict:
-    r6 = aggregate_r6(cells_by_fire)
+def summarize(
+    year: int,
+    cells_by_fire: dict[str, dict],
+    now: datetime,
+    deduped: dict[str, list[str]] | None = None,
+) -> dict:
+    r6 = aggregate_r6(cells_by_fire, deduped)
     return {
         "year": year,
         "generated_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -102,6 +220,28 @@ def summarize(year: int, cells_by_fire: dict[str, dict], now: datetime) -> dict:
     }
 
 
+def sizes_sidecar(
+    year: int,
+    cells_by_fire: dict[str, dict],
+    fires_summary: dict[str, dict],
+    deduped: dict[str, list[str]] | None = None,
+) -> dict:
+    """Per-fire [km2, country, first] for the web's size filter. km2 is the
+    same per-fire nested-dedup sum the web's fireSizes() computes (and
+    geo_local.true_area_km2 before its 0.1 rounding), kept to 3 decimals so a
+    fire sitting on a slider edge lands on the same side as it would from the
+    cells. Country comes from the scale blob's fires summary (written earlier
+    in the same refresh); null where it has none. Arrays, not objects, to
+    keep ~22k entries small."""
+    deduped = dedup_by_fire(cells_by_fire) if deduped is None else deduped
+    fires = {}
+    for fid, entry in cells_by_fire.items():
+        km2 = sum(h3.cell_area(c, unit="km^2") for c in deduped[fid])
+        country = (fires_summary.get(fid) or {}).get("country")
+        fires[fid] = [round(km2, 3), country, entry["first"]]
+    return {"year": year, "fires": fires}
+
+
 def run_export_season(
     settings: Settings,
     target_year: int,
@@ -110,11 +250,16 @@ def run_export_season(
     time_budget_s: float = 300.0,
     clock: Callable[[], float] = time.monotonic,
     now: datetime | None = None,
+    static_zone: set[str] | None = None,
 ) -> None:
     """Bring season_{target_year}.json / _cells.json up to date with the
     track archive, within `time_budget_s`; whatever is not reached this run
     stays in `to_process` for the next one (see export_scale_blob.run_export
-    for why a budget, not a hard kill, is the right shape here)."""
+    for why a budget, not a hard kill, is the right shape here).
+
+    `static_zone` (season_static_zone): cells no published fire may keep —
+    see apply_static_zone. None applies the last good zone stored in state
+    (ZONE_STATE_KEY), or nothing if there has never been one."""
     index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
     if not index_path.exists():
         return
@@ -123,7 +268,9 @@ def run_export_season(
     state_path = settings.out_dir / SEASON_STATE_KEY
     cells_path = settings.out_dir / season_cells_key(target_year)
     summary_path = settings.out_dir / season_key(target_year)
+    sizes_path = settings.out_dir / season_sizes_key(target_year)
     state: dict[str, dict] = _load_json(state_path, {})
+    stored_zone: dict | None = state.pop(ZONE_STATE_KEY, None)
     cells_by_fire: dict[str, dict] = _load_json(cells_path, {})
 
     # Self-heal a partial publish by reconciling what the state WANTS in the
@@ -137,16 +284,30 @@ def run_export_season(
     #   both, digests differ → the contribution was built from another body.
     # Only checking `year == target_year` left the demotion case invisible:
     # nothing re-read the track, so the ghost stayed published forever.
+    #
+    # A static track (is_static_track) is recorded with its year but is not
+    # wanted: a cells file that still holds it is a partial publish too.
     for tid, entry in list(state.items()):
         stored = cells_by_fire.get(tid)
-        wanted = entry.get("year") == target_year
+        wanted = entry.get("year") == target_year and not entry.get("static") and not entry.get("zone_empty")
         if wanted != (stored is not None) or (stored is not None and stored.get("digest") != entry.get("digest")):
             del state[tid]
             cells_by_fire.pop(tid, None)
 
-    to_process = [(tid, digest) for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest]
+    def pending(tid: str, digest: str) -> bool:
+        entry = state.get(tid, {})
+        if entry.get("digest") != digest:
+            return True
+        # A target-year entry with no `static` verdict was recorded before the
+        # gate existed (prod's state held every static track that way, digest
+        # unchanged). Re-read it once. Its stored contribution is left in
+        # place until then: the re-check covers every 2026 track and can span
+        # several runs' budgets, and dropping first would blank the season.
+        return entry.get("year") == target_year and "static" not in entry
+
+    to_process = [(tid, digest) for tid, digest in index.items() if pending(tid, digest)]
     deadline = clock() + time_budget_s
-    processed = long_span = long_span_small = malformed = 0
+    processed = long_span = long_span_small = malformed = static_excluded = 0
 
     def load(item: tuple[str, str]):
         tid, digest = item
@@ -171,6 +332,7 @@ def run_export_season(
                     year = year_of_track(body)
                     first = first_bin_date(body)
                     cells = body["cells"]
+                    span = _span_days(body)
                 except (ValueError, KeyError, TypeError):
                     # A body with no series or no cells can never contribute;
                     # record its digest so it is not re-fetched every run
@@ -188,18 +350,44 @@ def run_export_season(
                 processed += 1
                 if year != target_year:
                     continue
-                cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
-                if _span_days(body) > LONG_SPAN_DAYS:
+                if span > LONG_SPAN_DAYS:
                     long_span += 1
                     if len(body["cells"]) <= 10:
                         long_span_small += 1
+                static = is_static_track(span, cells)
+                state[tid]["static"] = static
+                if static:
+                    static_excluded += 1
+                    continue
+                cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
 
-    if processed or malformed:
+    # No zone this run (raw store missing or unreadable) → the last good one,
+    # so a fire re-read this run is filtered like every other. Never a zone
+    # at all → no filtering, exactly the pre-zone export.
+    if static_zone is not None:
+        stored_zone = {
+            "cells": sorted(static_zone),
+            "computed_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    zone = static_zone if static_zone is not None else (set(stored_zone["cells"]) if stored_zone else None)
+    zone_emptied = zone_removed = 0
+    if zone is not None:
+        zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, zone)
+    if processed or malformed or zone_emptied or zone_removed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
-            f"of_which_<=10_cells={long_span_small} malformed={malformed}",
+            f"of_which_<=10_cells={long_span_small} static_excluded={static_excluded} "
+            f"static_zone_fires_excluded={zone_emptied} static_zone_cells_removed={zone_removed} "
+            f"malformed={malformed}",
             file=sys.stderr,
         )
+    deduped = dedup_by_fire(cells_by_fire)
+    fires_summary = _load_json(settings.out_dir / scale_blob_fires_key(target_year), {})
     _save_json(cells_path, cells_by_fire)  # contributions first...
-    _save_json(summary_path, summarize(target_year, cells_by_fire, now))  # ...then the summary...
+    # ...then the two files derived from them (the sidecar first: the summary
+    # is what makes the web offer the layer at all)...
+    _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, deduped))
+    _save_json(summary_path, summarize(target_year, cells_by_fire, now, deduped))
+    if stored_zone is not None:
+        state[ZONE_STATE_KEY] = stored_zone
     _save_json(state_path, state)  # ...then commit state — the recovery contract

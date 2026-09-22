@@ -294,6 +294,55 @@ def static_zone(static: set[str]) -> set[str]:
     return zone
 
 
+def static_cells_windowed(rows: list[dict], res: int, window_days: int) -> set[str]:
+    """Cells with >= STATIC_CELL_DAYS distinct detection days inside SOME run
+    of `window_days` consecutive calendar days — static_cells asked of every
+    window at once. cluster() needs no window (its rows are already bounded
+    to MAX_FIRE_DAYS); the season export classifies a whole year, and counting
+    days across it would flag a cell reburnt in separate episodes months apart
+    that no live window ever sees as static. Per cell: sorted distinct days,
+    two pointers, O(days)."""
+    days: dict[str, set] = defaultdict(set)
+    for r in rows:
+        days[cell_at(r, res)].add(r["acq_time"].date().toordinal())
+    out: set[str] = set()
+    for cell, ds in days.items():
+        if len(ds) < STATIC_CELL_DAYS:
+            continue
+        seq = sorted(ds)
+        lo = 0
+        for hi, d in enumerate(seq):
+            while d - seq[lo] >= window_days:
+                lo += 1
+            if hi - lo + 1 >= STATIC_CELL_DAYS:
+                out.add(cell)
+                break
+    return out
+
+
+def static_classification(
+    rows: list[dict], window_days: int | None = None,
+) -> tuple[set[str], set[str]]:
+    """(static cells, excluded zone) over the POLAR rows among `rows`.
+
+    Without `window_days` this is cluster()'s rule over rows it has already
+    bounded to MAX_FIRE_DAYS: >= STATIC_CELL_DAYS distinct days on the cell.
+    With it (the season export passes MAX_FIRE_DAYS over a whole year), a
+    cell is static when any `window_days` consecutive calendar days hold that
+    many — the same verdict a live refresh would have reached at some point
+    in the year. The two agree whenever the rows span at most `window_days`
+    days; the windowed form is marginally stricter at the edge (the live
+    window is [now - 90 d, now], which can touch 91 calendar dates).
+    Meteosat rows never classify a cell: they are ~2 km pixels at another
+    resolution, and cluster() masks them against the polar zone instead."""
+    polar = [r for r in rows if r["tier"] != "meteosat"]
+    static = (
+        static_cells(polar, H3_RES) if window_days is None
+        else static_cells_windowed(polar, H3_RES, window_days)
+    )
+    return static, static_zone(static)
+
+
 def cluster(
     rows: list[dict], now: datetime, window_days: int = WINDOW_DAYS,
     report: dict | None = None,
@@ -337,8 +386,7 @@ def cluster(
     # recency: a flare that paused for weeks is still a flare, and an MTG
     # pixel landing on it must not read as a fresh fire the moment its polar
     # event ages out of the live window.
-    static = static_cells(polar, H3_RES)
-    zone = static_zone(static)
+    static, zone = static_classification(polar)
     kept: list[dict] = []
     excluded: list[dict] = []
     for r in polar:

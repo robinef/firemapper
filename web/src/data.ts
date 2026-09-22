@@ -1,4 +1,4 @@
-import type { FiresSummary, Manifest, SeasonSummary, Slice, Stats, Track } from "./types";
+import type { FiresSummary, Manifest, SeasonSizes, SeasonSummary, Slice, Stats, Track } from "./types";
 
 export const SCHEMA_MAJOR = 1;
 // Minimal shape we depend on — lets tests inject a simple fake.
@@ -155,6 +155,33 @@ export async function loadFiresSummary(
     const s = (await r.json()) as unknown;
     if (!s || typeof s !== "object" || Array.isArray(s)) return null;
     return s as FiresSummary;
+  } catch {
+    return null;
+  }
+}
+
+/** The season's per-fire sizes sidecar (pipeline/export_season.py). Null on
+ * any failure, like loadSeason: the caller then falls back to deriving the
+ * sizes from the cells file, exactly as before the sidecar existed. Only a
+ * sample entry is shape-checked — the file is ~22k entries and our own
+ * output; the check is there to catch a wrong file, not a corrupt entry. */
+export async function loadSeasonSizes(
+  year: number,
+  base = "/data",
+  fetchFn: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
+): Promise<SeasonSizes | null> {
+  try {
+    const r = await fetchFn(`${base}/archive/season_${year}_sizes.json`);
+    if (!r.ok) return null;
+    const s = (await r.json()) as Partial<SeasonSizes> | null;
+    if (!s || typeof s !== "object" || typeof s.year !== "number") return null;
+    const fires = s.fires as unknown;
+    if (!fires || typeof fires !== "object" || Array.isArray(fires)) return null;
+    const sample = Object.values(fires)[0] as unknown;
+    if (sample !== undefined && (!Array.isArray(sample) || sample.length !== 3 || typeof sample[0] !== "number")) {
+      return null;
+    }
+    return s as SeasonSizes;
   } catch {
     return null;
   }

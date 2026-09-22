@@ -1,7 +1,7 @@
 import type * as maplibregl from "maplibre-gl";
 import { cellToBoundary, cellToLatLng } from "h3-js";
 import { sliceFeatures } from "./layer_dayslice";
-import { dedupNested, fireSizes, scopePrefix } from "./season_filter";
+import { dedupNested, fireSizes, scopePrefix, withKnownSizes } from "./season_filter";
 import type { SeasonScope } from "./season_filter";
 import type { SeasonCells, SeasonSummary } from "./types";
 
@@ -329,10 +329,16 @@ export function formatFloor(floor: string): string {
 
 /** The panel's one-line summary. Same wording as the filter's label —
  * "footprint" because the km² is satellite heat coverage, not mapped burn
- * area — so the two numbers in the panel read as one statement. */
-export function seasonStatus(summary: SeasonSummary, scope: SeasonScope = "all"): string {
+ * area — so the two numbers in the panel read as one statement. A null km²
+ * is a selection counted from the sizes sidecar whose cells (and so whose
+ * deduped area) have not arrived yet: "…", never 0. */
+export function seasonStatus(
+  summary: Omit<SeasonSummary, "km2"> & { km2: number | null },
+  scope: SeasonScope = "all",
+): string {
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
-  const base = `${scopePrefix(scope)}${n(summary.fires)} fires · ${n(summary.km2)} km² footprint`;
+  const km2 = summary.km2 === null ? "…" : n(summary.km2);
+  const base = `${scopePrefix(scope)}${n(summary.fires)} fires · ${km2} km² footprint`;
   return summary.floor ? `${base} since ${formatFloor(summary.floor)}` : base;
 }
 
@@ -387,6 +393,10 @@ export type SeasonCellsHooks = {
    * `sizes` captured from onLoaded is still null at the first install past
    * the zoom gate, and every cell would be tagged 0. */
   cellProps?: (fireId: string, km2: number) => Record<string, number>;
+  /** Per-fire km² already known from the sizes sidecar. Read when the file
+   * lands; when it covers every fire, fireSizes (~565 ms at 4× CPU throttle
+   * on the full season) is never run. Null → sizes come from the cells. */
+  knownSizes?: () => Map<string, number> | null;
 };
 
 /**
@@ -492,7 +502,8 @@ export function createSeasonCellsLoader(
       if (!r.ok) throw new Error(`season cells ${r.ok}`);
       const cells = (await r.json()) as SeasonCells;
       if (!cells || typeof cells !== "object" || Array.isArray(cells)) throw new Error("season cells malformed");
-      const sizes = fireSizes(cells);
+      const known = hooks.knownSizes?.() ?? null;
+      const sizes = known ? withKnownSizes(cells, known) : fireSizes(cells);
       if (!map.getSource(SEASON_CELLS_SOURCE)) throw new Error("season cells source missing");
       held = { cells, sizes };
       state = "fetched";
