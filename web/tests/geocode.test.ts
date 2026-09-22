@@ -203,6 +203,27 @@ describe("handleGeocode", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it("uses the VISITOR_RATE_GATE Durable Object when no override is given, naming the instance by route and IP", async () => {
+    const seen: string[] = [];
+    const ns = {
+      idFromName: (n: string) => n,
+      get: (id: unknown) => {
+        seen.push(String(id));
+        return { fetch: async () => new Response(JSON.stringify({ success: false, retryAfterMs: 1000 })) };
+      },
+    };
+    const upstream = vi.fn();
+    const res = await handleGeocode(req("q=Gironde", { origin: ORIGIN, "cf-connecting-ip": "203.0.113.7" }), {
+      GEOCODE_RATE_GATE: fakeGate(true),
+      GEOCODE_UPSTREAM: upstream,
+      GEOCODE_CACHE: fakeCache(),
+      VISITOR_RATE_GATE: ns,
+    });
+    expect(res.status).toBe(429);
+    expect(seen).toEqual(["geocode:203.0.113.7"]);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("serves a cached repeat without charging the visitor budget", async () => {
     const upstream = vi.fn(async () => new Response('[{"lat":"44.8","lon":"-1.0"}]'));
     const limiter = { limit: vi.fn(async () => ({ success: true })) };

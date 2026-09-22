@@ -40,22 +40,18 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "GEOCODE_RATE_GATE", "class_name": "GeocodeRateGate" }
+      { "name": "GEOCODE_RATE_GATE", "class_name": "GeocodeRateGate" },
+      // Per-visitor caps on the /api/* proxies, one instance per
+      // (route, client IP); limits live in worker/visitor_limit.ts. A
+      // dashboard WAF rule cannot attach to a workers.dev hostname, and the
+      // Workers Rate Limiting binding never denied in production here (see
+      // that file's header), so this is the mechanism that actually works.
+      { "name": "VISITOR_RATE_GATE", "class_name": "VisitorRateGate" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["GeocodeRateGate"] }
-  ],
-  // Per-visitor caps on the /api/* proxies (worker/visitor_limit.ts). A
-  // dashboard WAF rate-limiting rule cannot be attached to a workers.dev
-  // hostname, so the same infrastructure is used through this binding
-  // instead. Counters are per Cloudflare location and keyed on client IP;
-  // both handlers make ONE upstream call per user action, so these numbers
-  // are "a human clicking around", not a quota. period must be 10 or 60.
-  // namespace_id is any positive integer unique within this Worker.
-  "ratelimits": [
-    { "name": "HISTORICAL_VISITOR_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "GEOCODE_VISITOR_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+    { "tag": "v1", "new_sqlite_classes": ["GeocodeRateGate"] },
+    { "tag": "v2", "new_sqlite_classes": ["VisitorRateGate"] }
   ],
   // Required for the Worker to write logs at all: without it, console output
   // exists only in a live `wrangler tail`, i.e. only while someone is watching.

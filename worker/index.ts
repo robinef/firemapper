@@ -19,6 +19,7 @@ import { handleGeocode, GeocodeRateGate, type GeocodeEnv } from "./geocode";
 // Re-exported so wrangler.jsonc's durable_objects binding (class_name:
 // "GeocodeRateGate") can find the class on this Worker's entry point.
 export { GeocodeRateGate };
+export { VisitorRateGate } from "./visitor_limit";
 
 export interface R2ObjectBody {
   body: ReadableStream | string | null;

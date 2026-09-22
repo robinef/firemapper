@@ -257,24 +257,33 @@ wrangler secret put FIRMS_HISTORICAL_MAP_KEY
 
 **Per-visitor rate limits** are in code, not the dashboard. The Worker runs
 on its `workers.dev` hostname, which is Cloudflare's zone rather than ours, so
-Security → WAF → Rate limiting rules cannot be attached to it. The Workers
-[Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
-is backed by the same infrastructure and works on `workers.dev`, so
-`wrangler.jsonc` declares one `ratelimits` binding per route and
-`worker/visitor_limit.ts` applies it, keyed on client IP (counters are per
-Cloudflare location and eventually consistent — a bound on abuse, not
-accounting). Deploys with the code; nothing to click.
+Security → WAF → Rate limiting rules cannot be attached to it. They are a
+Durable Object, `VisitorRateGate` (`worker/visitor_limit.ts`), one instance
+per (route, client IP), fixed window; limits live in `VISITOR_LIMITS` in that
+file. Deploys with the code; nothing to click.
+
+Not the Workers [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/):
+that was tried first (#160). It enforces under `wrangler dev`, but on the
+live Worker it returned `success: true` for 40 calls from one IP inside
+15 s, with no exception, on a version that `wrangler versions view` showed
+carrying the binding. Same symptom on `workers.dev` is on the Cloudflare
+community (topic 953250, 2026-08-28), unanswered. A test pins that the
+binding stays out of `wrangler.jsonc` until someone re-verifies it against
+prod, not just locally.
 
 | Route | Layers, in order |
 |---|---|
 | `/api/historical-hotspots` | origin allowlist → input validation → **20 req/min per visitor** → FIRMS (map key + FIRMS's own limits) |
 | `/api/geocode` | origin allowlist → 7-day edge cache → **10 req/min per visitor** → `GeocodeRateGate` Durable Object's **global** 1 req/s cap (Nominatim's usage policy) → Nominatim |
 
-The per-visitor layer fails open (no binding or a limiter error lets the
-request through); the Durable Object gate fails closed, because it enforces
-an upstream policy rather than protecting our own quota. If the map ever
-moves to a custom domain, a dashboard rule can be added on top without
-touching any of this.
+The per-visitor layer fails open (no namespace or a gate error lets the
+request through, with a `console.warn` in Workers Logs); the global gate
+fails closed, because it enforces an upstream policy rather than protecting
+our own quota. Verify from outside after a deploy: 12 distinct `/api/geocode`
+queries with an allowed `Origin` from one IP, 1.2 s apart, must return ten
+200s then 429s with `retry-after: 60` (the global gate's 429 says
+`retry-after: 1`). If the map ever moves to a custom domain, a dashboard rule
+can be added on top without touching any of this.
 
 ## Running the whole thing somewhere else
 

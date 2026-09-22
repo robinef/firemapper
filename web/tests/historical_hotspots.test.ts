@@ -347,6 +347,29 @@ describe("handleHistoricalHotspots", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it("uses the VISITOR_RATE_GATE Durable Object when no override is given, naming the instance by route and IP", async () => {
+    const seen: string[] = [];
+    const ns = {
+      idFromName: (n: string) => n,
+      get: (id: unknown) => {
+        seen.push(String(id));
+        return { fetch: async () => new Response(JSON.stringify({ success: false, retryAfterMs: 1000 })) };
+      },
+    };
+    const upstream = vi.fn();
+    const req = new Request(`https://x/api/historical-hotspots?${VALID_QS}`, {
+      headers: { origin: "https://firemapper.robinef.workers.dev", "cf-connecting-ip": "203.0.113.7" },
+    });
+    const res = await handleHistoricalHotspots(req, {
+      FIRMS_HISTORICAL_MAP_KEY: "k",
+      HISTORICAL_HOTSPOTS_UPSTREAM: upstream,
+      VISITOR_RATE_GATE: ns,
+    });
+    expect(res.status).toBe(429);
+    expect(seen).toEqual(["historical:203.0.113.7"]);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("does not charge the visitor budget for a request that fails validation", async () => {
     const limiter = { limit: vi.fn(async () => ({ success: true })) };
     const res = await handleHistoricalHotspots(url("start=2022-07-01&end=2022-07-05"), {
