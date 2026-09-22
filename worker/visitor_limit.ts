@@ -45,7 +45,12 @@ export async function visitorLimited(
   let success: boolean;
   try {
     ({ success } = await limiter.limit({ key: visitorKey(request) }));
-  } catch {
+  } catch (err) {
+    // Fail-open, but never silently: with observability on, this line is the
+    // only way to tell "the binding let everyone through" from "nobody was
+    // over budget". The error comes from the runtime binding, not from any
+    // upstream URL, so it cannot carry a map key.
+    console.warn("visitor limiter error; failing open", err instanceof Error ? err.message : String(err));
     return null;
   }
   if (success) return null;
