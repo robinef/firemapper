@@ -87,6 +87,7 @@ function coverage(m: Manifest): string {
       <div class="src-stat"><span>Recent hotspot lookback</span><b>${escapeHtml(c.firms_lookback_days)} days</b></div>
       <div class="src-stat"><span>Past-fire clustering</span><b>${escapeHtml(c.scar_window_days)} days</b></div>
       <div class="src-stat"><span>Full fire-shape archive</span><b>from ${escapeHtml(c.archive_floor_date)}</b></div>
+      ${c.backfill_floor_date ? `<div class="src-stat"><span>Season footprint archive</span><b>from ${escapeHtml(c.backfill_floor_date)}</b></div>` : ""}
     </div>
     <p class="src-note">${escapeHtml(c.effis_note)}</p>
   </section>`;

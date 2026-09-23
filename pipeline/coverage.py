@@ -11,11 +11,13 @@ from .config import GENERATIONS_KEPT, SCAR_WINDOW_DAYS, Settings
 # never will.
 ARCHIVE_FLOOR_DATE = "2026-08-27"
 # scripts/backfill_season.py rebuilds the fires that ended before the live
-# archive's reach (Jan 1 - Jul 12 2026) from the FIRMS Standard Processing
-# archive. None until that publish run has landed in R2; then set to
-# "2026-01-01" in a one-line follow-up commit, so the disclosure never claims
-# coverage the bucket does not hold yet.
-BACKFILL_FLOOR_DATE: str | None = None
+# archive's reach from the FIRMS Standard Processing archive. Published
+# 2026-09-22 (backfill-season.yml run 35751494763): 8,414 tracks whose first
+# detections run 2026-01-01 .. 2026-06-28, merged into the permanent index
+# (22,296 -> 30,710 entries). Only the season layer's footprint reaches that
+# far back; ARCHIVE_FLOOR_DATE still marks where the live, forward-written
+# archive starts, and the two are disclosed separately.
+BACKFILL_FLOOR_DATE: str | None = "2026-01-01"
 
 
 def _generation_timestamp(gen_dir: Path) -> datetime:

@@ -51,6 +51,9 @@ function coverageHtml(m: Manifest): string {
     statRow("Recent hotspot lookback", `${c.firms_lookback_days} days`) +
     statRow("Past-fire clustering", `${c.scar_window_days} days`) +
     statRow("Full fire-shape archive", `from ${c.archive_floor_date}`) +
+    // statRow does not escape (see stat_row.ts); this value is pipeline output,
+    // escaped anyway so the row stays safe if it ever carries anything else.
+    (c.backfill_floor_date ? statRow("Season footprint archive", `from ${escapeHtml(c.backfill_floor_date)}`) : "") +
     `</div>` +
     `<p class="legend-note">${escapeHtml(c.effis_note)}</p>`
   );

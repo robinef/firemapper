@@ -21,6 +21,8 @@ export interface Manifest {
     firms_lookback_days: number;
     scar_window_days: number;
     archive_floor_date: string;
+    /** Absent until the Jan–Jun season backfill (scripts/backfill_season.py) is published. */
+    backfill_floor_date?: string | null;
     effis_note: string;
   };
 }

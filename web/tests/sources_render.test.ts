@@ -96,6 +96,22 @@ describe("renderSources", () => {
     expect(text).toContain("from 2024-01-01");
   });
 
+  it("discloses the season footprint archive only once the backfill floor is set", () => {
+    const el = root();
+    renderSources(el, MANIFEST, now);
+    expect(el.textContent).not.toContain("Season footprint archive");
+
+    const withFloor = {
+      ...MANIFEST,
+      coverage: { ...MANIFEST.coverage, backfill_floor_date: "2026-01-01" },
+    } as unknown as Manifest;
+    const el2 = root();
+    renderSources(el2, withFloor, now);
+    const text = el2.textContent?.replace(/\s+/g, " ") ?? "";
+    expect(text).toContain("Season footprint archive");
+    expect(text).toContain("from 2026-01-01");
+  });
+
   it("always carries the emergency line — this is not an official alert", () => {
     const el = root();
     renderSources(el, MANIFEST, now);
