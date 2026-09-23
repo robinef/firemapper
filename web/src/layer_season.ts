@@ -347,7 +347,13 @@ export function formatFloor(floor: string): string {
  * "footprint" because the km² is satellite heat coverage, not mapped burn
  * area — so the two numbers in the panel read as one statement. A null km²
  * is a selection counted from the sizes sidecar whose cells (and so whose
- * deduped area) have not arrived yet: "…", never 0. */
+ * deduped area) have not arrived yet: "…", never 0.
+ *
+ * "earliest", not "since": this date is the EARLIEST FIRE IN THE SELECTION,
+ * so it moves when a size threshold or a scope drops the fire it came from.
+ * The legend's "since <floor>" is a different fact — how far back the archive
+ * reaches — and the two sat one panel apart wearing the same word, disagreeing
+ * whenever the reader filtered, which reads as one of them being broken. */
 export function seasonStatus(
   summary: Omit<SeasonSummary, "km2"> & { km2: number | null },
   scope: SeasonScope = "all",
@@ -355,7 +361,7 @@ export function seasonStatus(
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
   const km2 = summary.km2 === null ? "…" : n(summary.km2);
   const base = `${scopePrefix(scope)}${n(summary.fires)} fires · ${km2} km² footprint`;
-  return summary.floor ? `${base} since ${formatFloor(summary.floor)}` : base;
+  return summary.floor ? `${base} · earliest ${formatFloor(summary.floor)}` : base;
 }
 
 export function seasonLegend(floor: string | null, year = new Date().getUTCFullYear()) {

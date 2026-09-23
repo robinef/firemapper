@@ -444,8 +444,16 @@ export function createSeasonFilter(opts: {
         // 100 km² — and rounding the tail to 0 px would claim the big fires
         // the slider exists to isolate do not exist. An empty bin still
         // renders nothing: "rare" and "none" must stay distinguishable.
+        //
+        // SQRT of the count, not the count: on that same power law a linear
+        // axis puts every bin past the first on the 1 px floor, so the tail
+        // has no shape at all — 1 fire and 40 fires draw the same bar. sqrt
+        // is monotone, so the bars still rank the bins correctly, and it
+        // hands the tail a readable share of the box (1 beside 100 goes from
+        // 2.5 % to 10 % of the full height). Area-true reading is not what
+        // this control is for: it is the legend for the slider beneath it.
         const h = status === "ready"
-          ? (n > 0 ? Math.max(1, Math.round((n / max) * HIST_H)) : 0)
+          ? (n > 0 ? Math.max(1, Math.round(Math.sqrt(n / max) * HIST_H)) : 0)
           : HIST_H;
         return `<rect x="${(i * BAR_W).toFixed(1)}" y="${HIST_H - h}" width="${(BAR_W - 1).toFixed(1)}" height="${h}"></rect>`;
       })
