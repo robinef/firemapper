@@ -38,8 +38,13 @@ import type { SeasonCells, SeasonSummary } from "./types";
 export const SEASON_HEAT_SOURCE = "season-heat-pts";
 export const SEASON_HEX_SOURCE = "season-hex";
 export const SEASON_CELLS_SOURCE = "season-cells";
+/** The real burned cells' fill — the only season layer a click can land on
+ * (the hexes are an aggregate and carry no fire id). Named because main.ts's
+ * click order, its zoom gate and its cursor loop all have to mean this exact
+ * layer. */
+export const SEASON_CELLS_LAYER = "season-cells-fill";
 export const SEASON_LAYER_IDS = [
-  "season-heat", "season-hex-fill", "season-hex-line", "season-cells-fill", "season-cells-line",
+  "season-heat", "season-hex-fill", "season-hex-line", SEASON_CELLS_LAYER, "season-cells-line",
 ];
 
 const EMBER_DARK = "#5a2a14";
@@ -243,7 +248,7 @@ export function setCellsThreshold(
       : null;
   const byDay = day === undefined ? null : [">=", ["get", "nday"], -day];
   const expr = (base && byDay ? ["all", base, byDay] : (byDay ?? base)) as maplibregl.FilterSpecification | null;
-  for (const id of ["season-cells-fill", "season-cells-line"]) {
+  for (const id of [SEASON_CELLS_LAYER, "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
 }
@@ -314,7 +319,7 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
     },
   });
   map.addLayer({
-    id: "season-cells-fill",
+    id: SEASON_CELLS_LAYER,
     type: "fill",
     source: SEASON_CELLS_SOURCE,
     minzoom: 8,
@@ -461,7 +466,12 @@ export function createSeasonCellsLoader(
   isOn: () => boolean,
   fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
   hooks: SeasonCellsHooks = {},
-): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState; retag(): void } {
+): {
+  ensure(opts?: { force?: boolean }): Promise<void>;
+  state(): CellsState;
+  retag(): void;
+  cells(): SeasonCells | null;
+} {
   let state: CellsState = "idle";
   let failures = 0;
   /** Parsed cells waiting for the reader to approach the cells band. */
@@ -561,5 +571,14 @@ export function createSeasonCellsLoader(
 
   map.on("zoomend", () => { void ensure(); });
   map.on("moveend", () => { void ensure(); });
-  return { ensure, state: () => state, retag };
+  return {
+    ensure,
+    state: () => state,
+    retag,
+    /** The cells whose polygons are ON THE MAP, for resolving a click on one
+     * of them back to a fire (season_click.ts). Deliberately not `held`: cells
+     * parsed but not installed have no geometry to click, and answering for
+     * them would let a click resolve against a file the reader cannot see. */
+    cells: () => installed?.cells ?? null,
+  };
 }

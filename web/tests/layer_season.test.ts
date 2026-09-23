@@ -673,6 +673,24 @@ describe("loader force + hooks", () => {
     expect(map._paint["season-hex-fill"]).toBeUndefined();
   });
 
+  // Clicking a burned cell resolves it against the cells file (which fire
+  // claims this ground?), and the loader is the one thing that holds it. Only
+  // the INSTALLED cells count: they are the ones with polygons on the map, so
+  // they are the only ones a click can land on.
+  it("hands back the installed cells, and nothing before the install", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    expect(loader.cells()).toBeNull();
+    await loader.ensure({ force: true });
+    expect(loader.state()).toBe("fetched");
+    expect(loader.cells()).toBeNull(); // parsed, but no geometry on the map yet
+    map.zoom = 10;
+    await loader.ensure();
+    expect(loader.cells()).toEqual(body);
+  });
+
   it("a deferred install repeats neither the setData nor the fetch", async () => {
     const map = stubMap(4);
     addSeason(map as never, SUMMARY);

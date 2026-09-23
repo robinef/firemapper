@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cellArea, cellToLatLng, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
-import { buildCellIndex, pickClaimant, scarFromArchive } from "../src/season_click";
+import { buildCellIndex, cellsClickable, pickClaimant, scarFromArchive } from "../src/season_click";
 import type { SeasonCells, Track } from "../src/types";
 
 const a = latLngToCell(45.0, 5.0, 8);
@@ -30,6 +30,20 @@ describe("buildCellIndex", () => {
 
   it("returns an empty index for no fires", () => {
     expect(buildCellIndex({}).size).toBe(0);
+  });
+});
+
+// The cells layer has minzoom 8 and fades in over z8–8.5, and
+// queryRenderedFeatures answers for a feature at opacity 0 — so between z8 and
+// the fade a click would open a card for ground the reader cannot see, while
+// the hex band underneath is still what is actually painted.
+describe("cellsClickable", () => {
+  it("is off while the cells are still fading in, on once they are the visible band", () => {
+    expect(cellsClickable(7)).toBe(false);
+    expect(cellsClickable(8)).toBe(false);
+    expect(cellsClickable(8.24)).toBe(false);
+    expect(cellsClickable(8.25)).toBe(true);
+    expect(cellsClickable(10)).toBe(true);
   });
 });
 

@@ -39,6 +39,7 @@ import {
   setDaySlice,
 } from "./layer_dayslice";
 import {
+  SEASON_CELLS_LAYER,
   SEASON_LAYER_IDS,
   addSeason,
   createSeasonCellsLoader,
@@ -47,6 +48,7 @@ import {
   setCellsThreshold,
   setSeasonAggregate,
 } from "./layer_season";
+import { buildCellIndex, cellsClickable, pickClaimant } from "./season_click";
 import {
   createSeasonFilter,
   isEuFire,
@@ -85,7 +87,7 @@ import {
   renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
   runHistoricalLookup, wireGeocodeSearch,
 } from "./historical_lookup_ui";
-import type { FiresSummary, Manifest } from "./types";
+import type { FiresSummary, Manifest, SeasonCells, SeasonSizes } from "./types";
 
 const BASE = "/data";
 
@@ -210,6 +212,10 @@ async function boot() {
     // Where the filter's sizes come from, once sizesP settles: the sidecar, or
     // (it failed) the cells file, fetched on idle exactly as before it existed.
     let sizesFrom: "pending" | "sidecar" | "fallback" = "pending";
+    // The sidecar itself, kept so a clicked cell can hand its fire's row
+    // ([km², country, first]) straight to the card — the card has no other
+    // source for an archived fire's ignition date or size.
+    let seasonSizes: SeasonSizes | null = null;
     const modules: LayerModule[] = [
       {
         key: "fires",
@@ -535,6 +541,7 @@ async function boot() {
           // loads only on approach to the prefetch zoom or on the first
           // slider/scope interaction (onSelect) — never on idle.
           sizesFrom = "sidecar";
+          seasonSizes = sizes;
           countries = sidecarCountries(sizes);
           seasonFilter?.setSizes(sizes);
           seasonPlayback?.paint(); // the sizes make the play button live
@@ -774,6 +781,11 @@ async function boot() {
     const CLICK_ORDER = [
       ...fireHaloIds, ...fireLayerIds, "fire-footprint-fill",
       ...CLOSED_LAYER_IDS, ...SCAR_LAYER_IDS,
+      // Burned season ground: under every fire dot and scar marker, which are
+      // the more specific answer to "what did I just tap", and over the day
+      // slice, because ground a past fire actually burned beats a blanket of
+      // one day's detections.
+      SEASON_CELLS_LAYER,
       // Last: the slice blankets whole regions, so any dot drawn over it must
       // win the hit test. It is the fallback for "there is no dot here".
       DAY_SLICE_LAYER,
@@ -822,8 +834,51 @@ async function boot() {
       }
     };
 
+    // "Burned this year" is ground truth with no identity attached: a cell is
+    // emitted once, tagged with the FIRST fire in the file that claimed it,
+    // which is routinely a small neighbour the current threshold has filtered
+    // off the map. Resolve the clicked cell against a reverse index and
+    // re-apply the filter's own two gates instead, so the card that opens is
+    // the fire whose size put that cell on screen.
+    //
+    // The index is built once per cells file, on the first click — it is a
+    // pass over ~160k cells, and a reader who never clicks one never pays it.
+    let cellIndex: { of: SeasonCells; index: Map<string, string[]> } | null = null;
+    HANDLERS[SEASON_CELLS_LAYER] = (ev) => {
+      const props = (ev.features?.[0]?.properties ?? {}) as Record<string, unknown>;
+      const cell = props.cell;
+      if (typeof cell !== "string") return;
+      const cells = seasonLoader?.cells() ?? null;
+      // The same inputs and gates the filter hands aggregate() — one source
+      // for "which fires does the map currently show", so the card that opens
+      // can never be a fire the reader has filtered away.
+      const sel = seasonFilter?.playbackInput() ?? null;
+      let id: string | null = null;
+      if (cells && sel) {
+        if (!cellIndex || cellIndex.of !== cells) cellIndex = { of: cells, index: buildCellIndex(cells) };
+        id = pickClaimant(cell, cellIndex.index, sel.sizes, sel.threshold, sel.keep);
+      }
+      // No index yet (a click in the window between the install and the
+      // filter's sizes), or nothing qualifying: the cell's own first claimant
+      // is still a real fire, and a card is better than a dead tap.
+      id ??= typeof props.fire_id === "string" ? props.fire_id : null;
+      if (!id) return;
+      // A published scar has a marker, curated dates and (for an EFFIS one) a
+      // mapped perimeter — all things the archived path would have to guess.
+      if (scarIndex.has(id)) {
+        openScarFromList(id);
+        return;
+      }
+      void fireCard.openArchived(id, seasonSizes?.fires[id] ?? null);
+    };
+
     map.on("click", (e) => {
-      const layers = CLICK_ORDER.filter((id) => map.getLayer(id));
+      // The zoom gate belongs HERE, not in the season handler: a handler that
+      // ignored the click would swallow it, and the day slice underneath —
+      // the band actually painted at those zooms — would never see it.
+      const layers = CLICK_ORDER.filter(
+        (id) => map.getLayer(id) && (id !== SEASON_CELLS_LAYER || cellsClickable(map.getZoom())),
+      );
       const features = map.queryRenderedFeatures(e.point, { layers });
       const id = dispatchMapClick(features as never, CLICK_ORDER);
       if (!id) {
@@ -866,7 +921,7 @@ async function boot() {
     // apparently-empty map would be a false affordance — so they are
     // deliberately left out here even though each is a valid click target.
     for (const id of [
-      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS,
+      ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, SEASON_CELLS_LAYER,
     ]) {
       map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
@@ -881,11 +936,17 @@ async function boot() {
       setTimeout(() => splash.remove(), 450);
     }
     // ?fire=<id> deep-links straight to that fire's card, same path as a
-    // search-list click; a miss falls back to the past-scar index (a scar's
-    // own share button copies the same param). Silently no-ops if neither
-    // knows the id, same as openFromList already does for a stale search
-    // result.
-    if (FORCE_FIRE && !openFromList(FORCE_FIRE)) openScarFromList(FORCE_FIRE);
+    // search-list click; a miss falls back to the past-scar index, then to the
+    // permanent season archive (every one of those cards' share buttons copies
+    // this same param). Silently no-ops if none of the three knows the id,
+    // same as openFromList already does for a stale search result.
+    //
+    // The archived path waits on the sizes sidecar rather than racing it: it
+    // is already in flight from boot, resolves null on any failure, and it is
+    // the only source of the fire's ignition date and size.
+    if (FORCE_FIRE && !openFromList(FORCE_FIRE) && !openScarFromList(FORCE_FIRE)) {
+      void sizesP.then((sz) => fireCard.openArchived(FORCE_FIRE, sz?.fires[FORCE_FIRE] ?? null));
+    }
   });
 }
 

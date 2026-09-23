@@ -29,6 +29,21 @@ const BASELINE_LEAD_DAYS = 6;
 const SCAR_SETTLE_DAYS = 14;
 
 /**
+ * From which zoom a burned cell may be clicked.
+ *
+ * The cells layer has minzoom 8 and fades in over z8–8.5, and
+ * queryRenderedFeatures answers for a feature at opacity 0 — so between the
+ * two a tap would open a card for ground the reader cannot see yet, while the
+ * hex band underneath is what is actually painted. Halfway through the fade
+ * is where the cells become the band a reader is reading.
+ */
+export const CELL_CLICK_ZOOM = 8.25;
+
+export function cellsClickable(zoom: number): boolean {
+  return zoom >= CELL_CLICK_ZOOM;
+}
+
+/**
  * cell → every fire claiming it, in file order.
  *
  * Nested dedup runs INSIDE each fire, exactly as cellFeatures does when it
