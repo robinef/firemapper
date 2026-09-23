@@ -5,7 +5,11 @@ __pycache__/
 *.pyc
 
 # Node / web
-node_modules/
+# No trailing slash: a stray *symlink* named node_modules (an editor, a
+# worktree helper, a mistyped `ln -s`) is not a directory, so `node_modules/`
+# does not match it and `git add -A` tracks it — which is how an absolute,
+# machine-local path reached main in #166.
+node_modules
 
 # Generated data + secrets (never commit)
 data/
