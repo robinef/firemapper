@@ -77,4 +77,13 @@ describe("main.ts's own click wiring", () => {
     const cursor = mainSource.match(/for \(const id of \[\s*\n\s*\.\.\.fireLayerIds,[\s\S]*?\]\) \{/)![0];
     expect(cursor).toContain("SEASON_CELLS_LAYER");
   });
+
+  // The cells render from z8 and answer clicks from z8.25. In between, a
+  // pointer would promise a card the click does not deliver — the exact
+  // silent-failure shape the halo layers are kept out of the loop for.
+  it("withholds the pointer over cells the click dispatcher is still ignoring", () => {
+    expect(mainSource).toMatch(
+      /mouseenter[\s\S]{0,120}if \(id === SEASON_CELLS_LAYER && !cellsClickable\(map\.getZoom\(\)\)\) return;/,
+    );
+  });
 });

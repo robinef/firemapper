@@ -920,10 +920,19 @@ async function boot() {
     // The fire-halo-* layers are fully transparent — a pointer over
     // apparently-empty map would be a false affordance — so they are
     // deliberately left out here even though each is a valid click target.
+    //
+    // The season cells carry the same rule by zoom rather than by layer: they
+    // render from z8 but the click dispatcher ignores them until z8.25 (see
+    // cellsClickable), and a pointer over ground that will not answer is the
+    // same false affordance — one that ALSO looks like the feature is broken,
+    // since the cursor promises a card and the click delivers nothing.
     for (const id of [
       ...fireLayerIds, "fire-footprint-fill", ...SCAR_LAYER_IDS, SEASON_CELLS_LAYER,
     ]) {
-      map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseenter", id, () => {
+        if (id === SEASON_CELLS_LAYER && !cellsClickable(map.getZoom())) return;
+        map.getCanvas().style.cursor = "pointer";
+      });
       map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
     }
 
