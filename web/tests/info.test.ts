@@ -64,6 +64,29 @@ describe("info view", () => {
     expect(infoHtml(bare, now)).toContain("No layer information");
   });
 
+  it("discloses the season footprint archive only once the backfill floor is set", () => {
+    const base = {
+      generated_at: "2026-08-04T11:50:00Z",
+      layers: { events },
+      coverage: {
+        live_window_hours: 48,
+        firms_lookback_days: 7,
+        scar_window_days: 30,
+        archive_floor_date: "2026-08-27",
+        effis_note: "EFFIS perimeters lag detections by a few days.",
+      },
+    } as unknown as Manifest;
+    expect(infoHtml(base, now)).not.toContain("Season footprint archive");
+
+    const withFloor = {
+      ...base,
+      coverage: { ...(base as { coverage: object }).coverage, backfill_floor_date: "2026-01-01" },
+    } as unknown as Manifest;
+    const html = infoHtml(withFloor, now);
+    expect(html).toContain("Season footprint archive");
+    expect(html).toContain("from 2026-01-01");
+  });
+
   it("links to the full sources page for readers who want details and provider links", () => {
     expect(infoHtml(manifest, now)).toContain('href="/sources"');
   });
