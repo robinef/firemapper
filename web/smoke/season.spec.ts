@@ -71,3 +71,41 @@ test.describe("the season layer's cells file", () => {
     expect(cellsRequests, "exactly one cells request after the first slider move").toHaveLength(1);
   });
 });
+
+test.describe("season playback", () => {
+  // main.ts wires the play control to the filter, the loader and the panel's
+  // status line; no unit test sees that wiring.
+  test("plays from the floor, pauses, and a size move drops it back to the full season", async ({ page }) => {
+    await page.route(/\/data\/archive\/season_(\d{4})(_sizes|_cells)?\.json$/, async (route: Route) => {
+      const [, year, kind] = route.request().url().match(/season_(\d{4})(_sizes|_cells)?\.json$/)!;
+      const s = season(Number(year));
+      const body = kind === "_cells" ? s.cells : kind === "_sizes" ? s.sizes : s.summary;
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-layers", "layers");
+    await expect(page.locator(".season-filter")).toHaveClass(/is-ready/);
+
+    const status = page.locator(".layer-row", { hasText: "Burned this year" }).locator(".layer-count");
+    const play = page.locator(".season-play .scrub-play");
+    await expect(play).toBeVisible();
+    await expect(play).toBeEnabled();
+    await expect(status).not.toContainText("up to");
+
+    await play.click();
+    // Deliberately generic: playback has advanced an unknown number of days by
+    // the time this polls, so pinning the floor's own day/count would be flaky.
+    // What is pinned is the shape — a day, a fire count and a footprint.
+    await expect(status).toContainText(/up to \d+ \w+ · \d+ fires? · [\d,]+ km² footprint/);
+    await expect(page.locator(".season-play .scrub-range")).toHaveAttribute("aria-valuetext", /^up to /);
+    await play.click(); // pause
+    await expect(play).toHaveAttribute("aria-label", "Play the season");
+    const paused = await status.textContent();
+    await page.waitForTimeout(1000);
+    await expect(status).toHaveText(paused!);
+
+    await page.locator(".season-range").fill("3");
+    await expect(status).not.toContainText("up to");
+  });
+});

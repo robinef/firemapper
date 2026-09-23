@@ -171,6 +171,9 @@ export function aggregate(
   threshold: number,
   keep?: (id: string) => boolean,
   scope: SeasonScope = "all",
+  /** YYYY-MM-DD: only fires first detected on or before it — the season as
+   * it stood that day (season_playback.ts's reference). Omitted: every fire. */
+  until?: string,
 ): SeasonAggregate {
   const union = new Set<string>();
   let fires = 0;
@@ -184,6 +187,7 @@ export function aggregate(
     // A second gate on the same loop, so a rejected fire leaves the count, the
     // union and the km² alike — not merely the map.
     if (keep && !keep(id)) continue;
+    if (until !== undefined && entry.first > until) continue;
     fires += 1;
     if (floor === null || entry.first < floor) floor = entry.first;
     for (const c of dedupNested(new Set(entry.cells))) union.add(c);
@@ -525,6 +529,12 @@ export function createSeasonFilter(opts: {
     },
     scope: (): SeasonScope => scope,
     threshold: () => thresholdFor(index),
+    /** What a season playback replays: the inputs, and the two gates,
+     * runAggregate hands aggregate(). Null until the filter is ready; `cells`
+     * stays null until the cells file lands (the sizes alone make it ready). */
+    playbackInput: () => (status === "ready" && sizes
+      ? { cells, sizes, threshold: thresholdFor(index), keep: keepFn(), scope }
+      : null),
     /** The landed aggregate's headline numbers AND its floor date — the three
      * the panel's status line prints together, so they always describe the
      * same selection of fires. */

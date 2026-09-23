@@ -47,7 +47,14 @@ import {
   setCellsThreshold,
   setSeasonAggregate,
 } from "./layer_season";
-import { createSeasonFilter, isEuFire, sidecarCountries, type SeasonScope } from "./season_filter";
+import {
+  createSeasonFilter,
+  isEuFire,
+  sidecarCountries,
+  type SeasonAggregate,
+  type SeasonScope,
+} from "./season_filter";
+import { NO_DAY, createSeasonPlayback } from "./season_playback";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -181,6 +188,11 @@ async function boot() {
     // Owns the size threshold and re-aggregation; assigned with the loader
     // below. The module's status/control close over the variable.
     let seasonFilter: ReturnType<typeof createSeasonFilter> | null = null;
+    // The play control under the histogram (season_playback.ts), and the
+    // aggregate it restores when a playback ends — the last one the filter
+    // landed, so the map returns to exactly the selection on screen.
+    let seasonPlayback: ReturnType<typeof createSeasonPlayback> | null = null;
+    let seasonAgg: SeasonAggregate | null = null;
     // Per-fire countries, null until the summary resolves (or forever, if the
     // file is missing). The loader's cellProps closes over the VARIABLE, so
     // cells installed before the file lands are re-tagged by retag() after.
@@ -346,13 +358,23 @@ async function boot() {
             // a pending km² — the pipeline's totals would describe fires the
             // reader has just filtered out.
             status: () => {
+              // A playback frame on the map describes one day, not the season.
+              const pb = seasonPlayback?.statusText();
+              if (pb) return pb;
               const s = seasonFilter?.summary();
               if (s) return seasonStatus({ ...season, fires: s.fires, km2: s.km2, floor: s.floor }, seasonScope);
               const p = seasonFilter?.preview();
               if (p) return seasonStatus({ ...season, fires: p.fires, km2: null, floor: p.floor }, p.scope);
               return seasonStatus(season, seasonScope);
             },
-            control: (el: HTMLElement) => seasonFilter?.control(el),
+            // Two sub-containers so each control re-renders only its own: the
+            // filter's scope click rebuilds the histogram, and must not take
+            // the play button (and a keyboard reader's focus) with it.
+            control: (el: HTMLElement) => {
+              el.innerHTML = `<div class="season-filter-host"></div><div class="season-play-host"></div>`;
+              seasonFilter?.control(el.children[0] as HTMLElement);
+              seasonPlayback?.control(el.children[1] as HTMLElement);
+            },
             legend: seasonLegend(season.floor, season.year),
             // `force` only on the fallback path: there the size histogram
             // needs the cells file at any zoom, and toggling the layer off
@@ -360,7 +382,14 @@ async function boot() {
             // off) would strand the control on "loading sizes…" for good. With
             // the sidecar the histogram needs no cells, and an unforced
             // ensure() still covers toggling on past the prefetch zoom.
-            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: sizesFrom === "fallback" }); },
+            // Untick and the layers go hidden but the control's timer would
+            // keep pushing ~10k features a tick at nothing, painting into a
+            // container the panel has already dropped. The day is kept, so
+            // ticking back on resumes where the reader left it.
+            onToggle: (on: boolean) => {
+              if (on) void seasonLoader?.ensure({ force: sizesFrom === "fallback" });
+              else seasonPlayback?.pause();
+            },
           } as LayerModule]
         : []),
     ];
@@ -375,6 +404,17 @@ async function boot() {
       seasonFilter = createSeasonFilter({
         onAggregate: (agg) => {
           seasonScope = agg.scope;
+          seasonAgg = agg;
+          // A playback owns the map while it runs. The filter's aggregate is
+          // debounced, so one scheduled ~100 ms before a play (or by the same
+          // onLoaded that released it) lands after the first frame and would
+          // paint the WHOLE season under a status line reading "up to 1 Jan",
+          // until the next tick — or for good, if the reader pauses in that
+          // window. The aggregate is kept for the restore path either way.
+          if (seasonPlayback?.day !== null && seasonPlayback?.day !== undefined) {
+            switcher.refreshStatus("season");
+            return;
+          }
           setSeasonAggregate(map, agg.r6);
           setCellsThreshold(map, agg.threshold, agg.scope);
           // Status line only: a full refresh would rebuild the panel and hand
@@ -388,9 +428,33 @@ async function boot() {
         // idempotent after that); the status line shows the sidecar's count
         // and floor meanwhile.
         onSelect: () => {
+          // A new selection: the playback's columns describe the old one.
+          seasonPlayback?.invalidate();
           void seasonLoader?.ensure({ force: true });
           switcher.refreshStatus("season");
         },
+      });
+      seasonPlayback = createSeasonPlayback({
+        selection: () => seasonFilter?.playbackInput() ?? null,
+        // Resolves at once when the file is already here or in flight; in the
+        // second case onLoaded's dataChanged() picks the play back up.
+        ensureCells: () => seasonLoader?.ensure({ force: true }) ?? Promise.resolve(),
+        // "loading" is the only state that still owes an onLoaded/onGaveUp.
+        cellsPending: () => seasonLoader?.state() === "loading",
+        end: manifest.generated_at.slice(0, 10),
+        // New columns, new `nday` per cell (cellProps below reads them).
+        onPrepared: () => seasonLoader?.retag(),
+        onFrame: (f) => {
+          setSeasonAggregate(map, f.r6);
+          setCellsThreshold(map, f.threshold, f.scope, f.day);
+        },
+        onRestore: () => {
+          setSeasonAggregate(map, seasonAgg?.r6 ?? season.r6);
+          setCellsThreshold(map, seasonAgg?.threshold ?? 0, seasonAgg?.scope ?? "all");
+        },
+        // Status line only, never refresh(): a rebuild every 300 ms would
+        // replace the slider under a reader's pointer.
+        onStatus: () => switcher.refreshStatus("season"),
       });
       // mountSwitcher renders once on the way in, while seasonFilter is still
       // null — the module's control() drew nothing into an empty box. Redraw
@@ -399,8 +463,16 @@ async function boot() {
       // the only thing the reader has.
       switcher.refresh();
       seasonLoader = createSeasonCellsLoader(map, season.year, () => switcher.isOn("season"), fetch, {
-        onLoaded: (cells, sizes) => { seasonFilter?.setCells(cells, sizes); switcher.refresh(); },
-        onGaveUp: () => { seasonFilter?.setUnavailable(); switcher.refresh(); },
+        onLoaded: (cells, sizes) => {
+          seasonFilter?.setCells(cells, sizes);
+          seasonPlayback?.dataChanged(); // a play waiting on the cells goes on
+          switcher.refresh();
+        },
+        onGaveUp: () => {
+          seasonFilter?.setUnavailable();
+          seasonPlayback?.dataChanged(); // a play waiting on the cells gives up too
+          switcher.refresh();
+        },
         // The EU-27 tag the cell filter reads on the GPU: the fire's own km²
         // when it burned in the EU, 0 when it did not. A size, not a flag —
         // cellFeatures maxes it across claimants, so a cell ends up carrying
@@ -408,7 +480,13 @@ async function boot() {
         // "EU-27, ≥ t km²" filter has to compare against for the cells to
         // match the hexes. Evaluated at install time and again on retag(), so
         // it always reflects the countries file as it is NOW.
-        cellProps: (id, km2) => ({ eu_km2: isEuFire(countries, id) ? km2 : 0 }),
+        //
+        // `nday`: minus the day the fire enters the current playback (NO_DAY
+        // when it does not qualify) — the cells' day clause reads it.
+        cellProps: (id, km2) => ({
+          eu_km2: isEuFire(countries, id) ? km2 : 0,
+          nday: seasonPlayback?.nday(id) ?? NO_DAY,
+        }),
         // The sidecar's sizes, so a cells file landing after it costs no
         // fireSizes pass (~565 ms at 4× CPU throttle on the full season).
         knownSizes: () => seasonFilter?.knownSizes() ?? null,
@@ -459,6 +537,7 @@ async function boot() {
           sizesFrom = "sidecar";
           countries = sidecarCountries(sizes);
           seasonFilter?.setSizes(sizes);
+          seasonPlayback?.paint(); // the sizes make the play button live
           seasonLoader?.retag();
           if (!countries) countriesFromBlob();
           return;
