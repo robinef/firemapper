@@ -139,8 +139,11 @@ describe("scarFromArchive", () => {
   // the first bin's day.
   it("falls back to the track when there is no sidecar entry", () => {
     const s = scarFromArchive("fire-1", track, null, "2026-09-23");
+    // Rounded to 3 dp, as pipeline/export_season.py rounds the sidecar's own
+    // km²: areaText prints this number verbatim onto the card.
     const expected = cells.reduce((sum, x) => sum + cellArea(x, UNITS.km2), 0);
-    expect(s.area_km2).toBeCloseTo(expected, 6);
+    expect(s.area_km2).toBe(Math.round(expected * 1000) / 1000);
+    expect(String(s.area_km2).split(".")[1]?.length ?? 0).toBeLessThanOrEqual(3);
     expect(s.started).toBe("2026-07-24"); // the first bin's day
     expect(s.before).toBe("2026-07-18");
     expect(s.place).toBeNull();
@@ -158,6 +161,6 @@ describe("scarFromArchive", () => {
     const parent = cellToParent(child, 7);
     const nested: Track = { ...track, cells: [parent, child] };
     const s = scarFromArchive("fire-1", nested, null, "2026-09-23");
-    expect(s.area_km2).toBeCloseTo(cellArea(child, UNITS.km2), 6);
+    expect(s.area_km2).toBe(Math.round(cellArea(child, UNITS.km2) * 1000) / 1000);
   });
 });

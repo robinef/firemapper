@@ -140,6 +140,55 @@ describe("fire card open race", () => {
     expect(panel.innerHTML).not.toContain("Fire A");
   });
 
+  // The third route into a card (openArchived: a burned season cell, or a
+  // ?fire= deep link) awaits its own loadTrack, so it joins the same race —
+  // in both directions.
+  it("does not let a stale fire track overwrite an archived season fire's card", async () => {
+    const { setupFireCard } = await import("../src/firecard");
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
+    const card = setupFireCard(
+      stubMap(), { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    const pA = card.openFire(fireClickEvent("fire-a", "Fire A"));
+    const pArch = card.openArchived("arch-1", [12, "ES", "2026-05-04"]);
+    pendingTracks.get("arch-1")!.resolve({ series: [], cells: [], frp_live: [] });
+    expect(await pArch).toBe(true);
+
+    pendingTracks.get("fire-a")!.resolve({ series: [], cell_bins: null });
+    await pA;
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.innerHTML).toContain("Burn scar · 4 May 2026");
+    expect(panel.innerHTML).not.toContain("Fire A");
+  });
+
+  it("does not let a stale archived track overwrite a fire clicked after it", async () => {
+    const { setupFireCard } = await import("../src/firecard");
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
+    const card = setupFireCard(
+      stubMap(), { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, () => {}, () => {},
+    );
+
+    const pArch = card.openArchived("arch-2", [12, "ES", "2026-05-04"]);
+    const pB = card.openFire(fireClickEvent("fire-b", "Fire B"));
+    pendingTracks.get("fire-b")!.resolve({ series: [], cell_bins: null });
+    await pB;
+
+    // The archived track finally lands — it lost, and must say so rather than
+    // paint over the fire the reader is now looking at.
+    pendingTracks.get("arch-2")!.resolve({ series: [], cells: [], frp_live: [] });
+    expect(await pArch).toBe(false);
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.innerHTML).toContain("Fire B");
+    expect(panel.innerHTML).not.toContain("Burn scar");
+  });
+
   it("does not let a stale fire track reopen the card after it was closed", async () => {
     const { setupFireCard } = await import("../src/firecard");
     document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;

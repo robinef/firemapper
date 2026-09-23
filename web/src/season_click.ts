@@ -90,11 +90,13 @@ export function pickClaimant(
 }
 
 /** The sizes sidecar's own km² rule (season_filter.ts::fireSizes), for a fire
- * the sidecar has not (or not yet) named. */
+ * the sidecar has not (or not yet) named. Rounded to 3 dp exactly as
+ * pipeline/export_season.py rounds the sidecar's: areaText prints this number
+ * verbatim, and a raw h3 sum puts thirteen decimal places on the card. */
 function trackAreaKm2(cells: string[]): number {
   let sum = 0;
   for (const c of dedupNested(new Set(cells))) sum += cellArea(c, UNITS.km2);
-  return sum;
+  return Math.round(sum * 1000) / 1000;
 }
 
 /** "24 Jul 2026" — the same shape fireCardHtml's own dates use. */
