@@ -94,7 +94,9 @@ test.describe("season playback", () => {
     await expect(status).not.toContainText("up to");
 
     await play.click();
-    // The first frame is the floor: one fire, 2 Jul.
+    // Deliberately generic: playback has advanced an unknown number of days by
+    // the time this polls, so pinning the floor's own day/count would be flaky.
+    // What is pinned is the shape — a day, a fire count and a footprint.
     await expect(status).toContainText(/up to \d+ \w+ · \d+ fires? · [\d,]+ km² footprint/);
     await expect(page.locator(".season-play .scrub-range")).toHaveAttribute("aria-valuetext", /^up to /);
     await play.click(); // pause

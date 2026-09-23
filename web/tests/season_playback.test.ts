@@ -327,6 +327,33 @@ describe("createSeasonPlayback", () => {
     await settle();
     expect(h.frames).toEqual([]);
     expect(h.pb.playing).toBe(false);
+    // The wait ends with the pause: prepare()'s body never runs after this,
+    // so a "preparing…" left standing would stay under a Play button for good.
+    expect(h.q().label.textContent).not.toBe("preparing…");
+  });
+
+  it("a cells fetch that resolves without cells returns the control to Play", async () => {
+    // The loader reports its first two failures by staying idle — no onLoaded,
+    // no onGaveUp, so no dataChanged() is coming to pick the play back up.
+    const h = make({ ensureCells: async () => { h.state.cells = null; }, cellsPending: () => false });
+    h.state.cells = null;
+    h.q().play.click();
+    await settle();
+    expect(h.frames).toEqual([]);
+    expect(h.pb.playing).toBe(false);
+    expect(h.q().label.textContent).not.toBe("preparing…");
+    expect(h.q().play.getAttribute("aria-label")).toBe("Play the season");
+  });
+
+  it("cells that land during the fetch still start the play", async () => {
+    // The same path when the fetch works: ensureCells resolves with the cells
+    // installed, so the guard must not mistake a good load for a failure.
+    const h = make({ ensureCells: async () => { h.state.cells = CTRL_CELLS; } });
+    h.state.cells = null;
+    h.q().play.click();
+    await settle();
+    expect(days(h.frames)).toEqual([0]);
+    expect(h.pb.playing).toBe(true);
   });
 
   it("a pause that lands between the cells and the deferred precompute cancels it too", async () => {

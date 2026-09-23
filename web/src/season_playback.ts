@@ -185,6 +185,11 @@ export type SeasonPlaybackOpts = {
   selection: () => (Omit<PlaybackSelection, "cells"> & { cells: SeasonCells | null }) | null;
   /** Start the cells fetch at any zoom (the loader's ensure({force:true})). */
   ensureCells: () => Promise<void>;
+  /** Is a cells fetch still on its way? The loader reports its first two
+   * failures by going back to idle — no onLoaded, no onGaveUp — so a resolved
+   * ensureCells() with neither cells nor a fetch in flight means the load
+   * failed and no dataChanged() is coming. Defaults to "still coming". */
+  cellsPending?: () => boolean;
   /** The last day of the sweep (today, YYYY-MM-DD). */
   end: string;
   /** Right after a precompute, before its first frame: re-tag the installed
@@ -373,13 +378,26 @@ export function createSeasonPlayback(opts: SeasonPlaybackOpts) {
     paint();
     const mine = gen;
     void opts.ensureCells().then(() => {
-      if (mine === gen && wantPlay && preparing) prepare();
+      if (mine !== gen || !wantPlay || !preparing) return;
+      if (opts.selection()?.cells || (opts.cellsPending?.() ?? true)) {
+        prepare(); // has them, or dataChanged() will bring them
+        return;
+      }
+      // Failed without giving up: nothing will call dataChanged(), so waiting
+      // would strand "preparing…" under a Pause button for good.
+      preparing = false;
+      wantPlay = false;
+      paint();
     });
   };
 
   const pause = (): void => {
     stopTimer();
     wantPlay = false;
+    // A pause while the cells were still on their way ends the wait too:
+    // prepare()'s deferred body is guarded on wantPlay and would never run,
+    // leaving the label stuck on "preparing…" under a Play button.
+    preparing = false;
     paint();
   };
 

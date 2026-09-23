@@ -382,7 +382,14 @@ async function boot() {
             // off) would strand the control on "loading sizes…" for good. With
             // the sidecar the histogram needs no cells, and an unforced
             // ensure() still covers toggling on past the prefetch zoom.
-            onToggle: (on: boolean) => { if (on) void seasonLoader?.ensure({ force: sizesFrom === "fallback" }); },
+            // Untick and the layers go hidden but the control's timer would
+            // keep pushing ~10k features a tick at nothing, painting into a
+            // container the panel has already dropped. The day is kept, so
+            // ticking back on resumes where the reader left it.
+            onToggle: (on: boolean) => {
+              if (on) void seasonLoader?.ensure({ force: sizesFrom === "fallback" });
+              else seasonPlayback?.pause();
+            },
           } as LayerModule]
         : []),
     ];
@@ -398,6 +405,16 @@ async function boot() {
         onAggregate: (agg) => {
           seasonScope = agg.scope;
           seasonAgg = agg;
+          // A playback owns the map while it runs. The filter's aggregate is
+          // debounced, so one scheduled ~100 ms before a play (or by the same
+          // onLoaded that released it) lands after the first frame and would
+          // paint the WHOLE season under a status line reading "up to 1 Jan",
+          // until the next tick — or for good, if the reader pauses in that
+          // window. The aggregate is kept for the restore path either way.
+          if (seasonPlayback?.day !== null && seasonPlayback?.day !== undefined) {
+            switcher.refreshStatus("season");
+            return;
+          }
           setSeasonAggregate(map, agg.r6);
           setCellsThreshold(map, agg.threshold, agg.scope);
           // Status line only: a full refresh would rebuild the panel and hand
@@ -422,6 +439,8 @@ async function boot() {
         // Resolves at once when the file is already here or in flight; in the
         // second case onLoaded's dataChanged() picks the play back up.
         ensureCells: () => seasonLoader?.ensure({ force: true }) ?? Promise.resolve(),
+        // "loading" is the only state that still owes an onLoaded/onGaveUp.
+        cellsPending: () => seasonLoader?.state() === "loading",
         end: manifest.generated_at.slice(0, 10),
         // New columns, new `nday` per cell (cellProps below reads them).
         onPrepared: () => seasonLoader?.retag(),
