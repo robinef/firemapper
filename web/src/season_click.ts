@@ -158,16 +158,18 @@ function labelDate(day: string): string {
  * the browser already has, so the card and the before/after compare mode read
  * an archived fire exactly as they read a published scar.
  *
- * `entry` is the sizes sidecar's [km², country, first]. Null is a real case —
- * a `?fire=` deep link can open a card before the sidecar lands, and a cells
- * file one publish newer can hold a fire it has never heard of — so the track
- * alone has to be enough: the same dedup-and-sum the sidecar's km² comes from,
- * and its first bin's day.
+ * `entry` is the sizes sidecar's [km², country, first, place?]. Null is a
+ * real case — a `?fire=` deep link can open a card before the sidecar lands,
+ * and a cells file one publish newer can hold a fire it has never heard of —
+ * so the track alone has to be enough: the same dedup-and-sum the sidecar's
+ * km² comes from, and its first bin's day.
  *
- * `place` stays null: the sidecar carries an ISO country code, not a place
- * name, and scarCardHtml prints `place` as the card's TITLE — "ES" over a
- * fire in Ávila is worse than no title at all, so the label (which names the
- * date) stands instead.
+ * `place` comes straight from the sidecar's 4th element — absent on sidecars
+ * published before pipeline/export_season.py started computing one (d95bcb2),
+ * and possibly null even on a current one (no gazetteer hit). Both read as no
+ * place, same as no entry at all: scarCardHtml prints `place` as the card's
+ * TITLE ahead of `label`, and a null place there is what makes it fall back
+ * to the dated label instead of printing "null" or "undefined".
  */
 export function scarFromArchive(
   id: string,
@@ -195,7 +197,7 @@ export function scarFromArchive(
   return {
     id,
     label: `Burn scar · ${labelDate(started)}`,
-    place: null,
+    place: entry?.[3] ?? null,
     kind: "past",
     lon: lon / n,
     lat: lat / n,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cellArea, cellToLatLng, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
 import { buildCellIndex, cellsClickable, pickClaimant, playbackKeep, scarFromArchive } from "../src/season_click";
-import type { SeasonCells, Track } from "../src/types";
+import type { SeasonCells, SeasonSizeEntry, Track } from "../src/types";
 
 const a = latLngToCell(45.0, 5.0, 8);
 const b = latLngToCell(45.0, 5.02, 8);
@@ -100,10 +100,30 @@ describe("scarFromArchive", () => {
     expect(s.area_km2).toBe(31.5); // the sidecar's footprint km², as the filter counts it
     expect(s.cum_cells).toBe(cells.length);
     expect(s.label).toBe("Burn scar · 24 Jul 2026");
-    // scarCardHtml prints `place` as the card's TITLE. The sidecar carries an
-    // ISO country code, not a place name, so a card over a fire in Ávila
-    // would be titled "ES" — the dated label is the better title.
+    // scarCardHtml prints `place` as the card's TITLE. A 3-element entry (no
+    // 4th slot at all) carries no place name, so the dated label is the title.
     expect(s.place).toBeNull();
+  });
+
+  // pipeline/export_season.py started computing a nearest-town name as the
+  // sidecar's 4th element (d95bcb2). scarCardHtml prints `place` as the
+  // card's TITLE ahead of the dated `label`, so once a real name is present
+  // the title should be the town, not "Burn scar · <date>".
+  it("takes place from the sidecar's 4th element when present", () => {
+    const withPlace: SeasonSizeEntry = [31.5, "ES", "2026-07-24", "Ávila"];
+    const s = scarFromArchive("fire-1", track, withPlace, "2026-09-23");
+    expect(s.place).toBe("Ávila");
+    expect(s.label).toBe("Burn scar · 24 Jul 2026"); // unchanged — the compare-mode banner still reads this
+  });
+
+  // Sidecars published before the 4th element existed carry a 3-element
+  // array; a sidecar that computed a place but found none carries `null` in
+  // that slot. Both must fall back to no place, same as no entry at all.
+  it("is null when the 4th element is absent, and when it is explicitly null", () => {
+    const noFourth = sizeEntry; // 3-element, as published before d95bcb2
+    expect(scarFromArchive("fire-1", track, noFourth, "2026-09-23").place).toBeNull();
+    const explicitNull: SeasonSizeEntry = [31.5, "ES", "2026-07-24", null];
+    expect(scarFromArchive("fire-1", track, explicitNull, "2026-09-23").place).toBeNull();
   });
 
   // areaText prints area_km2 verbatim onto the card. The sidecar keeps 3 dp
