@@ -11,7 +11,7 @@ from .archive_footprints import (
     stamp_footprint_flags,
 )
 from .archive_tracks import archive_past_tracks, previous_archive_index
-from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, load_settings
+from .config import EUROPE_BBOX, SCAR_WINDOW_DAYS, Settings, display_season_year, load_settings
 from .day_slices import build_day_slices
 from .enrich import MIN_PLACES, Places, fetch_gdacs, load_places
 from .events import WINDOW_DAYS, cluster, recent_events
@@ -234,7 +234,8 @@ def process(settings: Settings, now: datetime, frp_points: list[dict] | None = N
     # over it failed) is a different fault from one under "unavailable" (there
     # is no snapshot at all), and only the pair distinguishes them.
     season = _safe(
-        lambda: season_totals(stats_snapshot_path(settings), now.year), default=None,
+        # The shown season (the ended one through January), like the map's layer.
+        lambda: season_totals(stats_snapshot_path(settings), display_season_year(now)), default=None,
         label="season-totals",
     )
     if season:

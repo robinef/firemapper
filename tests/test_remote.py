@@ -636,9 +636,10 @@ def test_hydrate_in_january_restores_the_ended_season_too(tmp_path):
         for k in (season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_key(y), scale_blob_fires_key(y)):
             assert (settings.out_dir / k).read_bytes() == k.encode(), k
 
-    # From February only the new season is exported, so only it is restored.
-    settings = _settings(tmp_path / "feb")
-    hydrate(settings, FakeS3(objects), now=datetime(2027, 2, 1, 0, 17, tzinfo=timezone.utc))
+    # Past the export grace (config.SEASON_EXPORT_GRACE_DAYS) only the new
+    # season is exported, so only it is restored.
+    settings = _settings(tmp_path / "mar")
+    hydrate(settings, FakeS3(objects), now=datetime(2027, 3, 2, 0, 17, tzinfo=timezone.utc))
     assert not (settings.out_dir / season_cells_key(2026)).exists()
     assert (settings.out_dir / season_cells_key(2027)).exists()
 

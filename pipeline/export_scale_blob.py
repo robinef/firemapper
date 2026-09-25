@@ -133,6 +133,18 @@ def run_export(
         del state[track_id]
         blob_by_fire.pop(track_id, None)
         fires_summary.pop(track_id, None)
+    # ...and the other direction: a fire in THIS year's blob that the state
+    # now files under another year. Another year's pass (the fast tier's, in
+    # January) re-read it after its last bin moved into the new year, and
+    # dropped it only from ITS blob — this one would keep it forever, and the
+    # fire would be counted in both years. The state is authoritative.
+    for track_id in [
+        tid
+        for tid in set(blob_by_fire) | set(fires_summary)
+        if tid in state and state[tid].get("year") != target_year
+    ]:
+        blob_by_fire.pop(track_id, None)
+        fires_summary.pop(track_id, None)
 
     to_process = {tid: digest for tid, digest in index.items() if state.get(tid, {}).get("digest") != digest}
 

@@ -918,14 +918,14 @@ def test_a_run_without_a_zone_filters_re_read_fires_by_the_last_good_zone(tmp_pa
 
 
 def test_the_last_good_zone_is_kept_in_state_under_a_reserved_key(tmp_path):
-    from pipeline.export_season import ZONE_STATE_KEY
+    from pipeline.export_season import zone_state_key
     settings = _settings(tmp_path)
     _make_local_archive(settings.out_dir, {"good": _fire("good", [FAR])})
     run_export_season(settings, target_year=2026, now=NOW, static_zone=_plant_zone())
 
     run_export_season(settings, target_year=2026, now=NOW, static_zone=None)  # idle, no zone
 
-    stored = _read(settings, SEASON_STATE_KEY)[ZONE_STATE_KEY]
+    stored = _read(settings, SEASON_STATE_KEY)[zone_state_key(2026)]
     assert stored == {"cells": sorted(_plant_zone()), "computed_at": "2026-09-18T10:00:00Z"}
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
 
@@ -1138,7 +1138,13 @@ def test_the_map_shows_the_ended_season_through_january_and_both_are_exported():
     assert [display_season_year(t) for t in (dec31, jan1, jan31, feb1)] == [2026, 2026, 2026, 2027]
     assert season_years(jan1) == season_years(jan31) == [2026, 2027]  # oldest first
     assert season_years(dec31) == [2026]
-    assert season_years(feb1) == [2027]
+    # Shown until 1 Feb, but still FINISHED until day 60: a fire that ended on
+    # 31 Dec can be re-archived for SCAR_WINDOW_DAYS (45) after it.
+    from pipeline.config import SCAR_WINDOW_DAYS, SEASON_EXPORT_GRACE_DAYS
+    assert SEASON_EXPORT_GRACE_DAYS > SCAR_WINDOW_DAYS
+    assert season_years(feb1) == [2026, 2027]
+    assert season_years(datetime(2027, 3, 1, 23, 59, tzinfo=timezone.utc)) == [2026, 2027]  # day 60
+    assert season_years(datetime(2027, 3, 2, 0, 0, tzinfo=timezone.utc)) == [2027]
 
 
 def _late_december_rollover(tmp_path, order: list[int]):
@@ -1200,3 +1206,40 @@ def test_a_plant_lit_all_december_is_zoned_on_the_first_days_of_january(tmp_path
     # And the window is MAX_FIRE_DAYS, not "everything before": the same plant
     # a year earlier says nothing about 2028.
     assert season_static_zone(settings, 2028) is None
+
+
+def test_each_season_falls_back_to_its_own_stored_zone(tmp_path):
+    # January exports two years through one shared state. With one global
+    # stored zone, a run whose raw store is unreadable handed the ended
+    # season the NEW year's zone — and apply_static_zone put back every plant
+    # cell the ended season's own zone had removed.
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "good": _fire("good", [FAR]),
+        "mixed": _fire("mixed", [FAR, PLANT]),
+    })
+    jan = datetime(2027, 1, 3, 1, 17, tzinfo=timezone.utc)
+    run_export_season(settings, target_year=2026, now=jan, static_zone=_plant_zone())
+    run_export_season(settings, target_year=2027, now=jan, static_zone=set())
+    assert PLANT not in _read(settings, season_cells_key(2026))["mixed"]["cells"]
+
+    run_export_season(settings, target_year=2026, now=jan, static_zone=None)  # raw store unreadable
+
+    assert PLANT not in _read(settings, season_cells_key(2026))["mixed"]["cells"]
+
+
+def test_the_single_zone_stored_before_per_year_zones_is_adopted_once(tmp_path):
+    from pipeline.export_season import ZONE_STATE_KEY, zone_state_key
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {"mixed": _fire("mixed", [FAR, PLANT])})
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None)
+    state = _read(settings, SEASON_STATE_KEY)
+    state[ZONE_STATE_KEY] = {"cells": sorted(_plant_zone()), "computed_at": "2026-09-01T00:00:00Z"}
+    (settings.out_dir / SEASON_STATE_KEY).write_text(json.dumps(state))
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None)
+
+    state = _read(settings, SEASON_STATE_KEY)
+    assert ZONE_STATE_KEY not in state
+    assert state[zone_state_key(2026)]["cells"] == sorted(_plant_zone())
+    assert PLANT not in _read(settings, season_cells_key(2026))["mixed"]["cells"]

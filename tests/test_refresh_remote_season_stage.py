@@ -9,6 +9,7 @@ import scripts.refresh_remote as rr
 SEPT = datetime(2026, 9, 25, 16, 0, tzinfo=timezone.utc)
 JAN = datetime(2027, 1, 3, 1, 17, tzinfo=timezone.utc)
 FEB = datetime(2027, 2, 1, 0, 17, tzinfo=timezone.utc)
+MAR = datetime(2027, 3, 2, 0, 17, tzinfo=timezone.utc)
 
 
 def _run(monkeypatch, tier: str, now: datetime = SEPT) -> list[str]:
@@ -52,7 +53,17 @@ def test_january_fast_tier_has_no_room_for_the_ended_season(monkeypatch):
     assert _run(monkeypatch, "fast", JAN) == ["hydrate:2027-01", "refresh:fast", "scale_blob:2027", "publish"]
 
 
-def test_from_february_only_the_new_season_is_exported(monkeypatch):
+def test_the_ended_season_is_still_finished_after_the_map_stops_showing_it(monkeypatch):
+    # Shown until 1 Feb; its fires can still be re-archived for 45 days.
     assert _run(monkeypatch, "full", FEB) == [
-        "hydrate:2027-02", "refresh:full", "scale_blob:2027", "season:2027", "publish",
+        "hydrate:2027-02", "refresh:full",
+        "scale_blob:2026", "scale_blob:2027",
+        "season:2026", "season:2027",
+        "publish",
+    ]
+
+
+def test_from_march_only_the_new_season_is_exported(monkeypatch):
+    assert _run(monkeypatch, "full", MAR) == [
+        "hydrate:2027-03", "refresh:full", "scale_blob:2027", "season:2027", "publish",
     ]

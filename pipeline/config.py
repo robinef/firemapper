@@ -86,6 +86,12 @@ def season_sizes_key(year: int) -> str:
 # published anywhere. The new year is exported alongside from 1 Jan, so it is
 # complete on the day the map switches to it.
 SEASON_GRACE_MONTHS = 1
+# Exporting the ended season has to last longer than showing it: a fire that
+# ended on 31 Dec is re-archived whenever its body changes for as long as its
+# last detection is inside SCAR_WINDOW_DAYS (set below, 45), and a first
+# archive can land that late too. Plus two weeks' margin for a stalled
+# pipeline. Past this, the ended season's files are frozen.
+SEASON_EXPORT_GRACE_DAYS = 60
 
 
 def display_season_year(now: datetime) -> int:
@@ -96,9 +102,11 @@ def display_season_year(now: datetime) -> int:
 def season_years(now: datetime) -> list[int]:
     """Every season the pipeline exports at `now`, oldest first — the ended
     season must be finished before the new one's run can record its late
-    fires as "another year's"."""
-    shown = display_season_year(now)
-    return [shown] if shown == now.year else [shown, now.year]
+    fires as "another year's". The ended season is exported for
+    SEASON_EXPORT_GRACE_DAYS, past the day the map stops showing it."""
+    if now.timetuple().tm_yday <= SEASON_EXPORT_GRACE_DAYS:
+        return [now.year - 1, now.year]
+    return [now.year]
 
 
 # Cluster over a longer window than the live layer so fires that have gone quiet

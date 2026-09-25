@@ -56,7 +56,7 @@ import {
   type SeasonAggregate,
   type SeasonScope,
 } from "./season_filter";
-import { NO_DAY, createSeasonPlayback } from "./season_playback";
+import { NO_DAY, createSeasonPlayback, playbackEnd } from "./season_playback";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -454,7 +454,7 @@ async function boot() {
         ensureCells: () => seasonLoader?.ensure({ force: true }) ?? Promise.resolve(),
         // "loading" is the only state that still owes an onLoaded/onGaveUp.
         cellsPending: () => seasonLoader?.state() === "loading",
-        end: manifest.generated_at.slice(0, 10),
+        end: playbackEnd(manifest.generated_at, season.year),
         // New columns, new `nday` per cell (cellProps below reads them).
         onPrepared: () => seasonLoader?.retag(),
         onFrame: (f) => {

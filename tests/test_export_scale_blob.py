@@ -478,3 +478,25 @@ def test_run_export_stops_early_when_the_time_budget_runs_out(tmp_path):
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
     state_final = json.loads((settings.out_dir / SCALE_BLOB_STATE_KEY).read_text())
     assert set(state_final.keys()) == set(tracks.keys())
+
+
+def test_a_fire_the_state_files_under_another_year_leaves_this_years_blob(tmp_path):
+    # January: a fire in blob_2026 is re-archived with its last bin in 2027.
+    # The fast tier's 2027 pass re-reads it first and records it as 2027; the
+    # 2026 pass then sees an unchanged digest and would never look at it
+    # again — leaving it in both years' blobs. The state is authoritative.
+    import h3
+
+    settings = _settings(tmp_path)
+    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
+    _make_local_archive(settings.out_dir, {"fire-x": _track_body("fire-x", cells, "2026-12-30T00:00:00+00:00")})
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+    assert {c["fire_id"] for c in json.loads((settings.out_dir / scale_blob_key(2026)).read_text())} == {"fire-x"}
+
+    _make_local_archive(settings.out_dir, {"fire-x": _track_body("fire-x", cells, "2027-01-02T00:00:00+00:00")})
+    run_export(settings, target_year=2027, client=None, r2_bucket=None)  # fast tier, first
+    run_export(settings, target_year=2026, client=None, r2_bucket=None)
+
+    assert json.loads((settings.out_dir / scale_blob_key(2026)).read_text()) == []
+    assert "fire-x" not in json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert {c["fire_id"] for c in json.loads((settings.out_dir / scale_blob_key(2027)).read_text())} == {"fire-x"}

@@ -27,6 +27,15 @@ export const NO_DAY = -9999;
 const DAY_MS = 86_400_000;
 const dayMs = (date: string): number => Date.parse(`${date}T00:00:00Z`);
 
+/** The last day a playback sweeps to: today, but never past the shown
+ * season's 31 Dec — through January the map shows the ended season, and
+ * sweeping on to "today" would add weeks of empty frames from the new year. */
+export function playbackEnd(generatedAt: string, year: number): string {
+  const today = generatedAt.slice(0, 10);
+  const lastDay = `${year}-12-31`;
+  return today < lastDay ? today : lastDay;
+}
+
 /** `date` + n UTC calendar days, as YYYY-MM-DD. */
 export function addDays(date: string, n: number): string {
   return new Date(dayMs(date) + n * DAY_MS).toISOString().slice(0, 10);

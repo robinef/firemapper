@@ -21,6 +21,10 @@ describe("season year wiring in main.ts", () => {
     );
   });
 
+  it("ends a playback on the shown season's last day, not on generated_at", () => {
+    expect(mainSource).toMatch(/end: playbackEnd\(manifest\.generated_at, season\.year\),/);
+  });
+
   // The reader's local clock is the wrong year for an hour or more around
   // 1 Jan outside UTC, and the wrong season all January.
   it("compares fire scale against the shown season, not the reader's clock", () => {

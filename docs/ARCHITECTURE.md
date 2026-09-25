@@ -128,12 +128,16 @@ restores these by name, so a fresh CI runner continues where the last left off.
 **The year rollover** (`config.display_season_year` / `season_years`). Through
 January the map keeps showing the season that just ended — the manifest's
 `season_year` names it, so the web never guesses from `generated_at` — and the
-full tier exports both years, the ended one first. Oldest first matters: a fire
+full tier exports both years, the ended one first, for 60 days
+(`SEASON_EXPORT_GRACE_DAYS`: a fire that ended on 31 Dec can be re-archived for
+`SCAR_WINDOW_DAYS` after it), after which the ended season's files are frozen. Oldest first matters: a fire
 that burned on 30 Dec is archived only once it settles, in January, and an
 export targeting the new year would record it as the old year's and skip it.
 `hydrate()` restores both years' files for the same month. The static zone
 reads the raw store from `MAX_FIRE_DAYS` before 1 Jan, as a live refresh does,
-so plants lit all autumn are zoned on 1 Jan rather than three weeks in.
+so plants lit all autumn are zoned on 1 Jan rather than three weeks in. Its
+last-good fallback is stored per year (`__zone__{year}` in `season_state.json`),
+and the EFFIS season totals behind `/scale` follow the shown season too.
 
 ## Turning detections into fires
 
