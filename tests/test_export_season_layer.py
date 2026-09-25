@@ -1004,6 +1004,36 @@ def test_the_sizes_sidecar_carries_the_fourth_place_element(tmp_path):
     assert entry[3] == "Testburg"
 
 
+def test_a_reprocessed_fire_keeps_its_place_when_the_gazetteer_is_unavailable(tmp_path):
+    # fire-a is already published and named "Testburg" (gazetteer present).
+    # Its track body then changes (new digest) on a run where the gazetteer
+    # happens to be missing. That must not blank the name that was already
+    # computed — the gazetteer being unavailable this run is not the same
+    # thing as the fire genuinely having no nearby town.
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    run_export_season(settings, target_year=2026, now=NOW)
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+
+    # The track body changes (a new detection widens the cell set), which
+    # changes its digest and brings it back into to_process. The gazetteer is
+    # transiently unavailable for this run only.
+    wider_cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:3]
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", wider_cells, "2026-07-01T00:00:00+00:00", "2026-07-04T00:00:00+00:00"),
+    })
+    (settings.data_dir / "places" / "cities5000.txt").unlink()
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] == "Testburg"
+
+
 def test_the_migration_fills_place_for_an_existing_entry_without_re_reading_its_body(tmp_path, monkeypatch):
     # A legacy state/cells pair from before this feature shipped: the fire is
     # already published, its digest matches (so it is not in to_process this

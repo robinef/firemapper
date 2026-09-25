@@ -365,6 +365,7 @@ def run_export_season(
                     cells_by_fire.pop(tid, None)
                     malformed += 1
                     continue
+                old_entry = state.get(tid, {})
                 state[tid] = {"digest": digest, "year": year}
                 cells_by_fire.pop(tid, None)  # drop a stale contribution if this id changed
                 processed += 1
@@ -386,9 +387,19 @@ def run_export_season(
                 # only thing that ever recomputes it.
                 if places is None:
                     places = load_places_tolerant(settings)
-                place = place_for(_members_from_cells(cells), places)
-                state[tid]["place"] = place["name"] if place else None
-                placed += 1
+                if len(places) == 0 and "place" in old_entry:
+                    # The gazetteer is unavailable (missing/corrupt) for this
+                    # run only — not evidence the fire has no nearby town.
+                    # A fire that was already named keeps that name rather
+                    # than having it silently reverted to null; the migration
+                    # loop below already gives this same protection to
+                    # unchanged fires, this keeps a re-read one consistent
+                    # with it.
+                    state[tid]["place"] = old_entry["place"]
+                else:
+                    place = place_for(_members_from_cells(cells), places)
+                    state[tid]["place"] = place["name"] if place else None
+                    placed += 1
 
     # No zone this run (raw store missing or unreadable) → the last good one,
     # so a fire re-read this run is filtered like every other. Never a zone
