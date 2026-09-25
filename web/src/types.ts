@@ -102,15 +102,19 @@ export interface SeasonSummary {
  * so they can return if the zone shrinks); the web never reads it. */
 export type SeasonCells = Record<string, { digest: string; first: string; cells: string[]; zone_cells?: string[] }>;
 
-/** One fire's sidecar row: [km², country or null, first-detection YYYY-MM-DD].
- * Named because it travels on its own — a clicked cell hands the fire card
- * exactly this row (season_click.ts::scarFromArchive). */
-export type SeasonSizeEntry = [number, string | null, string];
+/** One fire's sidecar row: [km², country or null, first-detection YYYY-MM-DD,
+ * nearest-town place name or null]. Named because it travels on its own — a
+ * clicked cell hands the fire card exactly this row
+ * (season_click.ts::scarFromArchive). The 4th element is ABSENT on sidecars
+ * published before pipeline/export_season.py started computing a place
+ * (d95bcb2) — read it as `entry[3] ?? null`, never assume its presence. */
+export type SeasonSizeEntry = [number, string | null, string, (string | null)?];
 
 /** archive/season_{year}_sizes.json — pipeline/export_season.py's per-fire
- * [km², country or null, first-detection YYYY-MM-DD]. The size filter's
- * boot-time input: the histogram, the counts and the EU-27 scope, without the
- * multi-MB cells file. Arrays, not objects, to keep ~22k entries small. */
+ * [km², country or null, first-detection YYYY-MM-DD, place or null]. The size
+ * filter's boot-time input: the histogram, the counts and the EU-27 scope,
+ * without the multi-MB cells file. Arrays, not objects, to keep ~22k entries
+ * small. */
 export type SeasonSizes = { year: number; fires: Record<string, SeasonSizeEntry> };
 
 /** archive/blob_{year}_fires.json — pipeline/export_scale_blob.py's per-fire
