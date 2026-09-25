@@ -165,8 +165,8 @@ describe("legend + status", () => {
   // "footprint", not plain "km²": the number is satellite heat coverage
   // (0.7 km² per detection, agricultural burning included), roughly double the
   // mapped burn area the /scale page reports from EFFIS for the same fires.
-  it("status counts fires and km² of footprint since the floor", () => {
-    expect(seasonStatus(SUMMARY)).toBe("21,350 fires · 88,904 km² footprint since 13 Jul");
+  it("status counts fires and km² of footprint, and dates the selection's earliest fire", () => {
+    expect(seasonStatus(SUMMARY)).toBe("21,350 fires · 88,904 km² footprint · earliest 13 Jul");
   });
 
   it("status omits the floor when there is none", () => {
@@ -175,15 +175,15 @@ describe("legend + status", () => {
 
   it("status names the EU-27 scope, and only when it is on", () => {
     expect(seasonStatus({ ...SUMMARY, fires: 1203, km2: 9812 }, "eu"))
-      .toBe("EU-27 · 1,203 fires · 9,812 km² footprint since 13 Jul");
+      .toBe("EU-27 · 1,203 fires · 9,812 km² footprint · earliest 13 Jul");
     expect(seasonStatus({ ...SUMMARY, fires: 1203, km2: 9812 }, "all"))
-      .toBe("1,203 fires · 9,812 km² footprint since 13 Jul");
+      .toBe("1,203 fires · 9,812 km² footprint · earliest 13 Jul");
     expect(seasonStatus({ ...SUMMARY, floor: null, fires: 5, km2: 4 }, "eu")).toBe("EU-27 · 5 fires · 4 km² footprint");
   });
 
   it("says the km² is pending, not zero, when only the count is known yet", () => {
     expect(seasonStatus({ ...SUMMARY, fires: 12, km2: null, floor: "2026-07-20" }, "eu"))
-      .toBe("EU-27 · 12 fires · … km² footprint since 20 Jul");
+      .toBe("EU-27 · 12 fires · … km² footprint · earliest 20 Jul");
   });
 
   it("formatFloor renders a UTC day-month", () => {
@@ -671,6 +671,24 @@ describe("loader force + hooks", () => {
     expect(loader.state()).toBe("fetched");
     expect(map._sources[SEASON_CELLS_SOURCE].data.features).toHaveLength(0);
     expect(map._paint["season-hex-fill"]).toBeUndefined();
+  });
+
+  // Clicking a burned cell resolves it against the cells file (which fire
+  // claims this ground?), and the loader is the one thing that holds it. Only
+  // the INSTALLED cells count: they are the ones with polygons on the map, so
+  // they are the only ones a click can land on.
+  it("hands back the installed cells, and nothing before the install", async () => {
+    const map = stubMap(4);
+    addSeason(map as never, SUMMARY);
+    const fetchFn = okFetch();
+    const loader = createSeasonCellsLoader(map as never, 2026, () => true, fetchFn as never);
+    expect(loader.cells()).toBeNull();
+    await loader.ensure({ force: true });
+    expect(loader.state()).toBe("fetched");
+    expect(loader.cells()).toBeNull(); // parsed, but no geometry on the map yet
+    map.zoom = 10;
+    await loader.ensure();
+    expect(loader.cells()).toEqual(body);
   });
 
   it("a deferred install repeats neither the setData nor the fetch", async () => {

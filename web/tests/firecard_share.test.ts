@@ -7,7 +7,7 @@ import type { Switcher } from "../src/registry";
 window.URL.createObjectURL ??= () => "";
 
 vi.mock("../src/data", () => ({
-  loadTrack: () => Promise.resolve({ series: [], cell_bins: null }),
+  loadTrack: () => Promise.resolve({ series: [], cells: [], cell_bins: null, frp_live: [] }),
 }));
 
 function recordingMap() {
@@ -99,6 +99,24 @@ describe("fire card share link", () => {
     const url = new URL(writeText.mock.calls[0][0] as string);
     expect(url.searchParams.get("fire")).toBe("fire-b");
     expect(url.searchParams.has("layers")).toBe(false);
+  });
+
+  // The archived-fire card (a burned season cell, or the deep link that
+  // shares it) carries the same button, and its link has to round-trip: main.ts
+  // resolves ?fire=<id> against the live index, then the scar index, then
+  // openArchived — so a copied link reopens exactly this card.
+  it("copies ?fire=<id> from an archived season fire's card", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    await build(switcherWithLayersOn("viirs")).openArchived("arch-1", [12, "ES", "2026-05-04"]);
+    document.querySelector<HTMLButtonElement>(".fc-share")!.click();
+    await Promise.resolve();
+
+    const url = new URL(writeText.mock.calls[0][0] as string);
+    expect(url.searchParams.get("fire")).toBe("arch-1");
+    expect(url.searchParams.get("layers")).toBe("viirs");
   });
 
   it("copies ?fire=<scarId> from a scar card's share button too", async () => {

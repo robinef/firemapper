@@ -427,11 +427,15 @@ describe("createSeasonFilter control", () => {
   // 100 km² burned, while the slider's whole point is to isolate those. A
   // non-zero count always gets at least one pixel; an EMPTY bin stays empty,
   // because "rare" and "none" must not look the same either.
+  //
+  // 10,000 against 1, not 1,000: under the sqrt scale below a thousandth of
+  // the max already rounds up to 1 px on its own, so the smaller ratio would
+  // stop testing the floor at all.
   it("a rare bin beside a huge one still paints a pixel, an empty bin still paints nothing", () => {
     const sched = manualScheduler();
     const { filter, el } = mount(sched.schedule);
     const many = new Map<string, number>();
-    for (let i = 0; i < 1000; i += 1) many.set(`small-${i}`, 0.6); // bin 0
+    for (let i = 0; i < 10_000; i += 1) many.set(`small-${i}`, 0.6); // bin 0
     many.set("huge", 300); // bin 13 (200–600 km²)
     filter.setCells({}, many);
     const heights = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")]
@@ -439,6 +443,54 @@ describe("createSeasonFilter control", () => {
     expect(heights[0]).toBe(40);
     expect(heights[binIndex(300)]).toBeGreaterThanOrEqual(1);
     expect(heights[binIndex(3)]).toBe(0); // nothing in 3–4 km²
+  });
+
+  // The y-scale is the SQRT of the count, not the count. On a power-law
+  // distribution a linear axis spends the whole 40 px on the first bin and
+  // rounds everything the slider exists to isolate down to the 1 px floor,
+  // so the tail reads as "nothing here" whatever its real shape. sqrt keeps
+  // the ordering exact (heights still rank the bins) while giving the tail
+  // room to differ from itself.
+  it("scales bar heights by the sqrt of the count, so the big-fire tail is readable", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    // Perfect squares against a 16-count max: sqrt puts them at exactly
+    // 10/20/30/40 px, where a linear scale would give 3/10/23/40.
+    const counts = new Map<string, number>();
+    const at = (km2: number, n: number) => {
+      for (let i = 0; i < n; i += 1) counts.set(`f-${km2}-${i}`, km2);
+    };
+    at(0.6, 1);
+    at(1.2, 4);
+    at(2.5, 9);
+    at(5, 16);
+    filter.setCells({}, counts);
+    const heights = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")]
+      .map((r) => Number(r.getAttribute("height")));
+    expect(heights[binIndex(0.6)]).toBe(10);
+    expect(heights[binIndex(1.2)]).toBe(20);
+    expect(heights[binIndex(2.5)]).toBe(30);
+    expect(heights[binIndex(5)]).toBe(40);
+    // Monotone in the count, and an empty bin is still empty.
+    expect(heights[binIndex(0.6)]).toBeLessThan(heights[binIndex(1.2)]);
+    expect(heights[binIndex(20)]).toBe(0);
+  });
+
+  // The case the change is for: one fire beside a hundred. Linear rounds it
+  // to the 1 px floor (2.5 % of the bar box) — indistinguishable from the
+  // single-fire bin next to it; sqrt gives it 4 px (10 %).
+  it("gives a 1-count bin beside a 100-count bin a visible share of the height", () => {
+    const sched = manualScheduler();
+    const { filter, el } = mount(sched.schedule);
+    const many = new Map<string, number>();
+    for (let i = 0; i < 100; i += 1) many.set(`small-${i}`, 0.6);
+    many.set("huge", 300);
+    filter.setCells({}, many);
+    const heights = [...el.querySelectorAll<SVGRectElement>(".season-hist rect")]
+      .map((r) => Number(r.getAttribute("height")));
+    expect(heights[0]).toBe(40);
+    expect(heights[binIndex(300)] / heights[0]).toBeGreaterThanOrEqual(0.03);
+    expect(heights[binIndex(300)]).toBe(4);
   });
 
   // The bug this pins: once a first aggregate exists, labelText() used to fall

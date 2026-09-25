@@ -102,11 +102,16 @@ export interface SeasonSummary {
  * so they can return if the zone shrinks); the web never reads it. */
 export type SeasonCells = Record<string, { digest: string; first: string; cells: string[]; zone_cells?: string[] }>;
 
+/** One fire's sidecar row: [km², country or null, first-detection YYYY-MM-DD].
+ * Named because it travels on its own — a clicked cell hands the fire card
+ * exactly this row (season_click.ts::scarFromArchive). */
+export type SeasonSizeEntry = [number, string | null, string];
+
 /** archive/season_{year}_sizes.json — pipeline/export_season.py's per-fire
  * [km², country or null, first-detection YYYY-MM-DD]. The size filter's
  * boot-time input: the histogram, the counts and the EU-27 scope, without the
  * multi-MB cells file. Arrays, not objects, to keep ~22k entries small. */
-export type SeasonSizes = { year: number; fires: Record<string, [number, string | null, string]> };
+export type SeasonSizes = { year: number; fires: Record<string, SeasonSizeEntry> };
 
 /** archive/blob_{year}_fires.json — pipeline/export_scale_blob.py's per-fire
  * country + EFFIS-mapped area. Lives here rather than beside its first reader

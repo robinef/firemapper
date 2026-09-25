@@ -2,12 +2,13 @@ import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
 import { areaText, footprintNote, numOr } from "./area";
 import { loadFootprint, loadTrack } from "./data";
+import { isTrackId, scarFromArchive } from "./season_click";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
 import { SCAR_LAYER_IDS } from "./layer_scars";
 import type { FeatureSnapshot, Scar } from "./layer_imagery";
 import type { Switcher } from "./registry";
-import type { EventProps, Manifest, TimelineDay, Track } from "./types";
+import type { EventProps, Manifest, SeasonSizeEntry, TimelineDay, Track } from "./types";
 import { safeHttpUrl } from "./escape";
 import { statRow } from "./stat_row";
 import { emitUi } from "./ui_events";
@@ -248,6 +249,13 @@ export interface FireCard {
    *  just started, must await it. */
   openFire: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
   openScar: (e: maplibregl.MapLayerMouseEvent) => Promise<void>;
+  /** An archived season fire, by id alone: a burned cell on the "Burned this
+   *  year" layer, or a `?fire=` deep link the live/closed and scar indexes
+   *  both miss. Resolves false when the fire has no archived track — there is
+   *  then nothing to build a card from, and the caller (a deep link) stays on
+   *  the map rather than opening an empty card. `hint` is the sizes sidecar's
+   *  row for the fire, when it has landed. */
+  openArchived: (id: string, hint?: SeasonSizeEntry | null) => Promise<boolean>;
   /** For the historical-lookup feature: the Track is already reconstructed
    *  client-side (see historical_reconstruct.ts), so this skips the
    *  loadTrack/loadFootprint network fetch openFire/openScar do and paints
@@ -750,6 +758,57 @@ export function setupFireCard(
     if (footprint) paintStaticFootprint(footprint);
   };
 
+  /**
+   * A past fire with no marker of its own: one of the ~27,000 tracks in the
+   * permanent archive rather than the 50 scars the manifest publishes. The
+   * "Burned this year" layer draws its ground, so clicking that ground has to
+   * open it — but a burned cell carries an id and nothing else, so everything
+   * openScar reads off a marker's properties is rebuilt here instead
+   * (season_click.ts::scarFromArchive) from the track plus the sizes sidecar's
+   * row.
+   *
+   * Same openToken race guard as openFire/openScar, for the same reason: this
+   * awaits a track too, and a cell click can land while another fire's track
+   * is still in flight either way round. The post-await CHECK is what does the
+   * work; the bump itself is redundant today (open()'s own unconditional bump
+   * already invalidates a concurrent openFire — confirmed by mutation test:
+   * dropping this `++` alone breaks nothing, dropping the check breaks the
+   * race test), kept for symmetry with the other two openers and against a
+   * future await landing above open(), exactly as openHistoricalLookup's is.
+   *
+   * No archived track means no card: an id that reaches here without one is a
+   * stale share link or a fire whose track aged out, and a card built from an
+   * id alone would state an ignition date and an area it does not have.
+   */
+  const openArchived = async (id: string, hint: SeasonSizeEntry | null = null): Promise<boolean> => {
+    // `?fire=` reaches here unvetted, and the id becomes a fetch PATH. Refused
+    // before the token bump, so a bad link cannot cancel a card in flight.
+    if (!isTrackId(id)) return false;
+    const mine = ++openToken;
+    let scar: ReturnType<typeof scarFromArchive>;
+    let timeline: ReturnType<typeof trackTimeline>;
+    let track: Track;
+    try {
+      track = await loadTrack(manifest, id, "/data", fetch, "archive");
+      if (mine !== openToken) return false; // superseded by a newer fire/scar click
+      // JSON that parses but is not a track (a truncated body, say) throws in
+      // these two — inside the try, so the open resolves false rather than
+      // leaking an unhandled rejection out of the deep link's promise chain.
+      scar = scarFromArchive(id, track, hint, new Date().toISOString().slice(0, 10));
+      timeline = trackTimeline(track);
+    } catch {
+      return false;
+    }
+    const { series, centroids, cellBins } = timeline;
+    // Scars never get fire-wind arrows (fireWindFC's doc comment), and an
+    // archived fire is historical by definition — the liveOnly sublayers have
+    // nothing of its to show.
+    open(scarCardHtml(scar, track), scar.lon, scar.lat, id,
+      series, centroids, cellBins, null, true,
+      () => compare?.fromScar({ props: { ...scar }, lon: scar.lon, lat: scar.lat }));
+    return true;
+  };
+
   const openHistoricalLookup = async (track: Track, meta: HistoricalLookupMeta): Promise<void> => {
     // The CHECK below is structurally inert today: there is no await between
     // this bump and the check, so mine !== openToken can never be true here
@@ -782,6 +841,7 @@ export function setupFireCard(
   return {
     openFire,
     openScar,
+    openArchived,
     openHistoricalLookup,
     close,
     get isOpen() {

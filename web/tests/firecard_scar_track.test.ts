@@ -15,7 +15,15 @@ const CELL_B = "881f987843fffff";
 // same as a trackless live fire.
 vi.mock("../src/data", () => ({
   loadTrack: vi.fn((_m: unknown, id: string, _base: unknown, _fetch: unknown, trackGen?: string | null) => {
-    if (trackGen === "archive") {
+    // The one archived id that is NOT archived: a season fire whose track was
+    // never written (or has aged out of the bucket), for openArchived's
+    // nothing-to-open path.
+    // A JSON file that parses but is not a track (a `?fire=` id that walked to
+    // some other same-origin JSON, or a truncated body): no series, no cells.
+    if (trackGen === "archive" && id === "fire-malformed") {
+      return Promise.resolve({ id, series: "nope" });
+    }
+    if (trackGen === "archive" && id !== "fire-unarchived") {
       return Promise.resolve({
         id,
         series: [
@@ -176,5 +184,97 @@ describe("openScar loads the same H3 footprint detail as an active fire", () => 
     await card.openScar(scarClickEvent("scar-no-area"));
 
     expect(document.getElementById("panel")!.innerHTML).not.toContain("undefined");
+  });
+});
+
+/** The other route into a past fire's card: a burned season cell, whose fire
+ *  is one of ~27,000 archived tracks and almost never one of the 50 scars the
+ *  manifest publishes. No marker, no feature properties — just an id and
+ *  (when it has landed) the sizes sidecar's row for it. */
+describe("openArchived opens a season fire that never made the scar shortlist", () => {
+  function build() {
+    document.body.innerHTML = `<div id="panel" class="hidden"></div><div id="timeline"></div>`;
+    const fixture = footprintMap();
+    const switcher: Switcher = { isOn: () => true, setLevel: () => {}, refresh: () => {}, refreshStatus: () => {} };
+    const card = setupFireCard(
+      fixture.map, { generation: "gen-1", layers: {} } as never, null,
+      document.getElementById("timeline")!, switcher, vi.fn(), () => {},
+    );
+    return { card, ...fixture };
+  }
+
+  it("loads the archived track, paints the arrival footprint and dates the card from the sidecar", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card, sourceObjs, layerVis, flights } = build();
+
+    const opened = await card.openArchived("fire-1", [31.5, "ES", "2026-07-24"]);
+
+    expect(opened).toBe(true);
+    const panel = document.getElementById("panel")!;
+    expect(panel.classList.contains("hidden")).toBe(false);
+    // The sidecar's ignition date, through scarFromArchive's label — not the
+    // track's first bin, which is the same day here but need not be.
+    expect(panel.innerHTML).toContain("Burn scar · 24 Jul 2026");
+    expect(panel.innerHTML).toContain("Past fire");
+    expect(panel.innerHTML).toContain("31.5 km²"); // the sidecar's footprint km²
+    expect(panel.innerHTML).not.toContain("undefined");
+    // The same H3 arrival detail an archived scar marker's card shows.
+    expect(layerVis.get("fire-bin-fill")).toBe("visible");
+    expect((sourceObjs.get("fire-bin")?.data as GeoJSON.FeatureCollection).features).toHaveLength(2);
+    expect(document.querySelector(".fc-arrival")).not.toBeNull();
+    expect(document.querySelector(".tl-title")?.textContent).toBe("This fire · new burned cells / 6 h");
+    // Centred on the track's own cells — nothing else knows where this fire is.
+    expect(flights).toHaveLength(1);
+    expect(flights[0].center[0]).toBeCloseTo(8.0019609, 5);
+    expect(flights[0].center[1]).toBeCloseTo(45.0035094, 5);
+  });
+
+  it("dates the card from the track when the sidecar has not landed", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+
+    expect(await card.openArchived("fire-2", null)).toBe(true);
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.innerHTML).toContain("Burn scar · 1 Jul 2026"); // the first bin's day
+    expect(panel.innerHTML).not.toContain("undefined");
+    // Area summed from the track's own cells, rounded the way the sidecar
+    // rounds it — a raw h3 sum prints 13 decimal places into the card.
+    expect(panel.innerHTML).toContain("1.5 km²"); // two cells, one decimal
+  });
+
+  it("opens nothing when the fire has no archived track", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+
+    expect(await card.openArchived("fire-unarchived", null)).toBe(false);
+
+    expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
+    expect(document.getElementById("panel")!.innerHTML).toBe("");
+  });
+
+  // `?fire=` is the reader's URL, and openArchived is the one opener that
+  // takes an id nothing has vetted (openFromList/openScarFromList only accept
+  // ids already in their indexes). The id becomes a fetch PATH, where the
+  // browser resolves `..`: `../../manifest` is /data/manifest.json.
+  it("refuses an id that is not a plain track id, before fetching anything", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { loadTrack } = await import("../src/data");
+    const { card } = build();
+    vi.mocked(loadTrack).mockClear();
+
+    for (const bad of ["../../manifest", "a/b", "x?y=1", "x#y", "", "%2e%2e"]) {
+      expect(await card.openArchived(bad, null)).toBe(false);
+    }
+    expect(loadTrack).not.toHaveBeenCalled();
+    expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
+  });
+
+  it("opens nothing, and throws nothing, when the body is not a track", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+
+    await expect(card.openArchived("fire-malformed", null)).resolves.toBe(false);
+    expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
   });
 });

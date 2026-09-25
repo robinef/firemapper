@@ -43,7 +43,16 @@ describe("layer levels", () => {
   it("reads ?fire=<id> and opens that fire's card via openFromList", () => {
     expect(mainSource).toMatch(/FORCE_FIRE\s*=\s*params\.get\("fire"\)/);
     expect(mainSource).toMatch(
-      /if\s*\(FORCE_FIRE\s*&&\s*!openFromList\(FORCE_FIRE\)\)\s*openScarFromList\(FORCE_FIRE\)/,
+      /if\s*\(FORCE_FIRE\s*&&\s*!openFromList\(FORCE_FIRE\)\s*&&\s*!openScarFromList\(FORCE_FIRE\)\)/,
+    );
+  });
+
+  // Third and last fallback: nearly every past fire is an archived season
+  // track, not one of the 50 scars the manifest publishes — and a cell click's
+  // share link copies exactly this param, so it has to round-trip.
+  it("falls back to an archived season fire when ?fire=<id> is neither an event nor a scar", () => {
+    expect(mainSource).toMatch(
+      /sizesP\.then\(\(sz\)\s*=>\s*\{[\s\S]*?fireCard\.openArchived\(FORCE_FIRE,\s*sz\?\.fires\[FORCE_FIRE\]\s*\?\?\s*null\)/,
     );
   });
 

@@ -38,8 +38,13 @@ import type { SeasonCells, SeasonSummary } from "./types";
 export const SEASON_HEAT_SOURCE = "season-heat-pts";
 export const SEASON_HEX_SOURCE = "season-hex";
 export const SEASON_CELLS_SOURCE = "season-cells";
+/** The real burned cells' fill — the only season layer a click can land on
+ * (the hexes are an aggregate and carry no fire id). Named because main.ts's
+ * click order, its zoom gate and its cursor loop all have to mean this exact
+ * layer. */
+export const SEASON_CELLS_LAYER = "season-cells-fill";
 export const SEASON_LAYER_IDS = [
-  "season-heat", "season-hex-fill", "season-hex-line", "season-cells-fill", "season-cells-line",
+  "season-heat", "season-hex-fill", "season-hex-line", SEASON_CELLS_LAYER, "season-cells-line",
 ];
 
 const EMBER_DARK = "#5a2a14";
@@ -243,7 +248,7 @@ export function setCellsThreshold(
       : null;
   const byDay = day === undefined ? null : [">=", ["get", "nday"], -day];
   const expr = (base && byDay ? ["all", base, byDay] : (byDay ?? base)) as maplibregl.FilterSpecification | null;
-  for (const id of ["season-cells-fill", "season-cells-line"]) {
+  for (const id of [SEASON_CELLS_LAYER, "season-cells-line"]) {
     if (map.getLayer(id)) map.setFilter(id, expr);
   }
 }
@@ -314,7 +319,7 @@ export function addSeason(map: maplibregl.Map, summary: SeasonSummary): void {
     },
   });
   map.addLayer({
-    id: "season-cells-fill",
+    id: SEASON_CELLS_LAYER,
     type: "fill",
     source: SEASON_CELLS_SOURCE,
     minzoom: 8,
@@ -347,7 +352,13 @@ export function formatFloor(floor: string): string {
  * "footprint" because the km² is satellite heat coverage, not mapped burn
  * area — so the two numbers in the panel read as one statement. A null km²
  * is a selection counted from the sizes sidecar whose cells (and so whose
- * deduped area) have not arrived yet: "…", never 0. */
+ * deduped area) have not arrived yet: "…", never 0.
+ *
+ * "earliest", not "since": this date is the EARLIEST FIRE IN THE SELECTION,
+ * so it moves when a size threshold or a scope drops the fire it came from.
+ * The legend's "since <floor>" is a different fact — how far back the archive
+ * reaches — and the two sat one panel apart wearing the same word, disagreeing
+ * whenever the reader filtered, which reads as one of them being broken. */
 export function seasonStatus(
   summary: Omit<SeasonSummary, "km2"> & { km2: number | null },
   scope: SeasonScope = "all",
@@ -355,7 +366,7 @@ export function seasonStatus(
   const n = (v: number) => Math.round(v).toLocaleString("en-GB");
   const km2 = summary.km2 === null ? "…" : n(summary.km2);
   const base = `${scopePrefix(scope)}${n(summary.fires)} fires · ${km2} km² footprint`;
-  return summary.floor ? `${base} since ${formatFloor(summary.floor)}` : base;
+  return summary.floor ? `${base} · earliest ${formatFloor(summary.floor)}` : base;
 }
 
 export function seasonLegend(floor: string | null, year = new Date().getUTCFullYear()) {
@@ -455,7 +466,12 @@ export function createSeasonCellsLoader(
   isOn: () => boolean,
   fetchImpl: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
   hooks: SeasonCellsHooks = {},
-): { ensure(opts?: { force?: boolean }): Promise<void>; state(): CellsState; retag(): void } {
+): {
+  ensure(opts?: { force?: boolean }): Promise<void>;
+  state(): CellsState;
+  retag(): void;
+  cells(): SeasonCells | null;
+} {
   let state: CellsState = "idle";
   let failures = 0;
   /** Parsed cells waiting for the reader to approach the cells band. */
@@ -555,5 +571,14 @@ export function createSeasonCellsLoader(
 
   map.on("zoomend", () => { void ensure(); });
   map.on("moveend", () => { void ensure(); });
-  return { ensure, state: () => state, retag };
+  return {
+    ensure,
+    state: () => state,
+    retag,
+    /** The cells whose polygons are ON THE MAP, for resolving a click on one
+     * of them back to a fire (season_click.ts). Deliberately not `held`: cells
+     * parsed but not installed have no geometry to click, and answering for
+     * them would let a click resolve against a file the reader cannot see. */
+    cells: () => installed?.cells ?? null,
+  };
 }
