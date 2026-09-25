@@ -121,7 +121,7 @@ fire each run. The zone is the live map's rule asked of every live window:
 raw `hotspots.parquet` marks a cell static when some `MAX_FIRE_DAYS`
 consecutive days hold `STATIC_CELL_DAYS` distinct detection days on it, then
 adds the `STATIC_RING_K` ring; the last good zone is kept in the season state
-for runs where the raw store cannot be read). The season export runs in the full refresh tier only (hourly, `refresh-full.yml`),
+for runs where the raw store cannot be read). The season export runs in the full refresh tier only (two-hourly, `refresh-full.yml`),
 not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
 restores these by name, so a fresh CI runner continues where the last left off.
 

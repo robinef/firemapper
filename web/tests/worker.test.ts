@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import worker, { dispatchRefresh, manifestAgeMin, type Env } from "../../worker/index";
+import worker, {
+  FAST_CRON,
+  FULL_CRON,
+  dispatchRefresh,
+  manifestAgeMin,
+  workflowForCron,
+  type Env,
+} from "../../worker/index";
+// ?raw, as wrangler_routes.test.ts does: the web tsconfig has no @types/node.
+import wranglerRaw from "../../wrangler.jsonc?raw";
 
 function env(objects: Record<string, string>): Env {
   return {
@@ -125,6 +134,42 @@ describe("worker scheduled refresh trigger", () => {
     expect(h.authorization).toBe("Bearer tok");
     expect(h.accept).toBe("application/vnd.github+json");
     expect(h["user-agent"]).toBeTruthy();
+  });
+
+  // wrangler.jsonc registers both expressions; a tick's `cron` field is the
+  // only thing that tells the two tiers apart, and it is matched verbatim.
+  it.each([
+    [FAST_CRON, "refresh-fast.yml"],
+    [FULL_CRON, "refresh-full.yml"],
+    // An expression this Worker was not written for, or no event at all,
+    // is the fast tier: a mis-set cron over-refreshes the live layers rather
+    // than starting a 20-minute full run every half hour.
+    ["*/15 * * * *", "refresh-fast.yml"],
+    [undefined, "refresh-fast.yml"],
+  ])("cron %s dispatches %s", async (cron, workflow) => {
+    expect(workflowForCron(cron)).toBe(workflow);
+    const fresh = JSON.stringify({
+      layers: { events: { attempted_at: new Date().toISOString() } },
+    });
+    const f = stubFetch(() => new Response(null, { status: 204 }));
+    try {
+      await worker.scheduled!({ cron }, {
+        ...env({ "data/manifest.json": fresh }),
+        GH_DISPATCH_TOKEN: "x",
+      } as Env);
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0].url).toContain(`/actions/workflows/${workflow}/dispatches`);
+    } finally {
+      f.restore();
+    }
+  });
+
+  it("registers exactly the cron expressions the dispatcher knows", () => {
+    // A cron added to wrangler.jsonc that workflowForCron does not name would
+    // silently run the fast tier; one removed there would silently stop a tier.
+    const list = wranglerRaw.match(/"crons":\s*\[([^\]]*)\]/)![1];
+    const crons = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(crons.sort()).toEqual([FAST_CRON, FULL_CRON].sort());
   });
 
   it("throws on a failed dispatch, so the invocation is recorded as failed", async () => {

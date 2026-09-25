@@ -36,7 +36,9 @@
   // The GH_DISPATCH_TOKEN secret this needs is set out of band
   // (`wrangler secret put`), never in this file.
   "triggers": {
-    "crons": ["*/30 * * * *"]
+    // Fast tier every half hour, full tier every two hours at :17; the
+    // expressions are matched verbatim by worker/index.ts::workflowForCron.
+    "crons": ["*/30 * * * *", "17 */2 * * *"]
   },
   "durable_objects": {
     "bindings": [

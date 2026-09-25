@@ -4,9 +4,10 @@ The live map runs at **https://firemapper.robinef.workers.dev** as a Cloudflare
 Worker. The app shell is static; the data is not.
 
 ```
-Cloudflare cron ─► refresh-fast (*/30)  MTG FRP, wind, re-cluster
+Cloudflare cron ─┬─ refresh-fast (*/30)   MTG FRP, wind, re-cluster
+                 └─ refresh-full (17 */2) + FIRMS, EFFIS, GIBS imagery
 GitHub Actions ──┬─ refresh-fast (37 */6, fallback only)
-                 └─ refresh-full (hourly) + FIRMS, EFFIS, GIBS imagery
+                 └─ refresh-full (7 */6, fallback only)
        │ hydrate                                   │ publish
        ▼                                           ▼
   R2: archive/hotspots-<generation>.parquet   data/manifest.json + data/gen-<ts>/
@@ -27,7 +28,7 @@ Two consequences worth stating plainly:
 | Workflow | Schedule | Fetches |
 |---|---|---|
 | [`refresh-fast.yml`](../.github/workflows/refresh-fast.yml) | `*/30`, driven by a Cloudflare Cron Trigger (see [`worker/index.ts`](../worker/index.ts)); its own `37 */6` schedule is only a fallback | MTG FRP, wind, then re-clusters against the archive |
-| [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | hourly at :07 | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
+| [`refresh-full.yml`](../.github/workflows/refresh-full.yml) | `17 */2`, driven by the same Cron Trigger (GitHub's own schedule ran it at a median gap of 4.1 h); its `7 */6` schedule is only a fallback | the above plus FIRMS NRT + history, EFFIS, GIBS scar imagery |
 
 One-off, manual: [`backfill-season.yml`](../.github/workflows/backfill-season.yml)
 runs `scripts/backfill_season.py`, rebuilding January–June 2026 fires from the
@@ -72,7 +73,7 @@ uploads whatever is in `web/dist`, which is no longer committed.
 
 Both refresh workflows share `concurrency: { group: refresh, queue: max }`.
 `queue: max` is load-bearing: the default `queue: single` cancels an older
-*pending* run, so the hourly full refresh would be discarded by the next fast
+*pending* run, so the two-hourly full refresh would be discarded by the next fast
 run every time the two collided.
 
 The entrypoint is `scripts/refresh_remote.py`, which enforces the only safe

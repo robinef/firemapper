@@ -53,8 +53,24 @@ export interface Env extends HistoricalHotspotsEnv, GeocodeEnv {
 }
 
 const REPO = "robinef/firemapper";
-const WORKFLOW = "refresh-fast.yml";
 const REF = "main";
+
+/**
+ * Which workflow a cron tick dispatches. Both tiers are driven from here for
+ * the same reason (GitHub throttles its own schedules; see `scheduled`): the
+ * half-hourly cron runs the fast tier, the two-hourly one the full tier.
+ * Anything else — an unknown expression, or no event at all — is the fast
+ * tier, the safe default: a mis-set cron then over-refreshes the live layers
+ * rather than starting a 20-minute full run every half hour.
+ */
+export const FAST_CRON = "*/30 * * * *";
+export const FULL_CRON = "17 */2 * * *";
+export const FAST_WORKFLOW = "refresh-fast.yml";
+export const FULL_WORKFLOW = "refresh-full.yml";
+
+export function workflowForCron(cron: string | undefined): string {
+  return cron === FULL_CRON ? FULL_WORKFLOW : FAST_WORKFLOW;
+}
 // GitHub rejects requests without one, and a named agent makes this Worker
 // identifiable in audit logs rather than an anonymous caller.
 const UA = "firemapper-refresh-trigger";
@@ -76,9 +92,10 @@ const UA = "firemapper-refresh-trigger";
 export async function dispatchRefresh(
   token: string,
   fetchImpl: typeof fetch = fetch,
+  workflow: string = FAST_WORKFLOW,
 ): Promise<{ status: number; body: string }> {
   const response = await fetchImpl(
-    `https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`,
+    `https://api.github.com/repos/${REPO}/actions/workflows/${workflow}/dispatches`,
     {
       method: "POST",
       headers: {
@@ -320,6 +337,17 @@ export default {
    * clustering that had been silently skipped while it returned zero pixels. A
    * profile taken through a broken path only describes the broken path. The
    * aircraft layer was later retired — no interval could meet 20 min.
+   *
+   * The full tier runs from here too, every two hours. Left to GitHub's
+   * schedule alone (`7 * * * *`, hourly on paper) it ran at a median gap of
+   * 4.1 h, p90 5.5 h, worst 7.8 h (measured 2026-09-25 over the previous
+   * week) — so the polar archive, EFFIS and the season layer lagged half a
+   * day on a bad afternoon. Two-hourly, not hourly: the `refresh` concurrency
+   * group is strictly serial, and two fast runs (median 13.2 min) plus one
+   * full run (11.6-17.9) every hour already fills ~41 min of it; a full run
+   * every two hours holds the group at ~12 min/hr of load, an hourly one
+   * would push the worst case past saturation. :17 keeps it off the fast
+   * tier's :00/:30 and the GitHub fallback's :07.
    */
   async scheduled(event: { cron?: string }, env: Env) {
     if (!env.GH_DISPATCH_TOKEN) {
@@ -337,14 +365,15 @@ export default {
     // exactly like the throttling this replaced: refreshes simply stop. Throwing
     // is what makes that a recorded, alertable failure rather than a log line
     // nobody reads.
+    const workflow = workflowForCron(event?.cron);
     let last: { status: number; body: string } | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       // One retry: a single transient blip would otherwise forfeit a whole slot.
       // Auth and config faults are not retried — they will not fix themselves,
       // and a second 401 only doubles the noise.
-      last = await dispatchRefresh(env.GH_DISPATCH_TOKEN);
+      last = await dispatchRefresh(env.GH_DISPATCH_TOKEN, fetch, workflow);
       if (last.status === 204) {
-        console.log(`[refresh] dispatched refresh-fast (cron ${event?.cron ?? "?"})`);
+        console.log(`[refresh] dispatched ${workflow} (cron ${event?.cron ?? "?"})`);
         await assertNotStale(env, Date.now());
         return;
       }
