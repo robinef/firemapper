@@ -28,13 +28,17 @@ const FIRES: Fire[] = [
 
 function season(year: number) {
   const cells: Record<string, { digest: string; first: string; cells: string[] }> = {};
-  const sizes: Record<string, [number, string | null, string]> = {};
+  const sizes: Record<string, [number, string | null, string, (string | null)?]> = {};
   const r6 = new Map<string, number>();
   for (const f of FIRES) {
     const cs = gridDisk(latLngToCell(f.lat, f.lon, 8), f.rings);
     const km2 = cs.reduce((s, c) => s + cellArea(c, UNITS.km2), 0);
     cells[f.id] = { digest: f.id, first: f.first, cells: cs };
-    sizes[f.id] = [Math.round(km2 * 1000) / 1000, "ES", f.first];
+    // `big` carries the nearest-town place the pipeline writes as the 4th
+    // element; the others stay 3-element rows, as an older sidecar would be.
+    sizes[f.id] = f.id === "big"
+      ? [Math.round(km2 * 1000) / 1000, "GR", f.first, "Oropos"]
+      : [Math.round(km2 * 1000) / 1000, "ES", f.first];
     for (const c of cs) {
       const p = cellToParent(c, 6);
       r6.set(p, (r6.get(p) ?? 0) + cellArea(c, UNITS.km2));
@@ -168,8 +172,9 @@ test.describe("a burned cell opens its fire", () => {
     await page.goto("/?fire=big");
     await waitForBoot(page);
 
-    await expect(page.locator(".fc-title")).toHaveText("Burn scar · 3 Aug 2026");
-    await expect(page.locator(".fc-sub")).toContainText("Past fire");
+    // Titled after the sidecar's nearest town; the dated label is the subtitle.
+    await expect(page.locator(".fc-title")).toHaveText("Oropos");
+    await expect(page.locator(".fc-sub")).toContainText("Past fire · 3 Aug 2026");
     await expect(page.locator("#view")).toHaveAttribute("data-view", "detail");
   });
 
@@ -181,7 +186,7 @@ test.describe("a burned cell opens its fire", () => {
     // and there is no map handle in the built bundle.
     await page.goto("/?fire=big");
     await waitForBoot(page);
-    await expect(page.locator(".fc-title")).toHaveText("Burn scar · 3 Aug 2026");
+    await expect(page.locator(".fc-title")).toHaveText("Oropos");
     await page.locator(".fc-close").click();
     await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
 
@@ -199,7 +204,8 @@ test.describe("a burned cell opens its fire", () => {
     const canvas = (await page.locator("canvas").boundingBox())!;
     await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
 
-    // 3 Aug is big; the cell's own fire_id tag is "shared", 5 Aug.
-    await expect(page.locator(".fc-title")).toHaveText("Burn scar · 3 Aug 2026");
+    // Oropos is big (3 Aug); the cell's own fire_id tag is "shared", 5 Aug,
+    // which has no place and would title "Burn scar · 5 Aug 2026".
+    await expect(page.locator(".fc-title")).toHaveText("Oropos");
   });
 });

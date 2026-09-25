@@ -428,7 +428,9 @@ def test_a_long_lived_large_track_is_kept(tmp_path):
     run_export_season(settings, target_year=2026, now=NOW)
 
     assert set(_read(settings, season_cells_key(2026))) == {"big"}
-    assert _read(settings, SEASON_STATE_KEY)["big"] == {"digest": index["big"], "year": 2026, "static": False}
+    assert _read(settings, SEASON_STATE_KEY)["big"] == {
+        "digest": index["big"], "year": 2026, "static": False,
+    }
 
 
 def test_a_short_tiny_track_is_kept(tmp_path):
@@ -566,9 +568,9 @@ def test_the_sizes_sidecar_holds_each_fires_area_country_and_first_date(tmp_path
     assert sidecar["year"] == 2026
     assert set(sidecar["fires"]) == {"fr", "nested"}
     km2 = lambda cs: round(sum(h3.cell_area(c, unit="km^2") for c in dedup_nested_cells(cs)), 3)
-    assert sidecar["fires"]["fr"] == [km2(cells), "FR", "2026-07-25"]
+    assert sidecar["fires"]["fr"] == [km2(cells), "FR", "2026-07-25", None]
     # The nested fire counts its ground once, like true_area_km2 (and the web).
-    assert sidecar["fires"]["nested"] == [round(h3.cell_area(child, unit="km^2"), 3), None, "2026-07-02"]
+    assert sidecar["fires"]["nested"] == [round(h3.cell_area(child, unit="km^2"), 3), None, "2026-07-02", None]
     for fid, cs in (("fr", cells), ("nested", nested)):
         assert round(sidecar["fires"][fid][0], 1) == true_area_km2(cs)
 
@@ -801,7 +803,7 @@ def test_no_zone_publishes_exactly_what_it_did_before(tmp_path):
     assert outputs[0] == outputs[1]
     cells = _read(settings, season_cells_key(2026))
     assert cells["mixed"] == {"digest": cells["mixed"]["digest"], "first": "2026-07-01", "cells": [PLANT, FAR]}
-    assert all(set(e) <= {"digest", "year", "static"} for e in _read(settings, SEASON_STATE_KEY).values())
+    assert all(set(e) <= {"digest", "year", "static", "place"} for e in _read(settings, SEASON_STATE_KEY).values())
 
 
 def test_a_lost_state_upload_heals_a_zone_emptied_fire(tmp_path):
@@ -926,3 +928,198 @@ def test_the_last_good_zone_is_kept_in_state_under_a_reserved_key(tmp_path):
     stored = _read(settings, SEASON_STATE_KEY)[ZONE_STATE_KEY]
     assert stored == {"cells": sorted(_plant_zone()), "computed_at": "2026-09-18T10:00:00Z"}
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
+
+
+# --- nearest-town place (archived season fires get a name) -----------------
+# A tiny synthetic GeoNames cities5000 extract — never real data. Column
+# layout mirrors tests/test_enrich.py's GEONAMES_TSV: geonameid, name,
+# asciiname, alternatenames, lat, lon, feature class, feature code, country.
+GAZETTEER_TSV = "1\tTestburg\tTestburg\t\t45.02\t5.02\tP\tPPL\tFR\t\t\t\t\t\t1000\t\t\t\n"
+
+
+def _write_gazetteer(settings: Settings, text: str = GAZETTEER_TSV) -> None:
+    path = settings.data_dir / "places" / "cities5000.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def test_a_new_fire_gets_a_place_from_the_gazetteer(tmp_path):
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()  # centred on (45.0, 5.0), a few km from Testburg
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] == "Testburg"
+
+
+def test_a_fire_beyond_max_place_km_from_any_town_gets_a_null_place(tmp_path):
+    from pipeline.enrich import MAX_PLACE_KM
+    from pipeline.metrics import haversine_m
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    far_origin = h3.latlng_to_cell(40.0, 5.0, 8)
+    far_cells = sorted(h3.grid_disk(far_origin, 1))[:2]
+    assert len(set(far_cells)) == 2
+    assert haversine_m(45.02, 5.02, 40.0, 5.0) / 1000 > MAX_PLACE_KM  # sanity: really beyond the cutoff
+    _make_local_archive(settings.out_dir, {
+        "fire-far": _track_body("fire-far", far_cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-far"]["place"] is None
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-far"][3] is None
+
+
+def test_a_missing_gazetteer_leaves_the_fire_unplaced_until_a_run_that_has_one(tmp_path):
+    # No gazetteer this run: the export must not fail, the sidecar carries
+    # null — and the state entry must NOT record a place at all. A stored
+    # null would be permanent (nothing re-reads an unchanged fire), where an
+    # absent key is exactly what the migration loop fills on the next run.
+    settings = _settings(tmp_path)  # no gazetteer file written at all
+    cells = _two_cells()
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)  # must not raise
+
+    assert "place" not in _read(settings, SEASON_STATE_KEY)["fire-a"]
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] is None
+
+    _write_gazetteer(settings)
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] == "Testburg"
+
+
+def test_the_sizes_sidecar_carries_the_fourth_place_element(tmp_path):
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    entry = _read(settings, season_sizes_key(2026))["fires"]["fire-a"]
+    assert len(entry) == 4
+    assert entry[3] == "Testburg"
+
+
+def test_a_reprocessed_fire_keeps_its_place_when_the_gazetteer_is_unavailable(tmp_path):
+    # fire-a is already published and named "Testburg" (gazetteer present).
+    # Its track body then changes (new digest) on a run where the gazetteer
+    # happens to be missing. That must not blank the name that was already
+    # computed — the gazetteer being unavailable this run is not the same
+    # thing as the fire genuinely having no nearby town.
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    run_export_season(settings, target_year=2026, now=NOW)
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+
+    # The track body changes (a new detection widens the cell set), which
+    # changes its digest and brings it back into to_process. The gazetteer is
+    # transiently unavailable for this run only.
+    wider_cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:3]
+    _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", wider_cells, "2026-07-01T00:00:00+00:00", "2026-07-04T00:00:00+00:00"),
+    })
+    (settings.data_dir / "places" / "cities5000.txt").unlink()
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] == "Testburg"
+
+
+def test_the_migration_fills_place_for_an_existing_entry_without_re_reading_its_body(tmp_path, monkeypatch):
+    # A legacy state/cells pair from before this feature shipped: the fire is
+    # already published, its digest matches (so it is not in to_process this
+    # run), and its state entry has no "place" key yet.
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "year": 2026, "static": False},
+    }))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "first": "2026-07-01", "cells": cells},
+    }))
+    import pipeline.export_season as mod
+
+    def _boom(*a):
+        raise AssertionError("should not re-read the body to compute a migrated place")
+
+    monkeypatch.setattr(mod, "_load_track_body", _boom)
+
+    run_export_season(settings, target_year=2026, now=NOW)  # must not call _load_track_body
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+
+
+def test_the_run_log_counts_migrated_places(tmp_path, capsys):
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+    })
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"fire-a": {"digest": index["fire-a"], "year": 2026, "static": False}}))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "first": "2026-07-01", "cells": cells},
+    }))
+
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert "placed=1" in capsys.readouterr().err
+
+
+def test_the_migration_respects_the_time_budget(tmp_path):
+    settings = _settings(tmp_path)
+    _write_gazetteer(settings)
+    cells = _two_cells()
+    other_cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.5, 8), 1))[:2]
+    index = _make_local_archive(settings.out_dir, {
+        "fire-a": _track_body("fire-a", cells, "2026-07-01T00:00:00+00:00", "2026-07-03T00:00:00+00:00"),
+        "fire-b": _track_body("fire-b", other_cells, "2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00"),
+    })
+    state_path = settings.out_dir / SEASON_STATE_KEY
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "year": 2026, "static": False},
+        "fire-b": {"digest": index["fire-b"], "year": 2026, "static": False},
+    }))
+    (settings.out_dir / season_cells_key(2026)).write_text(json.dumps({
+        "fire-a": {"digest": index["fire-a"], "first": "2026-07-01", "cells": cells},
+        "fire-b": {"digest": index["fire-b"], "first": "2026-07-05", "cells": other_cells},
+    }))
+    ticks = iter([0.0, 0.0, 100.0])  # deadline check passes once, then fails
+
+    run_export_season(settings, target_year=2026, now=NOW, time_budget_s=10.0, clock=lambda: next(ticks))
+
+    state = _read(settings, SEASON_STATE_KEY)
+    assert sum("place" in e for e in state.values()) == 1
+
+    run_export_season(settings, target_year=2026, now=NOW)  # finishes over the next run's normal budget
+
+    state = _read(settings, SEASON_STATE_KEY)
+    assert "place" in state["fire-a"] and "place" in state["fire-b"]

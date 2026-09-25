@@ -8,7 +8,7 @@ from pathlib import Path
 
 import h3
 
-from .config import EUROPE_BBOX
+from .config import EUROPE_BBOX, Settings
 from .metrics import centroid, haversine_m
 
 # The gazetteer index: H3 res 4 (~22 km edge, metric-uniform unlike a lat/lon
@@ -87,6 +87,25 @@ def load_places(path: Path, min_places: int = 0) -> Places:
             f"(expected at least {min_places}) — truncated or wrong file"
         )
     return Places(out)
+
+
+def load_places_tolerant(settings: Settings) -> Places:
+    """A missing or implausibly small gazetteer means every fire's place
+    comes back None, not a crash — naming a fire is a display nicety, not
+    something worth blocking an export over. Deliberately does not enforce
+    MIN_PLACES as a hard failure the way run.py's live-map load does: that
+    one needs to catch a truncated real download loudly, but a small or
+    absent gazetteer here (e.g. every test fixture) should just mean fewer
+    matches. Shared by export_scale_blob.py (live fires' country) and
+    export_season.py (archived fires' place name) so the tolerance and the
+    file path are defined once."""
+    places_file = settings.data_dir / "places" / "cities5000.txt"
+    if not places_file.exists():
+        return Places([])
+    try:
+        return load_places(places_file, min_places=0)
+    except ValueError:
+        return Places([])
 
 
 def _pick(

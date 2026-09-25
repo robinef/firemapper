@@ -46,6 +46,7 @@ from .config import (
     season_key,
     season_sizes_key,
 )
+from .enrich import Places, load_places_tolerant, place_for
 from .events import static_classification
 from .export_scale_blob import _load_json, _load_track_body, _save_json, year_of_track
 from .geo_local import dedup_nested_cells
@@ -69,6 +70,18 @@ LONG_SPAN_DAYS = 30
 # Popped off the state as it loads and put back as it saves, so no per-track
 # loop (reconcile, pending, apply_static_zone) ever iterates over it.
 ZONE_STATE_KEY = "__zone__"
+
+
+def _members_from_cells(cells: list[str]) -> list[dict]:
+    """One point per burnt cell, in enrich.place_for's expected shape — the
+    same "nearest to any detection, not the centroid" rule the live map uses
+    (enrich.place_for), applied to an archived fire's cells rather than its
+    raw detections. Keeps a big fire named after the town nearest its edge."""
+    out = []
+    for c in cells:
+        lat, lon = h3.cell_to_latlng(c)
+        out.append({"cell": c, "lat": lat, "lon": lon})
+    return out
 
 
 def first_bin_date(body: dict) -> str:
@@ -224,21 +237,27 @@ def sizes_sidecar(
     year: int,
     cells_by_fire: dict[str, dict],
     fires_summary: dict[str, dict],
+    state: dict[str, dict],
     deduped: dict[str, list[str]] | None = None,
 ) -> dict:
-    """Per-fire [km2, country, first] for the web's size filter. km2 is the
+    """Per-fire [km2, country, first, place] for the web's size filter and,
+    with #4, the burn-scar card's title (web/src/season_click.ts). km2 is the
     same per-fire nested-dedup sum the web's fireSizes() computes (and
     geo_local.true_area_km2 before its 0.1 rounding), kept to 3 decimals so a
     fire sitting on a slider edge lands on the same side as it would from the
     cells. Country comes from the scale blob's fires summary (written earlier
-    in the same refresh); null where it has none. Arrays, not objects, to
-    keep ~22k entries small."""
+    in the same refresh); null where it has none. Place comes from `state`,
+    where the per-body loop (and its migration) computed it once per digest —
+    not recomputed here, so an idle run that only re-derives the sidecar from
+    a stored cells file (see the "rewritten from stored cells" test) still
+    carries it. Arrays, not objects, to keep ~22k entries small."""
     deduped = dedup_by_fire(cells_by_fire) if deduped is None else deduped
     fires = {}
     for fid, entry in cells_by_fire.items():
         km2 = sum(h3.cell_area(c, unit="km^2") for c in deduped[fid])
         country = (fires_summary.get(fid) or {}).get("country")
-        fires[fid] = [round(km2, 3), country, entry["first"]]
+        place = (state.get(fid) or {}).get("place")
+        fires[fid] = [round(km2, 3), country, entry["first"], place]
     return {"year": year, "fires": fires}
 
 
@@ -307,7 +326,8 @@ def run_export_season(
 
     to_process = [(tid, digest) for tid, digest in index.items() if pending(tid, digest)]
     deadline = clock() + time_budget_s
-    processed = long_span = long_span_small = malformed = static_excluded = 0
+    processed = long_span = long_span_small = malformed = static_excluded = placed = 0
+    places: Places | None = None  # lazy, loaded once per run, only once there is work
 
     def load(item: tuple[str, str]):
         tid, digest = item
@@ -345,6 +365,7 @@ def run_export_season(
                     cells_by_fire.pop(tid, None)
                     malformed += 1
                     continue
+                old_entry = state.get(tid, {})
                 state[tid] = {"digest": digest, "year": year}
                 cells_by_fire.pop(tid, None)  # drop a stale contribution if this id changed
                 processed += 1
@@ -360,6 +381,25 @@ def run_export_season(
                     static_excluded += 1
                     continue
                 cells_by_fire[tid] = {"digest": digest, "first": first, "cells": cells}
+                # Named after the town nearest a burnt cell, exactly like a
+                # live fire (enrich.place_for) — computed once per digest,
+                # here rather than at sidecar time, so a re-read body is the
+                # only thing that ever recomputes it.
+                if places is None:
+                    places = load_places_tolerant(settings)
+                if len(places) == 0:
+                    # The gazetteer is unavailable (missing/corrupt) for this
+                    # run only — not evidence the fire has no nearby town. A
+                    # fire that was already named keeps that name; one never
+                    # named is left WITHOUT the key, so the migration loop
+                    # below names it on the next run that has a gazetteer. A
+                    # stored null would be permanent: nothing re-reads it.
+                    if "place" in old_entry:
+                        state[tid]["place"] = old_entry["place"]
+                else:
+                    place = place_for(_members_from_cells(cells), places)
+                    state[tid]["place"] = place["name"] if place else None
+                    placed += 1
 
     # No zone this run (raw store missing or unreadable) → the last good one,
     # so a fire re-read this run is filtered like every other. Never a zone
@@ -373,12 +413,35 @@ def run_export_season(
     zone_emptied = zone_removed = 0
     if zone is not None:
         zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, zone)
-    if processed or malformed or zone_emptied or zone_removed:
+
+    # Migration: a fire published before this feature shipped has no "place"
+    # key and was never re-read above (its digest is unchanged), so it never
+    # goes through the per-body branch that computes one. Fill it in from the
+    # cells already in memory — NO body re-read — so this is a one-off pass
+    # that completes over a few runs, like the static-verdict migration.
+    # cells_by_fire is exactly "wanted" fires at this point (self-heal above
+    # keeps it in lockstep with state), so nothing here needs the static /
+    # zone_empty checks pending() and apply_static_zone use.
+    for tid, entry in cells_by_fire.items():
+        if clock() > deadline:
+            break  # out of time — the rest stays unplaced for the next run
+        st = state.get(tid)
+        if st is None or "place" in st:
+            continue
+        if places is None:
+            places = load_places_tolerant(settings)
+        if len(places) == 0:
+            break  # no gazetteer this run: leave them unplaced for the next one
+        place = place_for(_members_from_cells(entry["cells"]), places)
+        st["place"] = place["name"] if place else None
+        placed += 1
+
+    if processed or malformed or zone_emptied or zone_removed or placed:
         print(
             f"[season] processed={processed} long_span(>{LONG_SPAN_DAYS}d)={long_span} "
             f"of_which_<=10_cells={long_span_small} static_excluded={static_excluded} "
             f"static_zone_fires_excluded={zone_emptied} static_zone_cells_removed={zone_removed} "
-            f"malformed={malformed}",
+            f"malformed={malformed} placed={placed}",
             file=sys.stderr,
         )
     deduped = dedup_by_fire(cells_by_fire)
@@ -386,7 +449,7 @@ def run_export_season(
     _save_json(cells_path, cells_by_fire)  # contributions first...
     # ...then the two files derived from them (the sidecar first: the summary
     # is what makes the web offer the layer at all)...
-    _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, deduped))
+    _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, state, deduped))
     _save_json(summary_path, summarize(target_year, cells_by_fire, now, deduped))
     if stored_zone is not None:
         state[ZONE_STATE_KEY] = stored_zone

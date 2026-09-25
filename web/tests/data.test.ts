@@ -177,6 +177,15 @@ describe("loadSeasonSizes", () => {
     expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toEqual(good);
   });
 
+  it("accepts the four-element row a current pipeline writes (place name last)", async () => {
+    // The 4th element is the nearest-town place, null where no town is near.
+    // A loader pinned to length 3 would reject every sidecar published after
+    // the place shipped — and the boot would fall back to the cells file.
+    const named = { year: 2026, fires: { "fire-a": [3.2, "ES", "2026-07-01", "Ávila"], "fire-b": [0.7, null, "2026-08-02", null] } };
+    const fetchFn = async () => ({ ok: true, json: async () => named });
+    expect(await loadSeasonSizes(2026, "/data", fetchFn as never)).toEqual(named);
+  });
+
   it("accepts a sidecar with no fires in it", async () => {
     const empty = { year: 2026, fires: {} };
     const fetchFn = async () => ({ ok: true, json: async () => empty });
@@ -196,6 +205,7 @@ describe("loadSeasonSizes", () => {
     ["holding fires as an array", { year: 2026, fires: [[3.2, "ES", "2026-07-01"]] }],
     ["holding an entry that is an object", { year: 2026, fires: { a: { km2: 3.2, country: "ES", first: "2026-07-01" } } }],
     ["holding an entry of the wrong length", { year: 2026, fires: { a: [3.2, "ES"] } }],
+    ["holding an entry longer than the place row", { year: 2026, fires: { a: [3.2, "ES", "2026-07-01", "Ávila", 9] } }],
     ["holding an entry whose km2 is not a number", { year: 2026, fires: { a: ["3.2", "ES", "2026-07-01"] } }],
   ])("returns null when the body is %s", async (_what, body) => {
     const fetchFn = async () => ({ ok: true, json: async () => body });

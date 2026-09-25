@@ -178,7 +178,14 @@ export async function loadSeasonSizes(
     const fires = s.fires as unknown;
     if (!fires || typeof fires !== "object" || Array.isArray(fires)) return null;
     const sample = Object.values(fires)[0] as unknown;
-    if (sample !== undefined && (!Array.isArray(sample) || sample.length !== 3 || typeof sample[0] !== "number")) {
+    // 3 elements before pipeline/export_season.py started writing the
+    // nearest-town place (d95bcb2), 4 since: both are this file. Rejecting the
+    // longer row would throw the whole sidecar away and send every boot back
+    // to the 5 MB cells file — the regression the sidecar exists to prevent.
+    if (
+      sample !== undefined &&
+      (!Array.isArray(sample) || (sample.length !== 3 && sample.length !== 4) || typeof sample[0] !== "number")
+    ) {
       return null;
     }
     return s as SeasonSizes;
