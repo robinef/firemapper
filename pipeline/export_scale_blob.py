@@ -18,7 +18,7 @@ from .config import (
     scale_blob_fires_key,
     scale_blob_key,
 )
-from .enrich import Places, load_places, nearest_place
+from .enrich import Places, load_places_tolerant, nearest_place
 from .geo_local import centroid_of_cells, true_area_km2
 from .pack_blob import hex_count_for_area, pack_fires_as_blob
 
@@ -44,23 +44,6 @@ def _blob_path(out_dir: Path, year: int) -> Path:
 
 def _fires_summary_path(out_dir: Path, year: int) -> Path:
     return out_dir / scale_blob_fires_key(year)
-
-
-def _load_places(settings: Settings) -> Places:
-    """Same tolerant-of-absence pattern pipeline/run.py already uses: a
-    missing or implausibly small gazetteer means every fire's country comes
-    back None, not a crash — this is a display nicety, not something worth
-    blocking the export over. Deliberately does not enforce MIN_PLACES as a
-    hard failure: run.py needs that to catch a truncated real download loudly,
-    but a small/fixture gazetteer here should just mean fewer matches, not an
-    aborted export."""
-    places_file = settings.data_dir / "places" / "cities5000.txt"
-    if not places_file.exists():
-        return Places([])
-    try:
-        return load_places(places_file, min_places=0)
-    except ValueError:
-        return Places([])
 
 
 def _load_json(path: Path, default):
@@ -177,7 +160,7 @@ def run_export(
         area_km2 = _true_area_km2(cells)
 
         if places is None:  # lazy, once per run, only if there's actually work to do
-            places = _load_places(settings)
+            places = load_places_tolerant(settings)
         place = nearest_place(origin_lat, origin_lon, places)
         fires_summary[track_id] = {
             "country": place["country"] if place else None,
