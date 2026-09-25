@@ -18,6 +18,11 @@ vi.mock("../src/data", () => ({
     // The one archived id that is NOT archived: a season fire whose track was
     // never written (or has aged out of the bucket), for openArchived's
     // nothing-to-open path.
+    // A JSON file that parses but is not a track (a `?fire=` id that walked to
+    // some other same-origin JSON, or a truncated body): no series, no cells.
+    if (trackGen === "archive" && id === "fire-malformed") {
+      return Promise.resolve({ id, series: "nope" });
+    }
     if (trackGen === "archive" && id !== "fire-unarchived") {
       return Promise.resolve({
         id,
@@ -235,7 +240,7 @@ describe("openArchived opens a season fire that never made the scar shortlist", 
     expect(panel.innerHTML).not.toContain("undefined");
     // Area summed from the track's own cells, rounded the way the sidecar
     // rounds it — a raw h3 sum prints 13 decimal places into the card.
-    expect(panel.innerHTML).toContain("1.458 km²");
+    expect(panel.innerHTML).toContain("1.5 km²"); // two cells, one decimal
   });
 
   it("opens nothing when the fire has no archived track", async () => {
@@ -246,5 +251,30 @@ describe("openArchived opens a season fire that never made the scar shortlist", 
 
     expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
     expect(document.getElementById("panel")!.innerHTML).toBe("");
+  });
+
+  // `?fire=` is the reader's URL, and openArchived is the one opener that
+  // takes an id nothing has vetted (openFromList/openScarFromList only accept
+  // ids already in their indexes). The id becomes a fetch PATH, where the
+  // browser resolves `..`: `../../manifest` is /data/manifest.json.
+  it("refuses an id that is not a plain track id, before fetching anything", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { loadTrack } = await import("../src/data");
+    const { card } = build();
+    vi.mocked(loadTrack).mockClear();
+
+    for (const bad of ["../../manifest", "a/b", "x?y=1", "x#y", "", "%2e%2e"]) {
+      expect(await card.openArchived(bad, null)).toBe(false);
+    }
+    expect(loadTrack).not.toHaveBeenCalled();
+    expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
+  });
+
+  it("opens nothing, and throws nothing, when the body is not a track", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+
+    await expect(card.openArchived("fire-malformed", null)).resolves.toBe(false);
+    expect(document.getElementById("panel")!.classList.contains("hidden")).toBe(true);
   });
 });

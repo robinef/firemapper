@@ -52,7 +52,7 @@ describe("layer levels", () => {
   // share link copies exactly this param, so it has to round-trip.
   it("falls back to an archived season fire when ?fire=<id> is neither an event nor a scar", () => {
     expect(mainSource).toMatch(
-      /sizesP\.then\(\(sz\)\s*=>\s*fireCard\.openArchived\(FORCE_FIRE,\s*sz\?\.fires\[FORCE_FIRE\]\s*\?\?\s*null\)\)/,
+      /sizesP\.then\(\(sz\)\s*=>\s*\{[\s\S]*?fireCard\.openArchived\(FORCE_FIRE,\s*sz\?\.fires\[FORCE_FIRE\]\s*\?\?\s*null\)/,
     );
   });
 

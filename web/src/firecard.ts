@@ -2,7 +2,7 @@ import * as maplibregl from "maplibre-gl";
 import { cellToBoundary } from "h3-js";
 import { areaText, footprintNote, numOr } from "./area";
 import { loadFootprint, loadTrack } from "./data";
-import { scarFromArchive } from "./season_click";
+import { isTrackId, scarFromArchive } from "./season_click";
 import { mountTimeline } from "./timeline";
 import { fireLayerIds } from "./layer_fires";
 import { SCAR_LAYER_IDS } from "./layer_scars";
@@ -781,16 +781,25 @@ export function setupFireCard(
    * id alone would state an ignition date and an area it does not have.
    */
   const openArchived = async (id: string, hint: SeasonSizeEntry | null = null): Promise<boolean> => {
+    // `?fire=` reaches here unvetted, and the id becomes a fetch PATH. Refused
+    // before the token bump, so a bad link cannot cancel a card in flight.
+    if (!isTrackId(id)) return false;
     const mine = ++openToken;
-    let track: Track | null = null;
+    let scar: ReturnType<typeof scarFromArchive>;
+    let timeline: ReturnType<typeof trackTimeline>;
+    let track: Track;
     try {
       track = await loadTrack(manifest, id, "/data", fetch, "archive");
+      if (mine !== openToken) return false; // superseded by a newer fire/scar click
+      // JSON that parses but is not a track (a truncated body, say) throws in
+      // these two — inside the try, so the open resolves false rather than
+      // leaking an unhandled rejection out of the deep link's promise chain.
+      scar = scarFromArchive(id, track, hint, new Date().toISOString().slice(0, 10));
+      timeline = trackTimeline(track);
     } catch {
       return false;
     }
-    if (mine !== openToken) return false; // superseded by a newer fire/scar click
-    const scar = scarFromArchive(id, track, hint, new Date().toISOString().slice(0, 10));
-    const { series, centroids, cellBins } = trackTimeline(track);
+    const { series, centroids, cellBins } = timeline;
     // Scars never get fire-wind arrows (fireWindFC's doc comment), and an
     // archived fire is historical by definition — the liveOnly sublayers have
     // nothing of its to show.

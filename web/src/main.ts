@@ -48,7 +48,7 @@ import {
   setCellsThreshold,
   setSeasonAggregate,
 } from "./layer_season";
-import { buildCellIndex, cellsClickable, pickClaimant } from "./season_click";
+import { buildCellIndex, cellsClickable, pickClaimant, playbackKeep } from "./season_click";
 import {
   createSeasonFilter,
   isEuFire,
@@ -856,7 +856,11 @@ async function boot() {
       let id: string | null = null;
       if (cells && sel) {
         if (!cellIndex || cellIndex.of !== cells) cellIndex = { of: cells, index: buildCellIndex(cells) };
-        id = pickClaimant(cell, cellIndex.index, sel.sizes, sel.threshold, sel.keep);
+        // A paused playback shows day d, not the season: only claimants that
+        // had started by then are on screen (see playbackKeep).
+        const pb = seasonPlayback;
+        const keep = playbackKeep(sel.keep, pb?.day ?? null, (fid) => pb?.nday(fid) ?? -Infinity);
+        id = pickClaimant(cell, cellIndex.index, sel.sizes, sel.threshold, keep);
       }
       // No index yet (a click in the window between the install and the
       // filter's sizes), or nothing qualifying: the cell's own first claimant
@@ -954,7 +958,14 @@ async function boot() {
     // is already in flight from boot, resolves null on any failure, and it is
     // the only source of the fire's ignition date and size.
     if (FORCE_FIRE && !openFromList(FORCE_FIRE) && !openScarFromList(FORCE_FIRE)) {
-      void sizesP.then((sz) => fireCard.openArchived(FORCE_FIRE, sz?.fires[FORCE_FIRE] ?? null));
+      // The sidecar can take a while, and the reader may open a card of their
+      // own meanwhile: the deep link must not replace it when it lands.
+      let readerOpened = false;
+      const off = onUi("detail:open", () => { readerOpened = true; });
+      void sizesP.then((sz) => {
+        off();
+        if (!readerOpened) void fireCard.openArchived(FORCE_FIRE, sz?.fires[FORCE_FIRE] ?? null);
+      });
     }
   });
 }

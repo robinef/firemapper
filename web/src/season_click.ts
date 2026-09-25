@@ -104,6 +104,35 @@ export function pickClaimant(
   return best;
 }
 
+/**
+ * The filter's gate, narrowed to the day a playback holds on screen.
+ *
+ * A paused sweep leaves the cells filtered to `nday >= -day`: a cell shows
+ * once its EARLIEST qualifying claimant has started. pickClaimant ranks by
+ * size alone, so without this a click on a cell painted for a small July fire
+ * opens the large August fire that later burned the same ground — a card
+ * dated weeks after the map it was clicked on. `nday` is the playback's own
+ * (minus the fire's day index, far below any day for a non-qualifier), so the
+ * card and the painted cell answer the same question.
+ *
+ * No day held: the filter's gate unchanged.
+ */
+export function playbackKeep(
+  keep: ((id: string) => boolean) | undefined,
+  day: number | null,
+  nday: (id: string) => number,
+): ((id: string) => boolean) | undefined {
+  if (day === null) return keep;
+  return (id) => (!keep || keep(id)) && nday(id) >= -day;
+}
+
+/** Track ids are the pipeline's hex digests (tests use short words): letters,
+ * digits, `_` and `-`. Anything else — `/`, `.`, `?`, `#`, `%` — would steer
+ * the archive fetch to another same-origin path. */
+export function isTrackId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id);
+}
+
 /** The sizes sidecar's own km² rule (season_filter.ts::fireSizes), for a fire
  * the sidecar has not (or not yet) named. Rounded to 3 dp exactly as
  * pipeline/export_season.py rounds the sidecar's: areaText prints this number
@@ -175,7 +204,9 @@ export function scarFromArchive(
     // Never before ignition: a pre-fire frame on both halves of the swipe
     // reads as "the fire did nothing" (the pipeline's own max(after, start)).
     after: clamped > started ? clamped : started,
-    area_km2: entry?.[0] ?? trackAreaKm2(track.cells),
+    // One decimal: areaText prints this verbatim, and the sidecar's 3 dp read on
+    // a real fire as "776.121 km²" — false precision for a sum of 0.7 km² cells.
+    area_km2: Math.round((entry?.[0] ?? trackAreaKm2(track.cells)) * 10) / 10,
     cum_cells: track.cells.length,
     // The card's own track load, and any later reopen, resolve this sentinel
     // to the fixed archive/tracks/<id>.json path (data.ts::loadTrack).

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cellArea, cellToLatLng, cellToParent, gridDisk, latLngToCell, UNITS } from "h3-js";
-import { buildCellIndex, cellsClickable, pickClaimant, scarFromArchive } from "../src/season_click";
+import { buildCellIndex, cellsClickable, pickClaimant, playbackKeep, scarFromArchive } from "../src/season_click";
 import type { SeasonCells, Track } from "../src/types";
 
 const a = latLngToCell(45.0, 5.0, 8);
@@ -106,6 +106,17 @@ describe("scarFromArchive", () => {
     expect(s.place).toBeNull();
   });
 
+  // areaText prints area_km2 verbatim onto the card. The sidecar keeps 3 dp
+  // (pipeline/export_season.py), which read on a real fire as "776.121 km²":
+  // false precision for a sum of 0.7 km² sensor cells. One decimal, the
+  // season status line's own precision, whichever source the number came from.
+  it("rounds the card's area to one decimal", () => {
+    const s = scarFromArchive("fire-1", track, [776.121, "DZ", "2026-07-24"], "2026-09-23");
+    expect(s.area_km2).toBe(776.1);
+    const t = scarFromArchive("fire-1", track, null, "2026-09-23");
+    expect(String(t.area_km2).split(".")[1]?.length ?? 0).toBeLessThanOrEqual(1);
+  });
+
   it("centres on the mean of the track's cells, not the first one", () => {
     const s = scarFromArchive("fire-1", track, sizeEntry, "2026-09-23");
     const lats = cells.map((x) => cellToLatLng(x)[0]);
@@ -153,11 +164,8 @@ describe("scarFromArchive", () => {
   // the first bin's day.
   it("falls back to the track when there is no sidecar entry", () => {
     const s = scarFromArchive("fire-1", track, null, "2026-09-23");
-    // Rounded to 3 dp, as pipeline/export_season.py rounds the sidecar's own
-    // km²: areaText prints this number verbatim onto the card.
     const expected = cells.reduce((sum, x) => sum + cellArea(x, UNITS.km2), 0);
-    expect(s.area_km2).toBe(Math.round(expected * 1000) / 1000);
-    expect(String(s.area_km2).split(".")[1]?.length ?? 0).toBeLessThanOrEqual(3);
+    expect(s.area_km2).toBe(Math.round(expected * 10) / 10);
     expect(s.started).toBe("2026-07-24"); // the first bin's day
     expect(s.before).toBe("2026-07-18");
     expect(s.place).toBeNull();
@@ -175,6 +183,47 @@ describe("scarFromArchive", () => {
     const parent = cellToParent(child, 7);
     const nested: Track = { ...track, cells: [parent, child] };
     const s = scarFromArchive("fire-1", nested, null, "2026-09-23");
-    expect(s.area_km2).toBe(Math.round(cellArea(child, UNITS.km2) * 1000) / 1000);
+    expect(s.area_km2).toBe(Math.round(cellArea(child, UNITS.km2) * 10) / 10);
+  });
+});
+
+// A paused playback leaves the map on day d: a cell is painted once its
+// EARLIEST qualifying claimant has started. pickClaimant alone would still
+// hand the click to a larger claimant that only starts weeks later — a card
+// dated 1 Aug over a map showing 10 Jul.
+describe("playbackKeep", () => {
+  const ndays: Record<string, number> = { early: -3, late: -40, gone: -9999 };
+  const nday = (id: string) => ndays[id] ?? -9999;
+
+  it("is the filter's own gate when no playback holds a day", () => {
+    const keep = (id: string) => id !== "late";
+    expect(playbackKeep(keep, null, nday)).toBe(keep);
+    expect(playbackKeep(undefined, null, nday)).toBeUndefined();
+  });
+
+  it("drops claimants that have not started by the day on screen", () => {
+    const k = playbackKeep(undefined, 10, nday)!;
+    expect(k("early")).toBe(true); // started day 3
+    expect(k("late")).toBe(false); // starts day 40
+    expect(k("gone")).toBe(false); // never qualifies under these columns
+  });
+
+  it("keeps the day itself: a fire starting on the day shown is on the map", () => {
+    expect(playbackKeep(undefined, 3, nday)!("early")).toBe(true);
+    expect(playbackKeep(undefined, 2, nday)!("early")).toBe(false);
+  });
+
+  it("still applies the filter's scope on top", () => {
+    const k = playbackKeep((id) => id !== "early", 50, nday)!;
+    expect(k("early")).toBe(false);
+    expect(k("late")).toBe(true);
+  });
+
+  it("makes pickClaimant choose the claimant that is on screen", () => {
+    const small = latLngToCell(44, 4, 8);
+    const index = new Map([[small, ["late", "early"]]]);
+    const sizes = new Map([["late", 300], ["early", 5]]);
+    expect(pickClaimant(small, index, sizes, 1)).toBe("late");
+    expect(pickClaimant(small, index, sizes, 1, playbackKeep(undefined, 10, nday))).toBe("early");
   });
 });
