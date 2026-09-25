@@ -24,6 +24,8 @@ unparsed-row step left to count.
 import json
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 SEASON = {
     "season_year": 2026, "total_km2": 10240.3, "event_count": 1184,
     "unit": {"name": "Greater London", "km2": 1572.0, "count": 6.5},
@@ -228,3 +230,16 @@ def test_end_to_end_the_page_date_comes_off_a_real_weeks_old_snapshot(export_gen
     assert not payload["fetched_at"].startswith("2026-07-12")
     assert payload["fetched_at"].endswith("+00:00")
     assert datetime.fromisoformat(payload["fetched_at"]).utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize(("now", "year"), [
+    (datetime(2026, 9, 25, 16, 0, tzinfo=timezone.utc), 2026),
+    # Through January the map keeps the ended season: the new one has almost
+    # nothing burned, and its file does not exist until the first full run.
+    (datetime(2027, 1, 1, 0, 5, tzinfo=timezone.utc), 2026),
+    (datetime(2027, 2, 1, 0, 5, tzinfo=timezone.utc), 2027),
+])
+def test_the_manifest_names_the_season_the_map_shows(export_gen, now, year):
+    gen = export_gen(now=now)
+    manifest = json.loads((gen.parent / "manifest.json").read_text())
+    assert manifest["season_year"] == year

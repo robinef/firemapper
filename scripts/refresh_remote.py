@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline.config import Settings, load_settings
+from pipeline.config import Settings, load_settings, season_years
 from pipeline.export_scale_blob import run_export
 from pipeline.export_season import run_export_season, season_static_zone
 from pipeline.remote import hydrate, make_client, publish
@@ -46,14 +46,27 @@ def _timed(label: str, fn):
         print(f"[time] {label} took {time.monotonic() - start:.1f}s", flush=True)
 
 
-def main(argv: list[str], client=None) -> int:
+# The ended season's passes in January (config.season_years), full tier only.
+# Normally cheap — a few late-settling fires plus the reconcile — so they get
+# a slice of the current year's budget: both years' worst cases together
+# (300 + 900 + 120 + 300 s) still leave the full tier's 40-minute ceiling
+# ~10 min for the pipeline work before and publish() after.
+PREV_SCALE_BLOB_BUDGET_S = 300.0
+PREV_SEASON_BUDGET_S = 120.0
+
+
+def main(argv: list[str], client=None, now: datetime | None = None) -> int:
     tier = argv[0] if argv else "full"
+    # One instant for the whole run: hydrate must restore exactly the years
+    # the exports below target, even if the run straddles midnight on 31 Jan.
+    now = now or datetime.now(timezone.utc)
+    years = season_years(now)
     settings = load_settings()
     if not settings.r2_configured:
         sys.exit("R2_* env vars missing — refusing to run a remote refresh")
     client = client if client is not None else make_client(settings)
 
-    _timed("hydrate", lambda: hydrate(settings, client))
+    _timed("hydrate", lambda: hydrate(settings, client, now=now))
     _timed(f"refresh({tier})", lambda: refresh(settings, tier=tier))
     # Wrapped in pipeline.run's own _safe, the same idiom for the same reason it
     # already guards archive_past_tracks — the very producer of the data this
@@ -77,52 +90,63 @@ def main(argv: list[str], client=None) -> int:
     # inside that 30-minute ceiling: ~3 min of pipeline work runs before this
     # step (measured on the run that timed out), so 900s (15 min) here still
     # leaves comfortable margin for publish() and everything else in the job.
-    _timed(
-        "export_scale_blob",
-        lambda: _safe(
-            lambda: run_export(
-                settings,
-                target_year=datetime.now(timezone.utc).year,
-                client=client,
-                r2_bucket=settings.r2_bucket,
-                time_budget_s=900.0,
+    #
+    # The ended season (January only) goes first and in the full tier only:
+    # the fast tier's 30-minute ceiling has no room for a second pass.
+    for year in years:
+        if year != now.year and tier != "full":
+            continue
+        budget = 900.0 if year == now.year else PREV_SCALE_BLOB_BUDGET_S
+        _timed(
+            f"export_scale_blob({year})",
+            lambda year=year, budget=budget: _safe(
+                lambda: run_export(
+                    settings,
+                    target_year=year,
+                    client=client,
+                    r2_bucket=settings.r2_bucket,
+                    time_budget_s=budget,
+                ),
+                default=None,
+                label="export-scale-blob",
             ),
-            default=None,
-            label="export-scale-blob",
-        ),
-    )
+        )
     # Full tier only. The fast tier's job has a 30-minute ceiling that a
     # cold scale-blob export (900 s) plus the ~3 min of pipeline work before
     # it already brings within ~12 min of, and that ceiling has killed this
     # process before publish() once already (see the scale-blob comment
-    # above). The full tier runs hourly under a 40-minute ceiling, which
+    # above). The full tier runs every two hours under a 40-minute ceiling, which
     # leaves the season export's 300 s a real margin; the layer is a
     # whole-season aggregate, so an hourly refresh loses nothing visible.
     # Same _safe contract as the scale blob: a broken season export must
     # never block publish().
-    if tier == "full":
-        season_year = datetime.now(timezone.utc).year
+    #
+    # Oldest first (config.season_years): in January the ended season is
+    # finished before the new one's run reads its late-settling fires and
+    # records them as another year's.
+    for year in years if tier == "full" else ():
         # The static heat-source zone, from the raw detections hydrate() and
         # refresh() just brought up to date, by the live map's own rule. None
         # (store missing, unreadable) leaves the season's last filtering in
         # place — never a reason to skip the export or the publish.
         zone = _timed(
-            "season_static_zone",
-            lambda: _safe(
-                lambda: season_static_zone(settings, season_year),
+            f"season_static_zone({year})",
+            lambda year=year: _safe(
+                lambda: season_static_zone(settings, year),
                 default=None,
                 label="season-static-zone",
             ),
         )
+        budget = 300.0 if year == now.year else PREV_SEASON_BUDGET_S
         _timed(
-            "export_season",
-            lambda: _safe(
+            f"export_season({year})",
+            lambda year=year, zone=zone, budget=budget: _safe(
                 lambda: run_export_season(
                     settings,
-                    target_year=season_year,
+                    target_year=year,
                     client=client,
                     r2_bucket=settings.r2_bucket,
-                    time_budget_s=300.0,
+                    time_budget_s=budget,
                     static_zone=zone,
                 ),
                 default=None,

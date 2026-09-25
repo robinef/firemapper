@@ -29,7 +29,7 @@ from __future__ import annotations
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import h3
@@ -64,12 +64,20 @@ FETCH_BATCH = 32
 # counters LOG the population; the gate itself is is_static_track below,
 # with its measured thresholds in config.py.
 LONG_SPAN_DAYS = 30
-# season_state.json's one non-track entry: the last zone season_static_zone
-# computed, {"cells": [...sorted], "computed_at": iso}, applied on a run whose
-# raw store is unreadable. Track ids are 12 hex chars; this cannot collide.
-# Popped off the state as it loads and put back as it saves, so no per-track
-# loop (reconcile, pending, apply_static_zone) ever iterates over it.
+# season_state.json's non-track entries: per year, the last zone
+# season_static_zone computed, {"cells": [...sorted], "computed_at": iso},
+# applied on a run whose raw store is unreadable. Per year because the state
+# is shared: in January two years are exported in one run, and one global
+# zone would hand the new year's (small) zone to the ended season, restoring
+# every plant it had removed. Track ids are 12 hex chars; these cannot
+# collide. Popped off the state as it loads and put back as it saves, so no
+# per-track loop (reconcile, pending, apply_static_zone) ever iterates them.
+# The bare key is the single zone stored before it was per year.
 ZONE_STATE_KEY = "__zone__"
+
+
+def zone_state_key(year: int) -> str:
+    return f"{ZONE_STATE_KEY}{year}"
 
 
 def _members_from_cells(cells: list[str]) -> list[dict]:
@@ -120,9 +128,16 @@ def season_static_zone(settings: Settings, year: int) -> set[str] | None:
     each cell once, on its first bin, so the bodies cannot tell a plant lit
     on 30 days from a cell burned once (measured 2026-09-22: no archived
     cell reaches 5 days). None when the store is absent or empty — the export
-    then applies the last good zone it stored (ZONE_STATE_KEY)."""
+    then applies the last good zone it stored (ZONE_STATE_KEY).
+
+    The rows start MAX_FIRE_DAYS before 1 Jan, not on it: a live refresh on
+    5 Jan clusters over a window reaching into December, so it already drops
+    a plant lit all autumn. Counting only this year's rows left every plant
+    unzoned until it had STATIC_CELL_DAYS detection days in the new year —
+    three weeks of refineries published as the new season's only "fires"."""
     store = settings.data_dir / "raw" / "hotspots.parquet"
-    rows = [r for r in read_hotspots(store) if r["acq_time"].year == year]
+    start = datetime(year, 1, 1, tzinfo=timezone.utc) - timedelta(days=MAX_FIRE_DAYS)
+    rows = [r for r in read_hotspots(store) if start <= r["acq_time"] and r["acq_time"].year <= year]
     if not rows:
         print(f"[season] no raw hotspot store rows for {year} at {store}; static zone unknown this run", file=sys.stderr)
         return None
@@ -289,7 +304,9 @@ def run_export_season(
     summary_path = settings.out_dir / season_key(target_year)
     sizes_path = settings.out_dir / season_sizes_key(target_year)
     state: dict[str, dict] = _load_json(state_path, {})
-    stored_zone: dict | None = state.pop(ZONE_STATE_KEY, None)
+    zones = {k: state.pop(k) for k in [k for k in state if k.startswith(ZONE_STATE_KEY)]}
+    legacy_zone = zones.pop(ZONE_STATE_KEY, None)  # adopted once, then dropped
+    stored_zone: dict | None = zones.get(zone_state_key(target_year), legacy_zone)
     cells_by_fire: dict[str, dict] = _load_json(cells_path, {})
 
     # Self-heal a partial publish by reconciling what the state WANTS in the
@@ -452,5 +469,6 @@ def run_export_season(
     _save_json(sizes_path, sizes_sidecar(target_year, cells_by_fire, fires_summary, state, deduped))
     _save_json(summary_path, summarize(target_year, cells_by_fire, now, deduped))
     if stored_zone is not None:
-        state[ZONE_STATE_KEY] = stored_zone
+        zones[zone_state_key(target_year)] = stored_zone
+    state.update(zones)
     _save_json(state_path, state)  # ...then commit state — the recovery contract

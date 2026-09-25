@@ -31,6 +31,7 @@ from .config import (
     season_cells_key,
     season_key,
     season_sizes_key,
+    season_years,
 )
 
 ARCHIVE_PREFIX = "archive/"
@@ -106,7 +107,7 @@ def _keys(client, bucket: str, prefix: str) -> list[str]:
             return keys
 
 
-def hydrate(settings: Settings, client) -> str | None:
+def hydrate(settings: Settings, client, now: datetime | None = None) -> str | None:
     """Restore published state: the live manifest, its generation dir, and the
     archive that manifest names. Returns the generation, or None on a cold
     bucket (first ever run)."""
@@ -190,17 +191,18 @@ def hydrate(settings: Settings, client) -> str | None:
     # (pipeline/export_scale_blob.py). Same explicit-restore pattern as the
     # archive index above — publish() already uploads these generically via
     # its archive/ walk, so only hydrate() needs a named addition.
-    current_year = datetime.now(timezone.utc).year
+    # Every year the pipeline will export this run (config.season_years):
+    # in January that includes the season that just ended, and an export
+    # started without its files would re-fetch every track of that year and
+    # publish a half-built season meanwhile.
+    years = season_years(now or datetime.now(timezone.utc))
     for extra_key in (
         SCALE_BLOB_STATE_KEY,
-        scale_blob_key(current_year),
-        scale_blob_fires_key(current_year),
+        *(k for y in years for k in (scale_blob_key(y), scale_blob_fires_key(y))),
         # The season layer's state, summary, per-fire cells and per-fire
         # sizes (pipeline/export_season.py) — same rationale as the scale blob.
         SEASON_STATE_KEY,
-        season_key(current_year),
-        season_cells_key(current_year),
-        season_sizes_key(current_year),
+        *(k for y in years for k in (season_key(y), season_cells_key(y), season_sizes_key(y))),
     ):
         body = _get(client, settings.r2_bucket, f"{DATA_PREFIX}{extra_key}")
         if body is not None:

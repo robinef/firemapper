@@ -237,28 +237,31 @@ describe("scale blob country breakdown source", () => {
     vi.unstubAllGlobals();
   });
 
-  // The blob is always the CURRENT year's; the season's year comes from the
-  // manifest. Across a new year those disagree, and a summary for the wrong
-  // year would put last season's countries under this season's shape.
-  it("ignores a promise for a different year and fetches the blob's own", async () => {
+  // The blob is the season the map shows (manifest.season_year), not the
+  // reader's clock: through January that is the ended season, and the blob,
+  // its countries and the season layer must all be the same year's.
+  it("compares against the shown season's blob, even when the clock says another year", async () => {
     const { wireScaleBlobToggle } = await import("../src/main");
     const map = stubMap();
     const btn = button();
     const breakdown = breakdownEl();
-    const { spy, firesRequests } = countingFetch();
+    const { spy, urls, firesRequests } = countingFetch();
     vi.stubGlobal("fetch", spy);
 
-    const stale: FiresSummary = { "fire-9": { country: "PT", area_km2: 1 } };
+    const shown = new Date().getUTCFullYear() - 1;
     const off = wireScaleBlobToggle(map, btn, breakdown, {
-      year: new Date().getFullYear() - 1,
-      promise: Promise.resolve(stale),
+      year: shown,
+      promise: Promise.resolve(firesJson),
     });
     btn.click();
     await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
     await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
 
-    expect(firesRequests()).toHaveLength(1);
-    expect(breakdown.innerHTML).not.toContain("PT");
+    const blobs = urls.filter((u) => /blob_\d{4}\.json/.test(u));
+    expect(blobs.length).toBeGreaterThan(0);
+    expect(blobs.every((u) => u.includes(`blob_${shown}.json`))).toBe(true);
+    // The given promise is the shown season's, so it is used as-is.
+    expect(firesRequests()).toHaveLength(0);
 
     off();
     vi.unstubAllGlobals();

@@ -14,6 +14,7 @@ from .config import (
     TRACK_MAP,
     TRACK_REWRITE_EVERY,
     Settings,
+    display_season_year,
 )
 from .coverage import build_coverage
 from .enrich import gdacs_for_event, place_for
@@ -650,6 +651,11 @@ def export(
             {
                 "schema_version": SCHEMA_VERSION, "generated_at": now.isoformat(),
                 "generation": gen.name,
+                # Which archive/season_{year}*.json the web loads. The pipeline
+                # decides (config.display_season_year: the ended season through
+                # January), not the web's reading of generated_at, which would
+                # switch at midnight UTC to a year with no file yet.
+                "season_year": display_season_year(now),
                 # Drives the aged-rewrite bucket in _rewrite_track. Monotonic
                 # per publish; a reset just rewrites more than needed once.
                 "publish_ordinal": ordinal,

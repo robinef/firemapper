@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .config import display_season_year
+
 # Country calls are independent, I/O-bound HTTP requests, so a small pool of
 # workers turns 27 sequential round-trips into a handful of overlapping ones.
 # Capped well below 27 to stay polite to api2's single host, not to bound
@@ -100,6 +102,13 @@ def _fault(exc: Exception) -> str:
     return f"HTTP {status}: {detail}" if status else detail
 
 
+def _snapshot_year(path: Path) -> int | None:
+    try:
+        return json.loads(path.read_text()).get("season_year")
+    except Exception:  # noqa: BLE001 - missing/malformed: not a reusable year
+        return None
+
+
 def should_fetch(path: Path, now: datetime, min_age_hours: float = MIN_AGE_HOURS) -> bool:
     """False while the stored snapshot is younger than the gate. api2 data
     itself only advances weekly, so polling every pipeline run (~15 min)
@@ -131,7 +140,12 @@ def fetch_stats_snapshot(
     headline sentence needs) does not depend on any one country succeeding.
     """
     path = snapshot_path(settings)
-    if not should_fetch(path, now):
+    year = display_season_year(now)
+    # The age gate alone would keep a snapshot of the previous season for up
+    # to MIN_AGE_HOURS after the shown season changes (1 Feb), and
+    # season.season_totals rightly refuses to relabel it: "unavailable" for
+    # hours. A snapshot of another year is never reusable.
+    if not should_fetch(path, now) and _snapshot_year(path) == year:
         return "reused"
 
     if http_get is None:
@@ -142,7 +156,6 @@ def fetch_stats_snapshot(
             r.raise_for_status()
             return r.text
 
-    year = now.year
     try:
         eu_payload = json.loads(http_get(_eu_url(year)))
         # Same try as the fetch: a malformed (non-object) body must produce

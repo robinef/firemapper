@@ -9,6 +9,7 @@ import {
   column,
   createSeasonPlayback,
   ndayFor,
+  playbackEnd,
   precompute,
   type PlaybackFrame,
 } from "../src/season_playback";
@@ -504,5 +505,19 @@ describe("createSeasonPlayback", () => {
     expect(uiSubscriberCount("compare:enter")).toBe(before[0] + 1);
     h.pb.destroy();
     expect([uiSubscriberCount("compare:enter"), uiSubscriberCount("detail:open")]).toEqual(before);
+  });
+});
+
+
+describe("playbackEnd", () => {
+  it("sweeps to today inside the shown season", () => {
+    expect(playbackEnd("2026-09-25T16:00:00+00:00", 2026)).toBe("2026-09-25");
+    expect(playbackEnd("2026-12-31T23:59:00+00:00", 2026)).toBe("2026-12-31");
+  });
+
+  // Through January the map shows the ended season; "today" is in the new
+  // year, and sweeping to it would append weeks of empty January frames.
+  it("stops at the shown season's 31 Dec when today is past it", () => {
+    expect(playbackEnd("2027-01-20T01:17:00+00:00", 2026)).toBe("2026-12-31");
   });
 });

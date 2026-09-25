@@ -188,3 +188,25 @@ def test_an_eu_entry_with_area_but_no_mddate_still_writes_a_snapshot(tmp_path):
     snapshot = json.loads(snapshot_path(settings).read_text())
     assert snapshot["eu"]["area_ha"] == 500
     assert snapshot["eu"]["mddate"] is None
+
+
+def test_january_fetches_the_ended_season_the_map_shows(tmp_path):
+    settings = FakeSettings(tmp_path)
+    calls = []
+    fetch_stats_snapshot(settings, datetime(2027, 1, 3, 1, 0, tzinfo=timezone.utc), _http_get_ok(calls))
+    assert all("year=2026" in u for u in calls if "year=" in u)
+    assert calls
+
+
+def test_a_snapshot_of_another_season_is_refetched_however_young(tmp_path):
+    # 1 Feb: the shown season changes. The age gate alone would reuse the
+    # 2026 snapshot for hours, and season_totals refuses to relabel it —
+    # the page would read "unavailable" until the gate opened.
+    settings = FakeSettings(tmp_path)
+    fetch_stats_snapshot(settings, datetime(2027, 1, 31, 23, 0, tzinfo=timezone.utc), _http_get_ok([]))
+    calls = []
+
+    assert fetch_stats_snapshot(
+        settings, datetime(2027, 2, 1, 0, 30, tzinfo=timezone.utc), _http_get_ok(calls),
+    ) == "fresh"
+    assert calls and all("year=2027" in u for u in calls if "year=" in u)

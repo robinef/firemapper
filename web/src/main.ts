@@ -56,7 +56,7 @@ import {
   type SeasonAggregate,
   type SeasonScope,
 } from "./season_filter";
-import { NO_DAY, createSeasonPlayback } from "./season_playback";
+import { NO_DAY, createSeasonPlayback, playbackEnd } from "./season_playback";
 import { createDaySliceSelector } from "./day_slice_select";
 import { lockMap, unlockMap, type HandlerState } from "./compare_lock";
 import {
@@ -153,7 +153,11 @@ async function boot() {
     // paint by a whole round-trip (a 404 on every boot while no season file is
     // published). loadSeason resolves null on any failure, so this promise can
     // never reject while it sits unawaited.
-    const seasonYear = Number(manifest.generated_at.slice(0, 4));
+    // The pipeline names the season (the ended one through January). Reading
+    // it off generated_at switched at midnight UTC on 1 Jan to a year with no
+    // file yet — and then to a near-empty map for weeks. The fallback is for
+    // manifests published before season_year existed.
+    const seasonYear = manifest.season_year ?? Number(manifest.generated_at.slice(0, 4));
     const seasonP = loadSeason(seasonYear, BASE);
     // The size filter's input (~300 KB): histogram, counts and EU-27 scope,
     // with no cells file. Started beside the summary for the same reason and
@@ -339,7 +343,10 @@ async function boot() {
         ? [{
             key: "season",
             levels: [1] as (1|2)[],
-            label: "Burned this year",
+            // "this year" is false in January, when the map shows the ended season.
+            label: season.year === Number(manifest.generated_at.slice(0, 4))
+              ? "Burned this year"
+              : `Burned in ${season.year}`,
             question: `Where did ${season.year} burn?`,
             layerIds: SEASON_LAYER_IDS,
             defaultOn: true,
@@ -447,7 +454,7 @@ async function boot() {
         ensureCells: () => seasonLoader?.ensure({ force: true }) ?? Promise.resolve(),
         // "loading" is the only state that still owes an onLoaded/onGaveUp.
         cellsPending: () => seasonLoader?.state() === "loading",
-        end: manifest.generated_at.slice(0, 10),
+        end: playbackEnd(manifest.generated_at, season.year),
         // New columns, new `nday` per cell (cellProps below reads them).
         onPrepared: () => seasonLoader?.retag(),
         onFrame: (f) => {
@@ -1014,7 +1021,10 @@ export function wireScaleBlobToggle(
     button.disabled = true;
     button.textContent = "Loading…";
     try {
-      const year = new Date().getFullYear();
+      // The season the map shows, not the reader's clock: local time disagrees
+      // with the UTC-keyed files around midnight on 1 Jan, and through January
+      // the shown season is the ended one.
+      const year = fires?.year ?? new Date().getUTCFullYear();
       await activateScaleBlob(map, year);
       if (isScaleBlobActive()) {
         button.setAttribute("aria-pressed", "true");
