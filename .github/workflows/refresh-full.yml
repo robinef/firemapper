@@ -1,11 +1,17 @@
 name: refresh-full
 
 # Everything the fast tier does, plus the polar (VIIRS/MODIS) archive top-up,
-# EFFIS burned areas and GIBS scar imagery. Runs at :07 so it does not land on
-# the same minute as every fourth fast run.
+# EFFIS burned areas and GIBS scar imagery.
 on:
+  # FALLBACK ONLY, like refresh-fast.yml: the real cadence is a Cloudflare Cron
+  # Trigger (`17 */2 * * *`, worker/index.ts) calling workflow_dispatch. On
+  # GitHub's schedule alone this "hourly" job ran at a median gap of 4.1 h
+  # (p90 5.5 h, worst 7.8 h; measured 2026-09-25 over the previous week).
+  # Every six hours at :07 — off the Worker's :17 and the fast tier's :00/:30 —
+  # so it only fills in when the Worker is broken, instead of queueing a second
+  # full run behind every Worker-driven one (`queue: max` never discards).
   schedule:
-    - cron: "7 * * * *"
+    - cron: "7 */6 * * *"
   workflow_dispatch:
 
 concurrency:
