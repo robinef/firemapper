@@ -1123,3 +1123,80 @@ def test_the_migration_respects_the_time_budget(tmp_path):
 
     state = _read(settings, SEASON_STATE_KEY)
     assert "place" in state["fire-a"] and "place" in state["fire-b"]
+
+
+# --- The year rollover -------------------------------------------------------
+
+
+def test_the_map_shows_the_ended_season_through_january_and_both_are_exported():
+    from pipeline.config import display_season_year, season_years
+    jan1 = datetime(2027, 1, 1, 0, 5, tzinfo=timezone.utc)
+    jan31 = datetime(2027, 1, 31, 23, 59, tzinfo=timezone.utc)
+    feb1 = datetime(2027, 2, 1, 0, 0, tzinfo=timezone.utc)
+    dec31 = datetime(2026, 12, 31, 23, 59, tzinfo=timezone.utc)
+
+    assert [display_season_year(t) for t in (dec31, jan1, jan31, feb1)] == [2026, 2026, 2026, 2027]
+    assert season_years(jan1) == season_years(jan31) == [2026, 2027]  # oldest first
+    assert season_years(dec31) == [2026]
+    assert season_years(feb1) == [2027]
+
+
+def _late_december_rollover(tmp_path, order: list[int]):
+    """A fire archived before the rollover, and one that burned 29-31 Dec
+    but settled (was archived) only on 1 Jan — then one January run that
+    exports the years in `order`."""
+    settings = _settings(tmp_path)
+    cells = _two_cells()
+    early = _track_body("early", cells, "2026-12-01T00:00:00+00:00", "2026-12-03T00:00:00+00:00")
+    _make_local_archive(settings.out_dir, {"early": early})
+    run_export_season(settings, target_year=2026, now=datetime(2026, 12, 31, 23, tzinfo=timezone.utc))
+
+    late = _track_body("late", cells, "2026-12-29T00:00:00+00:00", "2026-12-31T00:00:00+00:00")
+    _make_local_archive(settings.out_dir, {"early": early, "late": late})
+    for year in order:
+        run_export_season(settings, target_year=year, now=datetime(2027, 1, 1, 1, tzinfo=timezone.utc))
+    return settings
+
+
+def test_a_fire_settling_in_january_lands_in_the_season_it_burned_in(tmp_path):
+    settings = _late_december_rollover(tmp_path, [2026, 2027])
+
+    assert set(_read(settings, season_cells_key(2026))) == {"early", "late"}
+    assert _read(settings, season_cells_key(2027)) == {}
+    assert _read(settings, season_sizes_key(2026))["fires"].keys() == {"early", "late"}
+
+
+def test_a_january_run_that_reached_the_new_year_first_is_healed_by_the_next(tmp_path):
+    # The ended season's pass can run out of budget, or fail, leaving the new
+    # year's pass to read the late fire first and record it as 2026. The next
+    # 2026 pass must still publish it: the reconcile sees a fire the state
+    # says is 2026's and the 2026 cells file lacks, and re-reads it.
+    settings = _late_december_rollover(tmp_path, [2027, 2026])
+
+    assert set(_read(settings, season_cells_key(2026))) == {"early", "late"}
+
+
+def test_a_plant_lit_all_december_is_zoned_on_the_first_days_of_january(tmp_path):
+    # Without the trailing window a plant needs STATIC_CELL_DAYS detection
+    # days INSIDE the new year to be zoned: three weeks of January in which
+    # every flare and refinery is published as the new season's fires.
+    from datetime import timedelta
+    from pipeline.config import STATIC_CELL_DAYS
+    from pipeline.export_season import season_static_zone
+    from pipeline.store import append_hotspots
+    settings = _settings(tmp_path)
+    lat, lon = h3.cell_to_latlng(PLANT)
+    start = datetime(2026, 12, 3, 13, 0, tzinfo=timezone.utc)
+    rows = [
+        {"lat": lat, "lon": lon, "acq_time": start + timedelta(days=d), "tier": "viirs",
+         "satellite": "N", "confidence": "n", "frp": 5.0, "src_id": f"dec-{d}"}
+        for d in range(STATIC_CELL_DAYS + 2)  # through 3 Jan
+    ]
+    store = settings.data_dir / "raw" / "hotspots.parquet"
+    store.parent.mkdir(parents=True)
+    append_hotspots(rows, store)
+
+    assert PLANT in season_static_zone(settings, 2027)
+    # And the window is MAX_FIRE_DAYS, not "everything before": the same plant
+    # a year earlier says nothing about 2028.
+    assert season_static_zone(settings, 2028) is None

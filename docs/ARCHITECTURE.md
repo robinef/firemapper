@@ -125,6 +125,16 @@ for runs where the raw store cannot be read). The season export runs in the full
 not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
 restores these by name, so a fresh CI runner continues where the last left off.
 
+**The year rollover** (`config.display_season_year` / `season_years`). Through
+January the map keeps showing the season that just ended — the manifest's
+`season_year` names it, so the web never guesses from `generated_at` — and the
+full tier exports both years, the ended one first. Oldest first matters: a fire
+that burned on 30 Dec is archived only once it settles, in January, and an
+export targeting the new year would record it as the old year's and skip it.
+`hydrate()` restores both years' files for the same month. The static zone
+reads the raw store from `MAX_FIRE_DAYS` before 1 Jan, as a live refresh does,
+so plants lit all autumn are zoned on 1 Jan rather than three weeks in.
+
 ## Turning detections into fires
 
 A satellite gives you isolated hot pixels, not fires. `pipeline/events.py` builds

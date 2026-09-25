@@ -616,6 +616,33 @@ def test_hydrate_restores_season_state_summary_and_cells(tmp_path):
     assert (settings.out_dir / season_sizes_key(year)).read_bytes() == sizes_body
 
 
+def test_hydrate_in_january_restores_the_ended_season_too(tmp_path):
+    """In January the pipeline still exports the season that just ended
+    (config.season_years). Started without that year's files, its export
+    would re-fetch every track of the year and publish a half-built season."""
+    gen = "gen-20270103T000000Z"
+    objects = {
+        MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
+        f"data/{gen}/events.geojson": b"{}",
+        **{f"data/{k}": k.encode() for y in (2026, 2027) for k in (
+            season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_key(y), scale_blob_fires_key(y),
+        )},
+    }
+    settings = _settings(tmp_path)
+
+    hydrate(settings, FakeS3(objects), now=datetime(2027, 1, 3, 1, 17, tzinfo=timezone.utc))
+
+    for y in (2026, 2027):
+        for k in (season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_key(y), scale_blob_fires_key(y)):
+            assert (settings.out_dir / k).read_bytes() == k.encode(), k
+
+    # From February only the new season is exported, so only it is restored.
+    settings = _settings(tmp_path / "feb")
+    hydrate(settings, FakeS3(objects), now=datetime(2027, 2, 1, 0, 17, tzinfo=timezone.utc))
+    assert not (settings.out_dir / season_cells_key(2026)).exists()
+    assert (settings.out_dir / season_cells_key(2027)).exists()
+
+
 def test_publish_uploads_the_permanent_archive(tmp_path):
     """publish() must ship whatever archive_past_tracks() wrote locally this
     run — the new/changed past-fire tracks plus the refreshed index — to the

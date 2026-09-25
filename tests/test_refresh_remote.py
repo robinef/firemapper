@@ -27,7 +27,7 @@ def r2_env(monkeypatch, tmp_path):
 
 def test_hydrates_then_refreshes_then_publishes(tmp_path, monkeypatch, r2_env):
     order: list[str] = []
-    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: order.append("hydrate"))
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c, now=None: order.append("hydrate"))
     monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: order.append(f"refresh:{tier}"))
     monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: order.append("publish"))
     monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")
@@ -38,7 +38,7 @@ def test_hydrates_then_refreshes_then_publishes(tmp_path, monkeypatch, r2_env):
 
 def test_defaults_to_the_full_tier(tmp_path, monkeypatch, r2_env):
     seen: list[str] = []
-    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: None)
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c, now=None: None)
     monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: seen.append(tier))
     monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: None)
     monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")
@@ -59,7 +59,7 @@ def test_a_failing_scale_blob_export_still_publishes(tmp_path, monkeypatch, caps
     archive_past_tracks, the producer of the data this consumes.
     """
     order: list[str] = []
-    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: order.append("hydrate"))
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c, now=None: order.append("hydrate"))
     monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: order.append(f"refresh:{tier}"))
     monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: order.append("publish"))
     monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")
@@ -127,7 +127,7 @@ def test_each_stage_reports_how_long_it_took(tmp_path, capsys, monkeypatch):
     (tmp_path / "o" / "gen-20260804T000000Z").mkdir(parents=True)
 
     calls: list[str] = []
-    monkeypatch.setattr(mod, "hydrate", lambda s, c: calls.append("hydrate"))
+    monkeypatch.setattr(mod, "hydrate", lambda s, c, now=None: calls.append("hydrate"))
     monkeypatch.setattr(mod, "refresh", lambda s, tier: calls.append(f"refresh:{tier}"))
     monkeypatch.setattr(mod, "publish", lambda s, g, c: calls.append("publish"))
 
@@ -166,7 +166,7 @@ def test_stage_timing_survives_a_failing_stage(tmp_path, capsys, monkeypatch):
 
 
 def _stub_stages(monkeypatch, tmp_path, seen: dict):
-    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c: None)
+    monkeypatch.setattr(refresh_remote, "hydrate", lambda s, c, now=None: None)
     monkeypatch.setattr(refresh_remote, "refresh", lambda s, tier: None)
     monkeypatch.setattr(refresh_remote, "publish", lambda s, g, c: None)
     monkeypatch.setattr(refresh_remote, "_latest_generation", lambda s: tmp_path / "gen-x")

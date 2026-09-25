@@ -29,7 +29,7 @@ from __future__ import annotations
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import h3
@@ -120,9 +120,16 @@ def season_static_zone(settings: Settings, year: int) -> set[str] | None:
     each cell once, on its first bin, so the bodies cannot tell a plant lit
     on 30 days from a cell burned once (measured 2026-09-22: no archived
     cell reaches 5 days). None when the store is absent or empty — the export
-    then applies the last good zone it stored (ZONE_STATE_KEY)."""
+    then applies the last good zone it stored (ZONE_STATE_KEY).
+
+    The rows start MAX_FIRE_DAYS before 1 Jan, not on it: a live refresh on
+    5 Jan clusters over a window reaching into December, so it already drops
+    a plant lit all autumn. Counting only this year's rows left every plant
+    unzoned until it had STATIC_CELL_DAYS detection days in the new year —
+    three weeks of refineries published as the new season's only "fires"."""
     store = settings.data_dir / "raw" / "hotspots.parquet"
-    rows = [r for r in read_hotspots(store) if r["acq_time"].year == year]
+    start = datetime(year, 1, 1, tzinfo=timezone.utc) - timedelta(days=MAX_FIRE_DAYS)
+    rows = [r for r in read_hotspots(store) if start <= r["acq_time"] and r["acq_time"].year <= year]
     if not rows:
         print(f"[season] no raw hotspot store rows for {year} at {store}; static zone unknown this run", file=sys.stderr)
         return None

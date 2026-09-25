@@ -4,6 +4,9 @@ export interface Manifest {
   schema_version: string;
   generated_at: string;
   generation: string;
+  /** The season the map shows (pipeline/config.py::display_season_year): the
+   * ended one through January. Absent on manifests published before it. */
+  season_year?: number;
   tiers: { viirs: boolean; meteosat: boolean };
   /** Per-layer freshness (schema >= 1.1.0). Absent on older manifests. */
   layers?: Record<string, LayerFreshness>;

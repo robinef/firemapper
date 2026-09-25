@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
@@ -70,11 +71,34 @@ def season_cells_key(year: int) -> str:
     return f"archive/season_{year}_cells.json"
 
 
-# {"year", "fires": {fire_id: [km2, country | null, first YYYY-MM-DD]}} — the
+# {"year", "fires": {fire_id: [km2, country | null, first YYYY-MM-DD, place | null]}} — the
 # size filter's boot-time input, so the histogram and the EU-27 scope need
 # neither the multi-MB cells file nor the scale blob's fires summary.
 def season_sizes_key(year: int) -> str:
     return f"archive/season_{year}_sizes.json"
+
+
+# The season calendar. For its first SEASON_GRACE_MONTHS a new year has almost
+# nothing burned, so the map keeps showing the season that just ended, and the
+# pipeline keeps FINISHING it: a fire that burned on 30 Dec is archived only
+# once it settles, days into January, and the export that reads it then has to
+# target the old year or the fire is recorded under that year and never
+# published anywhere. The new year is exported alongside from 1 Jan, so it is
+# complete on the day the map switches to it.
+SEASON_GRACE_MONTHS = 1
+
+
+def display_season_year(now: datetime) -> int:
+    """The season the map shows at `now` (UTC)."""
+    return now.year - 1 if now.month <= SEASON_GRACE_MONTHS else now.year
+
+
+def season_years(now: datetime) -> list[int]:
+    """Every season the pipeline exports at `now`, oldest first — the ended
+    season must be finished before the new one's run can record its late
+    fires as "another year's"."""
+    shown = display_season_year(now)
+    return [shown] if shown == now.year else [shown, now.year]
 
 
 # Cluster over a longer window than the live layer so fires that have gone quiet
