@@ -387,15 +387,15 @@ def run_export_season(
                 # only thing that ever recomputes it.
                 if places is None:
                     places = load_places_tolerant(settings)
-                if len(places) == 0 and "place" in old_entry:
+                if len(places) == 0:
                     # The gazetteer is unavailable (missing/corrupt) for this
-                    # run only — not evidence the fire has no nearby town.
-                    # A fire that was already named keeps that name rather
-                    # than having it silently reverted to null; the migration
-                    # loop below already gives this same protection to
-                    # unchanged fires, this keeps a re-read one consistent
-                    # with it.
-                    state[tid]["place"] = old_entry["place"]
+                    # run only — not evidence the fire has no nearby town. A
+                    # fire that was already named keeps that name; one never
+                    # named is left WITHOUT the key, so the migration loop
+                    # below names it on the next run that has a gazetteer. A
+                    # stored null would be permanent: nothing re-reads it.
+                    if "place" in old_entry:
+                        state[tid]["place"] = old_entry["place"]
                 else:
                     place = place_for(_members_from_cells(cells), places)
                     state[tid]["place"] = place["name"] if place else None
@@ -430,6 +430,8 @@ def run_export_season(
             continue
         if places is None:
             places = load_places_tolerant(settings)
+        if len(places) == 0:
+            break  # no gazetteer this run: leave them unplaced for the next one
         place = place_for(_members_from_cells(entry["cells"]), places)
         st["place"] = place["name"] if place else None
         placed += 1

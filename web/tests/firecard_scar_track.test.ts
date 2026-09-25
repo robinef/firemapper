@@ -243,6 +243,20 @@ describe("openArchived opens a season fire that never made the scar shortlist", 
     expect(panel.innerHTML).toContain("1.5 km²"); // two cells, one decimal
   });
 
+  it("titles the card after the sidecar's nearest town, and keeps the dated label as the subtitle", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+
+    expect(await card.openArchived("fire-1", [31.5, "ES", "2026-07-24", "Ávila"])).toBe(true);
+
+    const panel = document.getElementById("panel")!;
+    expect(panel.querySelector(".fc-title")?.textContent).toBe("Ávila");
+    expect(panel.innerHTML).toContain("24 Jul 2026");
+    // A 3-element row (a sidecar older than the place) still titles by date.
+    expect(await card.openArchived("fire-2", [31.5, "ES", "2026-07-24"])).toBe(true);
+    expect(panel.querySelector(".fc-title")?.textContent).toBe("Burn scar · 24 Jul 2026");
+  });
+
   it("opens nothing when the fire has no archived track", async () => {
     ({ setupFireCard } = await import("../src/firecard"));
     const { card } = build();

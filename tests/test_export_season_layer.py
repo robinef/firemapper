@@ -123,7 +123,7 @@ def test_run_export_season_writes_cells_summary_and_state_for_the_target_year(tm
     assert summary["km2"] == round(sum(h3.cell_area(c, unit="km^2") for c in cells), 1)
     assert summary["r6"] == aggregate_r6(stored)
     assert _read(settings, SEASON_STATE_KEY) == {
-        "fire-2026": {"digest": index["fire-2026"], "year": 2026, "static": False, "place": None},
+        "fire-2026": {"digest": index["fire-2026"], "year": 2026, "static": False},
     }
 
 
@@ -204,7 +204,7 @@ def test_a_malformed_track_is_skipped_and_recorded_without_poisoning_the_run(tmp
 
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
     state = _read(settings, SEASON_STATE_KEY)
-    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False, "place": None}
+    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False}
     assert state["bad"] == {"digest": index["bad"], "year": None}
 
 
@@ -429,7 +429,7 @@ def test_a_long_lived_large_track_is_kept(tmp_path):
 
     assert set(_read(settings, season_cells_key(2026))) == {"big"}
     assert _read(settings, SEASON_STATE_KEY)["big"] == {
-        "digest": index["big"], "year": 2026, "static": False, "place": None,
+        "digest": index["big"], "year": 2026, "static": False,
     }
 
 
@@ -505,7 +505,7 @@ def test_a_track_recorded_before_the_gate_existed_is_reclassified(tmp_path, monk
     assert set(_read(settings, season_cells_key(2026))) == {"good"}
     state = _read(settings, SEASON_STATE_KEY)
     assert state["plant"] == {"digest": index["plant"], "year": 2026, "static": True}
-    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False, "place": None}
+    assert state["good"] == {"digest": index["good"], "year": 2026, "static": False}
 
 
 def test_a_pre_gate_track_keeps_its_contribution_until_it_is_reprocessed(tmp_path, monkeypatch):
@@ -976,7 +976,11 @@ def test_a_fire_beyond_max_place_km_from_any_town_gets_a_null_place(tmp_path):
     assert _read(settings, season_sizes_key(2026))["fires"]["fire-far"][3] is None
 
 
-def test_a_missing_gazetteer_gives_a_null_place_and_does_not_fail_the_export(tmp_path):
+def test_a_missing_gazetteer_leaves_the_fire_unplaced_until_a_run_that_has_one(tmp_path):
+    # No gazetteer this run: the export must not fail, the sidecar carries
+    # null — and the state entry must NOT record a place at all. A stored
+    # null would be permanent (nothing re-reads an unchanged fire), where an
+    # absent key is exactly what the migration loop fills on the next run.
     settings = _settings(tmp_path)  # no gazetteer file written at all
     cells = _two_cells()
     _make_local_archive(settings.out_dir, {
@@ -985,8 +989,14 @@ def test_a_missing_gazetteer_gives_a_null_place_and_does_not_fail_the_export(tmp
 
     run_export_season(settings, target_year=2026, now=NOW)  # must not raise
 
-    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] is None
+    assert "place" not in _read(settings, SEASON_STATE_KEY)["fire-a"]
     assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] is None
+
+    _write_gazetteer(settings)
+    run_export_season(settings, target_year=2026, now=NOW)
+
+    assert _read(settings, SEASON_STATE_KEY)["fire-a"]["place"] == "Testburg"
+    assert _read(settings, season_sizes_key(2026))["fires"]["fire-a"][3] == "Testburg"
 
 
 def test_the_sizes_sidecar_carries_the_fourth_place_element(tmp_path):
