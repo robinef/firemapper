@@ -39,6 +39,10 @@ const MOBILE = `not all and ${DESKTOP}`;
 /** Touch sizing: the mobile half OR a coarse pointer. A media-query list is an
  *  OR, so this widens the mobile half (landscape phones) without opening a gap. */
 const TOUCH = `${MOBILE}, (pointer: coarse)`;
+/** Short screens (a phone held sideways), nested INSIDE the touch block. A
+ *  height, not a width: it cannot open a gap in the width partition, so it
+ *  is the one other number allowed. */
+const SHORT = "(max-height: 480px)";
 
 describe("style.css breakpoints", () => {
   it("splits on exactly one number, shared with firecard.ts", () => {
@@ -46,7 +50,8 @@ describe("style.css breakpoints", () => {
     // a gap in the first place, and they have to be maintained in lockstep
     // with the matchMedia query in firecard.ts. One number cannot drift.
     const widths = new Set(
-      [...styleSource.matchAll(/@media[^{]*?(\d+(?:\.\d+)?)px/g)].map((m) => m[1]),
+      // Width features only: SHORT's height is orthogonal to the split.
+      [...styleSource.matchAll(/@media[^{]*?width:\s*(\d+(?:\.\d+)?)px/g)].map((m) => m[1]),
     );
     expect([...widths]).toEqual(["641"]);
   });
@@ -56,7 +61,7 @@ describe("style.css breakpoints", () => {
     expect(conditions.length).toBeGreaterThan(0);
     for (const condition of conditions) {
       expect(
-        [DESKTOP, MOBILE, TOUCH],
+        [DESKTOP, MOBILE, TOUCH, SHORT],
         `unrecognised media condition "${condition}" — a third width-bounded ` +
           `query breaks the two-way partition this file relies on`,
       ).toContain(condition);
@@ -80,6 +85,7 @@ describe("style.css breakpoints", () => {
     // Landscape phones are >=641px wide: without this block they fall back to
     // desktop-sized touch targets (a 29x24 close button).
     expect(conditions).toContain(TOUCH);
+    expect(conditions).toContain(SHORT);
   });
 
   // A fifth test used to walk Chrome's 1/64 px grid across the boundary and

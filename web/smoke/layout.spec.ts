@@ -188,6 +188,49 @@ test.describe("mobile 375x812", () => {
       expect(await px(sel), sel).toBeGreaterThanOrEqual(16);
     }
   });
+
+  test("the card's before/after button and the sources link are 44px targets", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    // The last two controls under 44px: .fc-ba was 35px, and .info-more an
+    // inline link 17px tall.
+    await openRail(page, "rail-search", "search");
+    await fireRows(page).first().click();
+    await page.locator(".fc-peek").click();
+    await expect(page.locator("#view")).toHaveAttribute("data-size", "full");
+    const ba = await boxOf(page, ".fc-ba");
+    expect(ba, "the before/after button must be on screen").not.toBeNull();
+    expect(ba!.height).toBeGreaterThanOrEqual(44);
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-info", "info");
+    const more = await boxOf(page, ".info-more");
+    expect(more, "the sources link must be on screen").not.toBeNull();
+    expect(more!.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test("a rotated map keeps its compass above the before/after swipe", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await rotateMap(page);
+    await expect(page.locator(".maplibregl-ctrl-compass")).toBeVisible();
+    // Real compare mode needs Sentinel tiles the preview server does not
+    // proxy, so stand in for it exactly: the body class, and an opaque layer
+    // with layer_imagery.ts's wrapper stacking (absolute, z-index 2),
+    // appended to the map container after the control corners as the
+    // after-map is. Without its pointer-events:none: elementFromPoint skips
+    // such an element, and it is what is painted on top that matters here.
+    const hit = await page.evaluate(() => {
+      document.body.classList.add("compare-mode");
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "position:absolute;inset:0;z-index:2;background:#000";
+      document.querySelector("#map")!.appendChild(wrap);
+      const r = document.querySelector(".maplibregl-ctrl-compass")!.getBoundingClientRect();
+      const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return top?.closest(".maplibregl-ctrl-compass") != null;
+    });
+    expect(hit, "the after-map must not cover the compass").toBe(true);
+  });
 });
 
 test.describe("desktop 1280x800", () => {
@@ -292,5 +335,38 @@ test.describe("phone landscape 844x390, touch", () => {
     // At 44px wide, ✕ (right 14px) and 🔗 (right 46px) shared 12px.
     await expectNoOverlap(page, ".fc-close", ".fc-share", "a tap must land on the button it aims at");
     await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#timeline", "the credits must clear the time bar");
+  });
+});
+
+/**
+ * The smallest phone held sideways: 568px wide keeps the phone layout, but
+ * the 320px height cannot fit the whole time bar and the chrome above it.
+ */
+test.describe("small phone landscape 568x320, touch", () => {
+  test.use({ viewport: { width: 568, height: 320 }, hasTouch: true, isMobile: true });
+
+  test("a peeked card leaves the header, the rail and the credits on screen", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    // The whole time bar was 176px of the 320. One day picker stays: the
+    // play/slider row where there is one...
+    await expect(page.locator("#timeline .tl-bars")).toBeHidden();
+    await expect(page.locator("#timeline .scrub-play")).toBeVisible();
+    // ...else the histogram. The sample's first fire has no cell_bins, so
+    // its card timeline has no scrubber and must keep its bars.
+    await openRail(page, "rail-search", "search");
+    await fireRows(page).first().tap();
+    await expect(page.locator("#view")).toHaveAttribute("data-size", "peek");
+    await expect(page.locator("#timeline .scrub-row")).toHaveCount(0);
+    await expect(page.locator("#timeline .tl-bars")).toBeVisible();
+
+    // Raised for the peek strip, the rail row rode up over the header and
+    // pushed the credits off the top edge.
+    await expectNoOverlap(page, "#rail", "#header", "the rail must clear the header");
+    await expectNoOverlap(page, "#rail", ".fc-peek", "the rail must clear the peek strip");
+    const attrib = await boxOf(page, ".maplibregl-ctrl-attrib");
+    expect(attrib, "the credits must be rendered").not.toBeNull();
+    expect(attrib!.y, "the credits must stay on screen").toBeGreaterThanOrEqual(0);
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#header", "the credits must clear the header");
   });
 });
