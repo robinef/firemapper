@@ -104,6 +104,40 @@ test.describe("mobile 375x812", () => {
       `#view is ${Math.round(view!.height)}px tall in a ${viewport.height}px viewport`,
     ).toBeGreaterThan(viewport.height * 0.9);
   });
+
+  test("the map attribution clears the time bar and the rail", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // It sat UNDER the time bar at every phone size: the lift rule matched
+    // maplibre-gl.css on specificity and lost on bundle order. The OSM and
+    // CARTO credits are a licence condition, not decoration.
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#timeline", "the credits must clear the time bar");
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#rail", "the credits must clear the rail");
+
+    // The peek strip pushes the rail up 56px; the credits have to follow it.
+    await openRail(page, "rail-search", "search");
+    await fireRows(page).first().click();
+    await expect(page.locator("#view")).toHaveAttribute("data-size", "peek");
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#rail", "the credits must clear the raised rail");
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", ".fc-peek", "the credits must clear the peek strip");
+  });
+
+  test("text inputs are 16px, so iOS Safari does not zoom in on focus", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    // iOS zooms into any focused input under 16px and never zooms back out.
+    // Chromium does not, so the computed size is the only thing to assert.
+    const px = (sel: string) =>
+      page.locator(sel).first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    await openRail(page, "rail-search", "search");
+    expect(await px(".fl-search")).toBeGreaterThanOrEqual(16);
+    await page.goBack();
+    await openRail(page, "rail-historical", "historical");
+    for (const sel of ["#historical-lookup-q", "#historical-lookup-before", "#historical-lookup-after"]) {
+      expect(await px(sel), sel).toBeGreaterThanOrEqual(16);
+    }
+  });
 });
 
 test.describe("desktop 1280x800", () => {
@@ -157,5 +191,50 @@ test.describe("desktop 1280x800", () => {
     // collide".
     await expect(page.locator("#view-chip")).toBeHidden();
     await expect(page.locator(".fc-peek")).toBeHidden();
+  });
+
+  test("the map attribution and scale bar clear the time bar and the rail", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    // Both lift rules lost to maplibre-gl.css, so both controls sat under the
+    // time bar.
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#timeline", "the credits must clear the time bar");
+    await expectNoOverlap(page, ".maplibregl-ctrl-scale", "#timeline", "the scale bar must clear the time bar");
+  });
+});
+
+/**
+ * A phone held sideways is 844px wide, so the width split hands it the desktop
+ * layout. Touch sizing has to follow the finger too, or the card's ✕ is 29x24.
+ */
+test.describe("phone landscape 844x390, touch", () => {
+  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+
+  test("touch targets stay 44px and the card's two corner buttons do not overlap", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+
+    // Only a short viewport brings the rail column down to the scale bar's
+    // row; at 1280x800 the rail ends 500px above it and cannot catch this.
+    await expectNoOverlap(page, ".maplibregl-ctrl-scale", "#rail", "the scale bar must clear the rail");
+    await expectNoOverlap(page, ".maplibregl-ctrl-scale", "#timeline", "the scale bar must clear the time bar");
+
+    const play = await boxOf(page, "#timeline .scrub-play");
+    expect(play, "the play button must be on screen").not.toBeNull();
+    expect(play!.width).toBeGreaterThanOrEqual(44);
+    expect(play!.height).toBeGreaterThanOrEqual(44);
+
+    await openRail(page, "rail-search", "search");
+    await fireRows(page).first().tap();
+    await expect(page.locator(".fc-close")).toBeVisible();
+    for (const sel of [".fc-close", ".fc-share"]) {
+      const b = await boxOf(page, sel);
+      expect(b, `${sel} must be on screen`).not.toBeNull();
+      expect(b!.width, sel).toBeGreaterThanOrEqual(44);
+      expect(b!.height, sel).toBeGreaterThanOrEqual(44);
+    }
+    // At 44px wide, ✕ (right 14px) and 🔗 (right 46px) shared 12px.
+    await expectNoOverlap(page, ".fc-close", ".fc-share", "a tap must land on the button it aims at");
+    await expectNoOverlap(page, ".maplibregl-ctrl-attrib", "#timeline", "the credits must clear the time bar");
   });
 });

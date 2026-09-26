@@ -278,8 +278,13 @@ body.compare-mode #fire-readout { display: none; }
  *
  * Negation has no band at any precision, and leaves ONE number — 641 — shared
  * with firecard.ts's matchMedia("(min-width: 641px)"), instead of two that
- * have to be kept in lockstep. tests/style_breakpoints.test.ts guards it. */
-@media not all and (min-width: 641px) {
+ * have to be kept in lockstep. tests/style_breakpoints.test.ts guards it.
+ *
+ * Touch sizing is the one exception, and it widens rather than splits: it
+ * follows the finger as well as the width. A phone held sideways is 700-900px
+ * wide, so it gets the desktop layout — and with it a 29x24 close button and a
+ * 16px-tall slider, until this block also matched on (pointer: coarse). */
+@media not all and (min-width: 641px), (pointer: coarse) {
   /* Touch targets: 44x44 min (Apple HIG / WCAG 2.5.8). */
   .layer-row { min-height: 44px; align-items: center; }
   /* No .compare-exit rule here, and none above either: nothing renders that
@@ -287,6 +292,9 @@ body.compare-mode #fire-readout { display: none; }
   .panel-close, .fc-close, .fc-share, .scrub-play {
     min-width: 44px; min-height: 44px;
   }
+  /* ✕ now spans right 14-58px, so 🔗 at its desktop right:46px would share
+     12px with it — a tap there hit whichever sat on top. Park it beside. */
+  .fc-share { right: 58px; }
   /* The histogram is ONE 44px+ target, not 30 individually-sized bars. */
   #timeline .tl-bars { min-height: 44px; }
   .scrub-play { width: 44px; height: 44px; font-size: 15px; }
@@ -312,6 +320,9 @@ body.compare-mode #fire-readout { display: none; }
   .scrub-range::-moz-range-thumb {
     width: 28px; height: 28px; border: none; border-radius: 50%; background: #ff6b00;
   }
+}
+
+@media not all and (min-width: 641px) {
   /* The label competes with the slider for width on a 375px screen; the
      slider matters more. flex-shrink is 0 in the base rule, so min-width
      alone is inert — flex: 0 1 auto is what lets the label actually shrink. */
@@ -567,6 +578,9 @@ body.compare-mode #timeline { display: none; }
     border-radius: 12px; padding: 8px 12px 12px;
     box-shadow: 0 2px 20px rgba(0,0,0,.55); }
   #timeline { left: 80px; }
+  /* The scale bar lines up with the time bar, clear of the rail column
+     (12-56px); maplibre's own 10px control margin makes 70 + 10 = 80. */
+  #map .maplibregl-ctrl-bottom-left { left: 70px; }
   .fc-peek { display: none; }
 }
 
@@ -644,8 +658,14 @@ body.compare-mode #timeline { display: none; }
 
 /* maplibre's own scale control defaults to bottom:0/left:0, which #timeline
    (full-width, true bottom edge) would sit on top of — lift it clear using
-   the same --timebar offset #rail already uses. */
-.maplibregl-ctrl-bottom-left { bottom: calc(var(--timebar) + 12px); }
+   the same --timebar offset #rail already uses. The attribution (bottom-right)
+   needs it just as much: under the time bar it is unreadable, and the
+   OpenStreetMap and CARTO licences require it to be visible.
+   #map-prefixed because maplibre-gl.css (imported by main.ts) lands AFTER this
+   file in the bundle and sets bottom:0 on the same class: at equal
+   specificity it won, and neither control was lifted at all. */
+#map .maplibregl-ctrl-bottom-left,
+#map .maplibregl-ctrl-bottom-right { bottom: calc(var(--timebar) + 12px); }
 .maplibregl-ctrl-scale {
   background: var(--panel); border-color: var(--fg); color: var(--fg);
 }
@@ -715,4 +735,23 @@ body.compare-mode #timeline { display: none; }
   /* The sheet steps aside while picking; the nav entry stays "historical",
      so back/Escape still leave the whole form (and end picking with it). */
   body.hl-picking #view { display: none !important; }
+
+  /* The rail is a right-aligned row above the time bar here, so the
+     attribution stacks above the rail rather than on it: the same 56px step
+     the rail itself takes when the peek strip arrives. */
+  #map .maplibregl-ctrl-bottom-right { bottom: calc(var(--timebar) + 68px); }
+  body[data-size="peek"] #map .maplibregl-ctrl-bottom-right { bottom: calc(var(--timebar) + 124px); }
+  /* No room for the scale bar: the rail row reaches to x=64 at 320px wide,
+     and the attribution opens leftwards across the same row. It sat hidden
+     under the time bar on phones until the rule above started to apply, so
+     hiding it keeps what phones have always shown. */
+  #map .maplibregl-ctrl-bottom-left { display: none; }
+}
+
+/* Last in the file on purpose: the base .fl-search / .hl-search input rules
+   above set 13px, and at equal specificity the later rule wins. iOS Safari
+   zooms the page into any focused input under 16px and never zooms back out,
+   leaving the reader panning a magnified map. */
+@media not all and (min-width: 641px), (pointer: coarse) {
+  .fl-search, .hl-search input, .hl-dates input { font-size: 16px; }
 }
