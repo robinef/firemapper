@@ -147,9 +147,13 @@ export function fireCardHtml(p: EventProps, track: Track | null, readout?: Reado
 }
 
 export function scarCardHtml(s: Scar, track: Track | null = null, hasStaticFootprint = false): string {
+  const kind = s.kind === "past" ? "Past fire" : "Active fire";
+  // A named scar is titled by its town, so the date moves to the peek's
+  // second line — the phone reader's only line until they expand the sheet.
+  // An unnamed one keeps its dated label as the title; no need to repeat it.
   const peek =
     `<div class="fc-peek"><b>${esc(s.place || s.label)}</b>` +
-    `<span>${s.kind === "past" ? "Past fire" : "Active fire"}</span>` +
+    `<span>${s.place ? `${kind} · ${fmtDate(s.started)}` : kind}</span>` +
     `<i aria-hidden="true">›</i></div>`;
   // Same ramp legend as fireCardHtml, and the same gate: only an archived
   // track (s.track_gen) carries per-bin cells, so most scars — curated
@@ -174,7 +178,7 @@ export function scarCardHtml(s: Scar, track: Track | null = null, hasStaticFootp
     `<button class="fc-close" aria-label="Close">✕</button>` +
     `<button class="fc-share" aria-label="Copy shareable link" title="Copy shareable link">🔗</button>` +
     `<div class="fc-title">${esc(s.place || s.label)}</div>` +
-    `<div class="fc-sub">${s.kind === "past" ? "Past fire" : "Active fire"} · ${fmtDate(s.started)}</div>` +
+    `<div class="fc-sub">${kind} · ${fmtDate(s.started)}</div>` +
     `<div class="fc-stats">` +
     statRow("Burned area", areaText(s.area_km2, s.cum_cells)) +
     statRow("Location", `${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}`) +
