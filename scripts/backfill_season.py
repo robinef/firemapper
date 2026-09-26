@@ -71,7 +71,7 @@ from pipeline.config import (
     season_key,
     season_sizes_key,
 )
-from pipeline.events import CLOSE_AFTER_H, cluster
+from pipeline.events import CLOSE_AFTER_H, H3_RES, cluster
 from pipeline.fetch_firms import _fault, parse_firms_csv, scrub
 from pipeline.store import append_hotspots, read_hotspots
 
@@ -152,6 +152,8 @@ def fetch_sp(
     rows_by: dict[str, Counter] = {s: Counter() for s, _ in sources}
     last: dict[str, str | None] = {s: None for s, _ in sources}
     types: dict[str, Counter] = {s: Counter() for s, _ in sources}
+    type_cells: dict[str, Counter] = defaultdict(Counter)
+    flagged_days: dict[str, set[str]] = defaultdict(set)
     failed: list[dict] = []
     for start, span in windows:
         for source, tier in sources:
@@ -178,9 +180,20 @@ def fetch_sp(
             # SP's `type` column (0 = vegetation fire, 1 volcano, 2 static
             # land source, 3 offshore), when the area API carries it:
             # counted, not filtered — cluster()'s static zone is the filter.
+            # Also tallied per res-8 cell (type_cells): SP geolocates a
+            # plant's pings onto cells the NRT-built season zone never sees,
+            # and NASA's own flag is the one signal that names them.
             if "type" in body.split("\n", 1)[0].strip().split(","):
                 for rec in csv.DictReader(io.StringIO(body)):
-                    types[source][rec.get("type", "")] += 1
+                    kind = rec.get("type", "")
+                    types[source][kind] += 1
+                    try:
+                        cell = h3.latlng_to_cell(float(rec["latitude"]), float(rec["longitude"]), H3_RES)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    type_cells[cell][kind] += 1
+                    if kind != "0":
+                        flagged_days[cell].add(rec.get("acq_date", ""))
             for r in rows:
                 rows_by[source][r["acq_time"].strftime("%Y-%m")] += 1
                 d = r["acq_time"].date().isoformat()
@@ -193,6 +206,13 @@ def fetch_sp(
         "last_date": last,
         "types": {s: dict(c) for s, c in types.items() if c},
         "failed": failed,
+        # Every cell with at least one flagged (non-0) row: its per-type row
+        # counts plus the distinct days a flagged row landed on it. Type-0-only
+        # cells are left out — they are the fires, not the question.
+        "type_cells": {
+            cell: {**dict(c), "flagged_days": len(flagged_days[cell])}
+            for cell, c in sorted(type_cells.items()) if flagged_days[cell]
+        },
     }
 
 
@@ -313,6 +333,7 @@ def _summary_md(s: dict) -> str:
         "",
         f"- SP last date per source: {f['last_date']}",
         f"- failed windows: {len(f['failed'])}",
+        f"- cells with NASA-flagged (type != 0) rows: {f.get('flagged_cells', 0)} (sp_type_cells.json)",
         f"- rows: {s['rows']} · clustering steps: {s['steps']} · cutoff: {s['cutoff']}",
         f"- archived: {s['archived']} · kept: {s['kept']} · skipped: "
         + ", ".join(f"{k}={len(v)}" for k, v in s["skipped"].items()),
@@ -363,6 +384,11 @@ def build(
         settings.firms_map_key, store, sp_windows(START, FETCH_END), sp_sources(modis),
         http_get=http_get, sleep=sleep,
     )
+    # Beside the summary, not under archive/: --publish never uploads it. It
+    # is a measurement input for a season zone built from NASA's flag.
+    type_cells = fetch.pop("type_cells")
+    (out_dir / "sp_type_cells.json").write_text(json.dumps(type_cells))
+    fetch["flagged_cells"] = len(type_cells)
     rows = [r for r in read_hotspots(store) if _utc(START) <= r["acq_time"] < _utc(FETCH_END + timedelta(days=1))]
     steps = clustering_steps()
     index, meta, static = backfill_tracks(rows, steps, out_dir)
