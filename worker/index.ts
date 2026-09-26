@@ -112,6 +112,55 @@ export async function dispatchRefresh(
   return { status: response.status, body: body.slice(0, 300) };
 }
 
+/**
+ * Every workflow that carries a `schedule` trigger. GitHub disables all of
+ * them together after ~60 days without a commit on a public repo, and refresh
+ * runs commit nothing (data goes to R2), so a finished project goes dormant on
+ * its own. That stops the refresh (dispatch to a disabled workflow is a 422)
+ * AND the watchdog that exists to notice it — the watchdog's residual risk,
+ * docs/DEPLOYMENT.md "It is not a proof".
+ */
+export const WATCHDOG_WORKFLOW = "watchdog.yml";
+// CodeQL is scheduled too; reviving it is harmless and keeps the weekly scan.
+export const SCHEDULED_WORKFLOWS = [FAST_WORKFLOW, FULL_WORKFLOW, WATCHDOG_WORKFLOW, "codeql.yml"];
+
+/**
+ * Re-enable any scheduled workflow GitHub switched off for inactivity.
+ *
+ * Only `disabled_inactivity`: `disabled_manually` is a human's decision and
+ * this must never overrule it. Needs no scope beyond the dispatch token's
+ * `Actions: read and write`. Returns the workflows it re-enabled; throws on
+ * any GitHub error so the tick records it rather than a log line nobody reads.
+ */
+export async function reviveInactiveWorkflows(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const headers = {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "user-agent": UA,
+  };
+  const revived: string[] = [];
+  for (const workflow of SCHEDULED_WORKFLOWS) {
+    const url = `https://api.github.com/repos/${REPO}/actions/workflows/${workflow}`;
+    const read = await fetchImpl(url, { headers });
+    if (!read.ok) {
+      throw new Error(`[revive] reading ${workflow}: HTTP ${read.status}${explain(read.status)}`);
+    }
+    const { state } = (await read.json()) as { state?: string };
+    if (state !== "disabled_inactivity") continue;
+    const enable = await fetchImpl(`${url}/enable`, { method: "PUT", headers });
+    if (enable.status !== 204) {
+      throw new Error(
+        `[revive] enabling ${workflow}: HTTP ${enable.status}${explain(enable.status)}`,
+      );
+    }
+    revived.push(workflow);
+  }
+  return revived;
+}
+
 const MANIFEST_KEY = "data/manifest.json";
 
 /**
@@ -366,22 +415,52 @@ export default {
     // is what makes that a recorded, alertable failure rather than a log line
     // nobody reads.
     const workflow = workflowForCron(event?.cron);
-    let last: { status: number; body: string } | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      // One retry: a single transient blip would otherwise forfeit a whole slot.
-      // Auth and config faults are not retried — they will not fix themselves,
-      // and a second 401 only doubles the noise.
-      last = await dispatchRefresh(env.GH_DISPATCH_TOKEN, fetch, workflow);
-      if (last.status === 204) {
-        console.log(`[refresh] dispatched ${workflow} (cron ${event?.cron ?? "?"})`);
-        await assertNotStale(env, Date.now());
-        return;
+
+    // Undo GitHub's inactivity switch-off before dispatching into it. Full
+    // ticks only: every two hours is ample against a 60-day timer, and it
+    // keeps three extra API calls off the half-hourly path. A failure here is
+    // held, not thrown, so it can never cost the refresh; it is raised once
+    // the dispatch has been attempted.
+    let reviveError: unknown = null;
+    if (workflow === FULL_WORKFLOW) {
+      try {
+        const revived = await reviveInactiveWorkflows(env.GH_DISPATCH_TOKEN);
+        if (revived.length) console.log(`[revive] re-enabled ${revived.join(", ")}`);
+      } catch (err) {
+        reviveError = err;
       }
-      if (last.status < 500) break;
     }
-    throw new Error(
-      `[refresh] dispatch failed: HTTP ${last!.status}${explain(last!.status)}` +
-        (last!.body ? ` — ${last!.body}` : ""),
-    );
+    try {
+      await dispatchTier(workflow, event?.cron, env, env.GH_DISPATCH_TOKEN);
+    } finally {
+      if (reviveError) console.log(String(reviveError));
+    }
+    if (reviveError) throw reviveError;
   },
 };
+
+/** Dispatch one tier's workflow, retrying a 5xx once; throw on failure. */
+async function dispatchTier(
+  workflow: string,
+  cron: string | undefined,
+  env: Env,
+  token: string,
+): Promise<void> {
+  let last: { status: number; body: string } | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // One retry: a single transient blip would otherwise forfeit a whole slot.
+    // Auth and config faults are not retried — they will not fix themselves,
+    // and a second 401 only doubles the noise.
+    last = await dispatchRefresh(token, fetch, workflow);
+    if (last.status === 204) {
+      console.log(`[refresh] dispatched ${workflow} (cron ${cron ?? "?"})`);
+      await assertNotStale(env, Date.now());
+      return;
+    }
+    if (last.status < 500) break;
+  }
+  throw new Error(
+    `[refresh] dispatch failed: HTTP ${last!.status}${explain(last!.status)}` +
+      (last!.body ? ` — ${last!.body}` : ""),
+  );
+}

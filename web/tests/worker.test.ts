@@ -5,6 +5,8 @@ import worker, {
   FULL_CRON,
   dispatchRefresh,
   manifestAgeMin,
+  reviveInactiveWorkflows,
+  SCHEDULED_WORKFLOWS,
   workflowForCron,
   type Env,
 } from "../../worker/index";
@@ -151,14 +153,21 @@ describe("worker scheduled refresh trigger", () => {
     const fresh = JSON.stringify({
       layers: { events: { attempted_at: new Date().toISOString() } },
     });
-    const f = stubFetch(() => new Response(null, { status: 204 }));
+    const f = stubFetch((url) =>
+      url.endsWith("/dispatches")
+        ? new Response(null, { status: 204 })
+        : Response.json({ state: "active" }),
+    );
     try {
       await worker.scheduled!({ cron }, {
         ...env({ "data/manifest.json": fresh }),
         GH_DISPATCH_TOKEN: "x",
       } as Env);
-      expect(f.calls).toHaveLength(1);
-      expect(f.calls[0].url).toContain(`/actions/workflows/${workflow}/dispatches`);
+      const dispatches = f.calls.filter((c) => c.url.endsWith("/dispatches"));
+      expect(dispatches).toHaveLength(1);
+      expect(dispatches[0].url).toContain(`/actions/workflows/${workflow}/dispatches`);
+      // Only the full tier checks for GitHub's inactivity switch-off.
+      expect(f.calls.length - 1).toBe(workflow === "refresh-full.yml" ? SCHEDULED_WORKFLOWS.length : 0);
     } finally {
       f.restore();
     }
@@ -237,6 +246,108 @@ describe("worker scheduled refresh trigger", () => {
       console.log = spy;
       f.restore();
     }
+  });
+});
+
+describe("worker revives workflows GitHub disabled for inactivity", () => {
+  const fresh = () =>
+    JSON.stringify({ layers: { events: { attempted_at: new Date().toISOString() } } });
+
+  function github(states: Record<string, string>, enableStatus = 204) {
+    const calls: { url: string; method: string }[] = [];
+    const impl = (async (url: string, init: RequestInit = {}) => {
+      const method = init.method ?? "GET";
+      calls.push({ url, method });
+      if (url.endsWith("/dispatches")) return new Response(null, { status: 204 });
+      if (url.endsWith("/enable")) return new Response(null, { status: enableStatus });
+      const wf = url.split("/").pop()!;
+      return Response.json({ state: states[wf] ?? "active" });
+    }) as unknown as typeof fetch;
+    return { calls, impl };
+  }
+
+  it("covers every workflow that has a schedule trigger", () => {
+    // Read from .github/workflows, so a new scheduled workflow that this list
+    // forgets would go dormant with the repo and never come back.
+    const files = import.meta.glob("../../.github/workflows/*.yml", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const scheduled = Object.entries(files)
+      .filter(([, body]) => /^\s+schedule:/m.test(body))
+      .map(([path]) => path.split("/").pop()!);
+    expect(scheduled.length).toBeGreaterThan(0);
+    expect([...SCHEDULED_WORKFLOWS].sort()).toEqual(scheduled.sort());
+  });
+
+  it("re-enables only the inactivity-disabled ones, never a manual disable", async () => {
+    const g = github({
+      "refresh-fast.yml": "disabled_inactivity",
+      "refresh-full.yml": "disabled_manually",
+      "watchdog.yml": "disabled_inactivity",
+    });
+    const revived = await reviveInactiveWorkflows("tok", g.impl);
+    expect(revived).toEqual(["refresh-fast.yml", "watchdog.yml"]);
+    const enables = g.calls.filter((c) => c.method === "PUT").map((c) => c.url);
+    expect(enables).toEqual([
+      expect.stringContaining("/actions/workflows/refresh-fast.yml/enable"),
+      expect.stringContaining("/actions/workflows/watchdog.yml/enable"),
+    ]);
+  });
+
+  it("touches nothing when every workflow is active", async () => {
+    const g = github({});
+    expect(await reviveInactiveWorkflows("tok", g.impl)).toEqual([]);
+    expect(g.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("throws when GitHub refuses the enable", async () => {
+    const g = github({ "watchdog.yml": "disabled_inactivity" }, 403);
+    await expect(reviveInactiveWorkflows("tok", g.impl)).rejects.toThrow(/watchdog.yml.*403/);
+  });
+
+  it("revives before the full tick dispatches, so the dispatch lands", async () => {
+    const g = github({ "refresh-full.yml": "disabled_inactivity" });
+    const real = globalThis.fetch;
+    globalThis.fetch = g.impl;
+    try {
+      await worker.scheduled!({ cron: FULL_CRON }, {
+        ...env({ "data/manifest.json": fresh() }),
+        GH_DISPATCH_TOKEN: "x",
+      } as Env);
+    } finally {
+      globalThis.fetch = real;
+    }
+    const order = g.calls.map((c) => c.url.split("/").slice(-2).join("/"));
+    expect(order.indexOf("refresh-full.yml/enable")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("refresh-full.yml/enable")).toBeLessThan(
+      order.indexOf("refresh-full.yml/dispatches"),
+    );
+  });
+
+  it("still dispatches when the revive check fails, then reports the failure", async () => {
+    const calls: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/dispatches")) return new Response(null, { status: 204 });
+      return new Response("rate limited", { status: 403 });
+    }) as unknown as typeof fetch;
+    const spy = console.log;
+    console.log = () => {};
+    try {
+      await expect(
+        worker.scheduled!({ cron: FULL_CRON }, {
+          ...env({ "data/manifest.json": fresh() }),
+          GH_DISPATCH_TOKEN: "x",
+        } as Env),
+      ).rejects.toThrow(/\[revive\].*403/);
+    } finally {
+      globalThis.fetch = real;
+      console.log = spy;
+    }
+    expect(calls.some((u) => u.endsWith("refresh-full.yml/dispatches"))).toBe(true);
   });
 });
 

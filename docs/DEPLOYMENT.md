@@ -212,9 +212,18 @@ order they will actually reach you:
    the Worker serving `/data/**` too, so a healthy bucket behind a broken Worker
    still reads as broken — which is what a visitor gets.
 
-   **It is not a proof.** GitHub disables scheduled workflows after ~60 days of
-   repository inactivity, so on a dormant repo the watchdog dies the same quiet
-   way it exists to catch. Closing that properly needs a third party outside
+   GitHub disables every scheduled workflow after ~60 days without a commit on
+   a public repo, and refresh runs commit nothing, so a quiet repo would lose
+   the refresh *and* the watchdog together. The Worker undoes that: each full
+   tick reads the state of every scheduled workflow (`SCHEDULED_WORKFLOWS` in
+   `worker/index.ts`, pinned against `.github/workflows/` by a test) and
+   re-enables any that are `disabled_inactivity` before dispatching. A
+   `disabled_manually` workflow is left alone. It uses the dispatch token's
+   existing `Actions: read and write`; nothing new to grant.
+
+   **It is not a proof.** The watchdog and the Worker now each keep the other
+   alive, but both going down at once (the Worker gone *and* its token
+   expired, say) is still silent. Closing that needs a third party outside
    both Cloudflare and GitHub.
 
 4. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
