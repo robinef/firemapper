@@ -45,6 +45,22 @@ describe("breakdownHtml", () => {
     expect(html).toContain("2 fires");
   });
 
+  it("doubles as the blob's legend: a swatch in each country's band colour, and a row that selects it", () => {
+    const html = breakdownHtml(
+      [{ country: "FR", areaKm2: 1, fireCount: 1 }, { country: "MT", areaKm2: 1, fireCount: 1 }],
+      (c) => (c === "FR" ? { key: "FR", color: "#4e79a7" } : { key: "Other", color: "#9c9c9c" }),
+    );
+    expect(html).toContain('class="blob-swatch" style="background:#4e79a7"');
+    expect(html).toContain('role="button" tabindex="0" data-band="FR"');
+    // A country folded into Other selects the Other band.
+    expect(html).toContain('data-band="Other"');
+  });
+
+  it("escapes the band key it writes into an attribute", () => {
+    const html = breakdownHtml([{ country: "x", areaKm2: 1, fireCount: 1 }], () => ({ key: '"><img>', color: "#000" }));
+    expect(html).not.toContain('"><img>');
+  });
+
   it("uses singular 'fire' for a count of one", () => {
     const html = breakdownHtml([{ country: "FR", areaKm2: 1, fireCount: 1 }]);
     expect(html).toContain("1 fire");
@@ -58,7 +74,7 @@ describe("breakdownHtml", () => {
   });
 
   it("says so when there are no fires yet", () => {
-    expect(breakdownHtml([])).toContain("No fires");
+    expect(breakdownHtml([])).toContain("No EU-27 fires");
   });
 });
 
@@ -84,6 +100,20 @@ describe("showScaleBlobPanel / hideScaleBlobPanel", () => {
     await showScaleBlobPanel(container, 2026, fetchImpl as unknown as typeof fetch);
 
     expect(container.innerHTML).toContain("FR");
+  });
+
+  it("lists EU-27 countries only — the bands the blob draws", async () => {
+    const container = document.createElement("div");
+    const summary: FiresSummary = {
+      a: { country: "FR", area_km2: 5 },
+      b: { country: "UA", area_km2: 900 },
+      c: { country: null, area_km2: 3 },
+    };
+    await showScaleBlobPanel(container, 2026, fetch, Promise.resolve(summary));
+    expect(container.innerHTML).toContain("EU-27 fires by country");
+    expect(container.querySelectorAll(".fc-stat")).toHaveLength(1);
+    expect(container.innerHTML).not.toContain("UA");
+    expect(container.innerHTML).not.toContain("Unknown");
   });
 
   it("leaves the container empty when the fetch fails", async () => {

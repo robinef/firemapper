@@ -492,6 +492,12 @@ body.compare-mode #fire-readout { display: none; }
    a heavy fire year could touch a few dozen countries. */
 #scale-blob-breakdown { max-height: 220px; overflow-y: auto; }
 #scale-blob-breakdown:empty { display: none; }
+/* The panel is the blob's legend: each country row carries its band's colour. */
+.blob-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+  border-radius: 2px; vertical-align: -1px; }
+.blob-row { cursor: pointer; border-radius: 4px; }
+.blob-row:hover, .blob-row:focus-visible { background: rgba(255,255,255,0.06); }
+.blob-row.selected { background: rgba(255,255,255,0.14); }
 #scale-blob-breakdown .fc-title { font-size: 13px; margin: 8px 0 6px; }
 #scale-blob-breakdown .fc-stat { padding: 4px 0; font-size: 12px;
   border-bottom: 1px solid rgba(255,255,255,.06); }

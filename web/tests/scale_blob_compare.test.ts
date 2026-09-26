@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as maplibregl from "maplibre-gl";
 import { emitUi } from "../src/ui_events";
 import { deactivateScaleBlob, isScaleBlobActive } from "../src/layer_scale_blob";
-import type { ScaleBlobCell } from "../src/layer_scale_blob";
 import type { FiresSummary } from "../src/types";
 
 // Same import-time guards as tests/ui_events_wiring.test.ts: maplibre-gl calls
@@ -21,9 +20,9 @@ vi.mock("../src/layer_imagery", async (importOriginal) => {
   return { ...actual, ImagerySwipe: class { destroy() {} } };
 });
 
-const sampleBlob: ScaleBlobCell[] = [
-  { fire_id: "fire-1", cell_id: "cell-a", res: 8, vertices_m: [[0, 0], [10, 0], [10, 10], [0, 10]] },
-];
+/** Anything that isn't the fires summary: the blob no longer requests any
+ * other file, so a hit here would be a regression, and a 404 makes it loud. */
+const notFound = { ok: false, json: async () => null };
 
 /** Minimal stand-in for the real map, in the style of
  *  tests/layer_scale_blob.test.ts — a real jsdom <canvas> so the layer's native
@@ -48,6 +47,9 @@ function stubMap() {
     },
     getCanvas: () => canvas,
     getCenter: () => ({ lat: 45, lng: 5 }),
+    getBounds: () => ({ contains: () => true }),
+    easeTo: vi.fn(),
+    setPaintProperty: vi.fn(),
     _layers: layers,
     _sources: sources,
   } as unknown as maplibregl.Map & { _layers: string[]; _sources: Record<string, unknown> };
@@ -87,14 +89,14 @@ describe("scale blob vs compare mode", () => {
       Promise.resolve(
         url.includes("_fires.json")
           ? { ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) }
-          : { ok: true, json: async () => sampleBlob },
+          : notFound,
       ),
     );
     vi.stubGlobal("fetch", fetchSpy);
 
     const off = wireScaleBlobToggle(map, btn, breakdown);
     btn.click();
-    // The click handler is async (fetch → addSource → fetch the breakdown); let it settle.
+    // The click handler is async (fetch the summary → addSource → render the breakdown); let it settle.
     await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
     await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
     expect(map._layers).toContain("scale-blob-fill");
@@ -130,12 +132,11 @@ describe("scale blob vs compare mode", () => {
     off();
   });
 
-  it("a slow country-breakdown fetch that resolves after deactivation does not repopulate the panel", async () => {
-    // The panel fetch is fire-and-forget (activation doesn't wait on it) —
-    // so it can still be in flight when the reader deactivates the blob
-    // before it resolves. Without a recheck, the stale resolve would
-    // silently write country stats back into a panel for a blob that's no
-    // longer shown.
+  it("a slow summary that resolves after compare:enter neither shows the blob nor fills the panel", async () => {
+    // The shape and the panel wait on the same summary. If the reader leaves
+    // for compare mode while it is still loading, the late resolve must not
+    // add the shape over the compared imagery, fill the panel, or relabel the
+    // reset button "unavailable".
     const { wireScaleBlobToggle } = await import("../src/main");
     const map = stubMap();
     const btn = button();
@@ -148,27 +149,31 @@ describe("scale blob vs compare mode", () => {
           resolveFiresFetch = resolve;
         });
       }
-      return Promise.resolve({ ok: true, json: async () => sampleBlob });
+      return Promise.resolve(notFound);
     });
     vi.stubGlobal("fetch", fetchSpy);
 
     const off = wireScaleBlobToggle(map, btn, breakdown);
     btn.click();
-    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
-    expect(breakdown.innerHTML).toBe(""); // fires.json fetch still pending
-
-    // Deactivate before the pending fetch ever resolves.
-    btn.click();
-    expect(isScaleBlobActive()).toBe(false);
-    expect(breakdown.innerHTML).toBe("");
-
-    // Now let the stale fetch resolve.
-    resolveFiresFetch({ ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) });
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-    // A tick for the .then() guard to run after the promise settles.
+    expect(btn.textContent).toBe("Loading…");
+
+    emitUi("compare:enter");
+    resolveFiresFetch({ ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) });
+    await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
 
+    expect(isScaleBlobActive()).toBe(false);
+    expect(map._layers).toEqual([]);
     expect(breakdown.innerHTML).toBe("");
+    expect(btn.textContent).toBe("Compare fire scale");
+    expect(btn.disabled).toBe(false);
+
+    // ...and the next click still works: the cancelled load left no wedge.
+    btn.click();
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    resolveFiresFetch({ ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) });
+    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
 
     off();
     vi.unstubAllGlobals();
@@ -207,7 +212,7 @@ describe("scale blob country breakdown source", () => {
       return Promise.resolve(
         url.includes("_fires.json")
           ? { ok: true, json: async () => firesJson }
-          : { ok: true, json: async () => sampleBlob },
+          : notFound,
       );
     });
     return { spy, urls, firesRequests: () => urls.filter((u) => u.includes("_fires.json")) };
@@ -229,9 +234,9 @@ describe("scale blob country breakdown source", () => {
     await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
     await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
 
-    // The blob geometry is still fetched — it is a different file. The fires
-    // summary is not fetched at all.
+    // The shape is built from the same summary: nothing is fetched at all.
     expect(firesRequests()).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
 
     off();
     vi.unstubAllGlobals();
@@ -257,22 +262,21 @@ describe("scale blob country breakdown source", () => {
     await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
     await vi.waitFor(() => expect(breakdown.innerHTML).toContain("FR"));
 
-    const blobs = urls.filter((u) => /blob_\d{4}\.json/.test(u));
-    expect(blobs.length).toBeGreaterThan(0);
-    expect(blobs.every((u) => u.includes(`blob_${shown}.json`))).toBe(true);
+    // The shape is labelled with the shown season, built from its summary.
+    const label = (map._sources["scale-blob-label"] as { data: GeoJSON.FeatureCollection }).data;
+    expect(label.features[0].properties!.text).toContain(`EU-27 fires, ${shown}`);
     // The given promise is the shown season's, so it is used as-is.
+    expect(urls).toHaveLength(0);
     expect(firesRequests()).toHaveLength(0);
 
     off();
     vi.unstubAllGlobals();
   });
 
-  // The enclosing try/catch in the click handler has already returned by the
-  // time this promise settles, and the fallback path can genuinely reject:
-  // fetchFiresSummary does not swallow a network error the way
-  // data.ts::loadFiresSummary does. The blob itself activated fine, so the
-  // reader must get the shape, an empty breakdown, and no console noise.
-  it("survives a rejected countries fetch", async () => {
+  // The shape is built from the summary, so a failed summary load means no
+  // shape: the button says so, and the rejection is handled rather than left
+  // for the console.
+  it("a rejected summary fetch leaves the blob unavailable, with no unhandled rejection", async () => {
     const { wireScaleBlobToggle } = await import("../src/main");
     const map = stubMap();
     const btn = button();
@@ -280,8 +284,7 @@ describe("scale blob country breakdown source", () => {
     const unhandled = vi.fn();
     // `process` is the only place an unhandled rejection surfaces under the
     // vitest runner, and @types/node is deliberately not in this tsconfig
-    // (the app is browser-only) — hence the local shape, same pattern as
-    // main.ts's navigator.connection.
+    // (the app is browser-only) — hence the local shape.
     const proc = (globalThis as unknown as {
       process: {
         on(e: string, fn: () => void): void;
@@ -289,23 +292,15 @@ describe("scale blob country breakdown source", () => {
       };
     }).process;
     proc.on("unhandledRejection", unhandled);
-    const spy = vi.fn((url: string) =>
-      url.includes("_fires.json")
-        ? Promise.reject(new Error("network down"))
-        : Promise.resolve({ ok: true, json: async () => sampleBlob }),
-    );
-    vi.stubGlobal("fetch", spy);
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("network down"))));
 
     const off = wireScaleBlobToggle(map, btn, breakdown);
     btn.click();
-    await vi.waitFor(() => expect(isScaleBlobActive()).toBe(true));
-    // Let the rejection settle AND give node a turn to report it if nobody
-    // caught it — an unhandledRejection fires at the end of the event loop
-    // turn, not on the microtask queue.
+    await vi.waitFor(() => expect(btn.textContent).toBe("Compare fire scale (unavailable)"));
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(btn.textContent).toBe("Exit fire-scale compare");
+    expect(isScaleBlobActive()).toBe(false);
     expect(breakdown.innerHTML).toBe("");
     expect(unhandled).not.toHaveBeenCalled();
 
@@ -352,7 +347,7 @@ describe("scale blob vs opening a fire card", () => {
       Promise.resolve(
         url.includes("_fires.json")
           ? { ok: true, json: async () => ({ "fire-1": { country: "FR", area_km2: 3.2 } }) }
-          : { ok: true, json: async () => sampleBlob },
+          : notFound,
       ),
     );
     vi.stubGlobal("fetch", fetchSpy);
@@ -397,5 +392,42 @@ describe("scale blob vs opening a fire card", () => {
     expect(uiSubscriberCount("detail:open")).toBe(before + 1);
     off();
     expect(uiSubscriberCount("detail:open")).toBe(before);
+  });
+});
+
+describe("scale blob legend rows", () => {
+  it("a click on a panel row selects its band, and the map's selection marks the row", async () => {
+    const { wireScaleBlobToggle } = await import("../src/main");
+    const { scaleBlobSelection, selectScaleBlobBand } = await import("../src/layer_scale_blob");
+    const map = stubMap();
+    const btn = button();
+    const breakdown = breakdownEl();
+    const off = wireScaleBlobToggle(map, btn, breakdown, {
+      year: new Date().getUTCFullYear(),
+      promise: Promise.resolve({
+        a: { country: "FR", area_km2: 30 },
+        b: { country: "ES", area_km2: 12 },
+      }),
+    });
+    btn.click();
+    await vi.waitFor(() => expect(breakdown.querySelector('[data-band="ES"]')).not.toBeNull());
+
+    const es = breakdown.querySelector<HTMLElement>('[data-band="ES"]')!;
+    es.click();
+    expect(scaleBlobSelection()).toBe("ES");
+    expect(es.classList.contains("selected")).toBe(true);
+
+    // Keyboard: Enter on the FR row switches the selection.
+    const fr = breakdown.querySelector<HTMLElement>('[data-band="FR"]')!;
+    fr.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(scaleBlobSelection()).toBe("FR");
+    expect(es.classList.contains("selected")).toBe(false);
+    expect(fr.getAttribute("aria-pressed")).toBe("true");
+
+    // Selected from the map side: the row follows.
+    selectScaleBlobBand("FR");
+    expect(fr.classList.contains("selected")).toBe(false);
+
+    off();
   });
 });

@@ -1,15 +1,26 @@
-// Draggable, packed scale-comparison blob — see
+// Draggable scale-comparison blob — see
 // docs/superpowers/specs/2026-09-09-fire-scale-blob-design.md.
 // Deliberately NOT a registry.ts LayerModule: this shape has no fixed
 // geographic position and is driven by drag, not a visibility toggle. It
 // manages its own maplibre source/layer lifecycle and its own pointer
 // listeners, independent of the registry system.
 //
-// Interaction: click once to select (a highlighted outline + bumped
-// opacity), then drag while selected. Clicking the shape again, or clicking
-// anywhere else on the map, deselects it. This is deliberately two steps —
-// a bare click-and-drag on an unselected shape does nothing — so casually
-// panning the map near it can never accidentally pick it up.
+// Geometry comes from scale_blob_shape.ts: the year's fires packed on the
+// pipeline's spiral, one band per country, dissolved to a few polygons. It is
+// built from the per-fire summary the breakdown panel already loads — the
+// per-hex archive/blob_{year}.json (57 MB, 163k polygons) is no longer read.
+//
+// Interaction: press on the shape and drag — one gesture. A click (a press
+// that doesn't move) on a band selects that country: its band stays lit, the
+// rest dim, and the label quotes it. Clicking it again, or clicking off the
+// shape, clears the selection. The breakdown panel's rows select the same way
+// (main.ts wires them through selectScaleBlobBand/onScaleBlobSelection).
+//
+// The cursor ("grab" over the shape) and the label say it can be dragged. It
+// used to take two steps (click to select, then drag) so that panning near the
+// shape could never pick it up; nothing told the reader about the first step,
+// so the shape read as not draggable at all. Panning still works anywhere off
+// the shape.
 //
 // Pointer handling note: maplibre-gl's Map.on("mousedown"/"touchstart", ...)
 // only exposes maplibre's own wrapped mouse/touch events, not native Pointer
@@ -22,113 +33,196 @@
 // native canvas events), and converts canvas-pixel coordinates to a map
 // lngLat with map.unproject.
 //
-// Drag performance: with thousands of real hexes, recomputing every vertex's
-// lat/lon AND re-uploading the whole GeoJSON source (setData) on every single
-// pointermove was the actual lag, not H3 rendering itself. During a drag this
-// now only sets the fill/line layers' `-translate` paint properties — a pure
-// GPU-side pixel offset, no geometry touched at all — and defers the one real
-// geometry recompute (project the current drop point, add the pixel delta,
-// unproject, setData) to pointerup. This is also more exact than the old
-// per-frame approach: `-translate` tracks literal screen pixels, so the
-// shape follows the cursor with zero approximation error until the single
-// unproject at drop time.
+// Drag performance: the shape is a few polygons (~30k vertices for 2026), so
+// a drag re-projects it and calls setData once per animation frame. The old
+// 163k-hex shape could not afford that and moved by `fill-translate` instead,
+// which maplibre clips at each tile's edge: mid-drag the shape was sliced
+// into strips and only reassembled on drop.
 // maplibre-gl 6 is ESM-only and has no default export (see
 // layer_imagery.ts's own import) — a type-only namespace import is the form
 // that actually resolves against the installed package.
 import type * as maplibregl from "maplibre-gl";
 import { checkExtentBudget, projectVertices } from "./geo_local";
-import { hashColor, outlineFor } from "./palette";
-
-export type ScaleBlobCell = {
-  fire_id: string;
-  cell_id: string;
-  res: number;
-  vertices_m: [number, number][];
-};
+import { fetchFiresSummary } from "./scale_blob_panel";
+import { OTHER_KEY, buildBlobShape, euOnly, type BlobGroup, type BlobShape } from "./scale_blob_shape";
+import type { FiresSummary } from "./types";
 
 const SOURCE_ID = "scale-blob";
+const LABEL_SOURCE_ID = "scale-blob-label";
 const LAYER_ID = "scale-blob-fill";
 const OUTLINE_LAYER_ID = "scale-blob-outline";
-const DATA_BASE = "/data";
+const LABEL_LAYER_ID = "scale-blob-label";
+
+/** Where the blob first lands, [lng, lat]: Paris. An EU-27 total laid over a
+ * place most readers can size by eye, rather than wherever the viewport
+ * happened to be (often the sea, or a corner of the map). */
+export const DEFAULT_DROP: [number, number] = [2.3522, 48.8566];
+
+const FILL_OPACITY = 0.6;
+const FILL_OPACITY_DRAGGING = 0.8;
+const FILL_OPACITY_SELECTED = 0.9;
+const FILL_OPACITY_UNSELECTED = 0.2;
 
 // A pointerdown/pointerup pair whose total movement stays within this many
-// CSS px is a click, not a drag attempt — same tolerance maplibre's own
-// click-vs-drag distinction uses (map_event.ts's default clickTolerance).
+// CSS px is a click, not a drag — same tolerance maplibre's own click-vs-drag
+// distinction uses (map_event.ts's default clickTolerance).
 const CLICK_TOLERANCE_PX = 3;
 
 let active = false;
 let activating = false;
-let cells: ScaleBlobCell[] = [];
+// Bumped by every deactivation. An activation still waiting on its summary
+// when the reader turns the blob off (or compare:enter / detail:open does it
+// for them) finds the generation moved on and adds nothing.
+let generation = 0;
+let shape: BlobShape = { groups: [], polygonsM: [] };
+let blobYear = 0;
+let totalKm2 = 0;
+let defaultLabel = "";
+let selectedKey: string | null = null;
+let selectionListener: ((key: string | null) => void) | null = null;
+// The band a press landed on, so its release can select it if it didn't move.
+let pressedBand: string | null = null;
+// A press off the shape, tracked only to tell a click-away (clears the
+// selection) from the start of a map pan (leaves it alone).
+let offShapePress: { pointerId: number; point: [number, number] } | null = null;
 let dropLat = 0;
 let dropLon = 0;
-// The shape is only draggable once selected — a single click (not a drag)
-// toggles selection. This exists so a stray drag on the map, or just
-// scanning around, can't move the shape by accident; picking it up is a
-// deliberate two-step "select, then drag" action.
-let selected = false;
 let dragging = false;
+let hovering = false;
 let activePointerId: number | null = null;
 let pointerDownPoint: [number, number] | null = null;
-let pointerDownWasSelected = false;
 let dragPanWasEnabled = false;
+// Where the drop point was on screen when the drag started, and where it was
+// on the map: every frame places the shape at start + pointer delta, and a
+// cancelled drag goes back to the start.
+let dragStartScreen: { x: number; y: number } | null = null;
+let dragStartLngLat: [number, number] = [0, 0];
+let pendingDelta: [number, number] | null = null;
+let moveFrame: number | null = null;
 let currentMap: maplibregl.Map | null = null;
 let currentCanvas: HTMLCanvasElement | null = null;
-
-/** Every hex now occupies its own distinct spiral position (pack_blob.py),
- * so overlap — same-fire or cross-fire — is no longer possible; this is
- * just a stable render order, so painting order is deterministic across
- * reloads rather than depending on object insertion order. */
-function sortedForStableRenderOrder(cellList: ScaleBlobCell[]): ScaleBlobCell[] {
-  return [...cellList].sort((a, b) => a.cell_id.localeCompare(b.cell_id));
-}
 
 function toGeoJSON(): GeoJSON.FeatureCollection {
   // The tangent-plane projection is only guaranteed area-accurate within a
   // 500 km / 2% extent budget (see geo_local.ts). checkExtentBudget logs its
   // own warning when exceeded; rendering proceeds regardless — the shape
   // stays usable, only the accuracy guarantee degrades.
-  checkExtentBudget(cells.map((c) => c.vertices_m));
+  checkExtentBudget(shape.polygonsM.flat(2));
   return {
     type: "FeatureCollection",
-    features: sortedForStableRenderOrder(cells).map((cell) => {
-      const color = hashColor(cell.fire_id);
-      return {
+    features: shape.groups.map((group, i) => ({
+      type: "Feature",
+      properties: { country: group.key, color: group.color },
+      geometry: {
+        type: "MultiPolygon",
+        coordinates: shape.polygonsM[i].map((poly) =>
+          poly.map((ring) => projectVertices(ring, dropLat, dropLon)),
+        ),
+      },
+    })),
+  };
+}
+
+function labelGeoJSON(): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
         type: "Feature",
-        properties: {
-          fire_id: cell.fire_id,
-          cell_id: cell.cell_id,
-          res: cell.res,
-          color,
-          stroke: outlineFor(color),
-          // Selection is a single shared state for the whole shape, not
-          // per-fire — baked onto every feature so the paint expressions
-          // below can react to it without an imperative setPaintProperty
-          // call on every toggle.
-          selected,
-        },
-        geometry: {
-          type: "Polygon",
-          coordinates: [projectVertices(cell.vertices_m, dropLat, dropLon)],
-        },
-      };
-    }),
+        properties: { text: labelText() },
+        geometry: { type: "Point", coordinates: [dropLon, dropLat] },
+      },
+    ],
   };
 }
 
 function render(map: maplibregl.Map): void {
-  const source = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
-  source?.setData(toGeoJSON());
+  (map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined)?.setData(toGeoJSON());
+  (map.getSource(LABEL_SOURCE_ID) as maplibregl.GeoJSONSource | undefined)?.setData(labelGeoJSON());
 }
 
-/** Toggle the shape's selected/draggable state, re-render so the highlight
- * (opacity bump + outline) reflects it immediately, and update the cursor:
- * "pointer" (click to pick up) when unselected, "grab" when selected and
- * ready to drag. */
-function setSelected(value: boolean): void {
-  if (selected === value) return;
-  selected = value;
-  if (currentMap) render(currentMap);
-  if (currentCanvas && !dragging) currentCanvas.style.cursor = selected ? "grab" : "pointer";
+function formatKm2(km2: number): string {
+  const rounded = km2 >= 1000 ? Math.round(km2 / 100) * 100 : Math.round(km2);
+  return `${rounded.toLocaleString("en-GB")} km²`;
+}
+
+/** "EU-27 fires, 2026 · 38,400 km² detected" — real detected area, as the
+ * panel quotes it. Never "all fires" or "burned" (index.html's
+ * #scale-blob-note says why): the shape is the detected footprint of archived
+ * fires only. */
+export function blobLabel(year: number, summary: FiresSummary): string {
+  const km2 = Object.values(summary).reduce((s, f) => s + f.area_km2, 0);
+  return `EU-27 fires, ${year} · ${formatKm2(km2)} detected\nDrag to compare`;
+}
+
+let regionNames: Intl.DisplayNames | null = null;
+
+/** "France" for "FR"; the code itself if the browser can't name it. */
+function countryName(key: string): string {
+  if (key === OTHER_KEY) return "Other countries";
+  try {
+    regionNames ??= new Intl.DisplayNames(["en"], { type: "region" });
+    return regionNames.of(key) ?? key;
+  } catch {
+    return key;
+  }
+}
+
+/** "France · 5,600 km² · 875 fires\n14.6% of the EU-27 total, 2026" */
+export function bandLabel(group: BlobGroup, year: number, allKm2: number): string {
+  const share = allKm2 > 0 ? (100 * group.areaKm2) / allKm2 : 0;
+  const fires = `${group.fires.toLocaleString("en-GB")} fire${group.fires === 1 ? "" : "s"}`;
+  return `${countryName(group.key)} · ${formatKm2(group.areaKm2)} · ${fires}\n${share.toFixed(1)}% of the EU-27 total, ${year}`;
+}
+
+function labelText(): string {
+  const group = shape.groups.find((g) => g.key === selectedKey);
+  return group ? bandLabel(group, blobYear, totalKm2) : defaultLabel;
+}
+
+/** Paint the selection and the held state: the selected band lit, the others
+ * dimmed; with nothing selected, one opacity for all, brighter while held. */
+function applyStyle(): void {
+  const map = currentMap;
+  if (!map?.getLayer(LAYER_ID)) return;
+  const base = dragging ? FILL_OPACITY_DRAGGING : FILL_OPACITY;
+  const isSelected = ["==", ["get", "country"], selectedKey ?? ""];
+  map.setPaintProperty(
+    LAYER_ID,
+    "fill-opacity",
+    selectedKey === null ? base : (["case", isSelected, FILL_OPACITY_SELECTED, FILL_OPACITY_UNSELECTED] as never),
+  );
+  if (map.getLayer(OUTLINE_LAYER_ID)) {
+    map.setPaintProperty(OUTLINE_LAYER_ID, "line-width", ["case", isSelected, 3, 1.2] as never);
+  }
+}
+
+function setSelection(key: string | null): void {
+  const next = key !== null && shape.groups.some((g) => g.key === key) ? key : null;
+  if (next === selectedKey) return;
+  selectedKey = next;
+  applyStyle();
+  (currentMap?.getSource(LABEL_SOURCE_ID) as maplibregl.GeoJSONSource | undefined)?.setData(labelGeoJSON());
+  selectionListener?.(selectedKey);
+}
+
+/** Select a country's band from outside the map (the breakdown panel). A
+ * country folded into "Other" selects the Other band; null clears. Selecting
+ * the band already selected clears it, like a second click on the map. */
+export function selectScaleBlobBand(key: string | null): void {
+  if (!active) return;
+  setSelection(key !== null && key === selectedKey ? null : key);
+}
+
+/** The selected band's key (a country code, or OTHER_KEY), or null. */
+export function scaleBlobSelection(): string | null {
+  return selectedKey;
+}
+
+/** One listener, told every time the selection changes (including to null).
+ * Pass null to unsubscribe. */
+export function onScaleBlobSelection(listener: ((key: string | null) => void) | null): void {
+  selectionListener = listener;
 }
 
 /** Canvas-relative CSS-pixel coordinates for a pointer event, via
@@ -154,144 +248,154 @@ function capturePointer(pointerId: number): void {
   }
 }
 
-// A single exact pixel can miss a real click near a hex boundary — WebGL
-// polygon rasterization/anti-aliasing leaves a sub-pixel seam between two
-// adjacent fills where neither one's hit test claims that pixel. Querying a
-// small box around the point instead of the point itself is the standard
-// maplibre workaround, and gives clicks near an edge the same forgiveness a
-// human finger or a slightly-off mouse click needs anyway.
+// A single exact pixel can miss a press on the seam between two bands — WebGL
+// anti-aliasing leaves a sub-pixel gap where neither fill claims the pixel.
+// Querying a small box around the point is the standard maplibre workaround.
 const HIT_TEST_BUFFER_PX = 3;
+
+function shapeHits(point: [number, number]): maplibregl.MapGeoJSONFeature[] {
+  if (!currentMap) return [];
+  const box: [maplibregl.PointLike, maplibregl.PointLike] = [
+    [point[0] - HIT_TEST_BUFFER_PX, point[1] - HIT_TEST_BUFFER_PX],
+    [point[0] + HIT_TEST_BUFFER_PX, point[1] + HIT_TEST_BUFFER_PX],
+  ];
+  return currentMap.queryRenderedFeatures(box, { layers: [LAYER_ID] });
+}
+
+function hitsShape(point: [number, number]): boolean {
+  return shapeHits(point).length > 0;
+}
 
 function onPointerDown(e: PointerEvent): void {
   if (!currentMap || !currentCanvas || dragging || pointerDownPoint !== null) return;
   const point = canvasPoint(currentCanvas, e);
-  // Native canvas events fire for the whole canvas, not just this layer —
-  // map.on("mousedown", LAYER_ID, ...) would filter that for us, but here we
-  // have to hit-test ourselves.
-  const hitBox: [maplibregl.PointLike, maplibregl.PointLike] = [
-    [point[0] - HIT_TEST_BUFFER_PX, point[1] - HIT_TEST_BUFFER_PX],
-    [point[0] + HIT_TEST_BUFFER_PX, point[1] + HIT_TEST_BUFFER_PX],
-  ];
-  const hits = currentMap.queryRenderedFeatures(hitBox, { layers: [LAYER_ID] });
+  const hits = shapeHits(point);
+  // A press off the shape is the map's: it pans as usual. Nothing here calls
+  // preventDefault/stopPropagation. It is only remembered so that, if it turns
+  // out to be a click, it can clear the selection.
   if (hits.length === 0) {
-    // A press anywhere else on the map deselects — the same "click away"
-    // convention as any selectable UI element. Left to the map's own
-    // handlers otherwise; nothing here calls preventDefault/stopPropagation.
-    setSelected(false);
+    offShapePress = { pointerId: e.pointerId, point };
     return;
   }
+  // Two bands can share the hit box on a seam; the topmost answers.
+  pressedBand = (hits[0].properties?.country as string | undefined) ?? null;
 
   activePointerId = e.pointerId;
   pointerDownPoint = point;
-  pointerDownWasSelected = selected;
   capturePointer(e.pointerId);
-
-  if (!selected) {
-    // Not yet selected: this press might turn out to be the click that
-    // selects it, but it must not move the shape or fight the map's own
-    // pan — decided on pointerup, once we know whether it was a click or a
-    // drag attempt.
-    return;
-  }
-
   dragging = true;
-  // pointerDownPoint (just captured above) IS the drag's reference point —
-  // every pointermove's `-translate` offset is measured from it, and
-  // pointerup's one real geometry commit measures the total delta from it
-  // too. No separate lat/lon "grab offset" needed: a pixel-space translate
-  // already keeps the exact grabbed point under the cursor, with no
-  // per-frame projection math at all.
+  dragStartScreen = currentMap.project([dropLon, dropLat]);
+  dragStartLngLat = [dropLon, dropLat];
 
   // Suppress the map's own pan while dragging the shape — the drag would
   // otherwise fight the map's built-in canvas drag-pan for the same pointer
-  // gesture. Restored to its prior state on release, not force-enabled, so a
-  // map configured with panning off stays off afterward.
+  // gesture. pointerdown fires before the mousedown maplibre's pan listens
+  // for, so disabling here wins the gesture. Restored to its prior state on
+  // release, not force-enabled, so a map configured with panning off stays off.
   const dragPan = currentMap.dragPan;
   if (dragPan) {
     dragPanWasEnabled = dragPan.isEnabled();
     dragPan.disable();
   }
-
+  applyStyle();
   currentCanvas.style.cursor = "grabbing";
 }
 
+// Hover hit-tests are coalesced to one per animation frame: pointermove can
+// fire far faster than the screen refreshes.
+let hoverFrame: number | null = null;
+let hoverPoint: [number, number] | null = null;
+
+function updateHover(): void {
+  hoverFrame = null;
+  if (!currentCanvas || dragging || !hoverPoint) return;
+  const over = hitsShape(hoverPoint);
+  if (over !== hovering) {
+    hovering = over;
+    currentCanvas.style.cursor = over ? "grab" : "";
+  }
+}
+
 function onPointerMove(e: PointerEvent): void {
-  if (!dragging || !currentMap || !currentCanvas || e.pointerId !== activePointerId || !pointerDownPoint) return;
+  if (!currentMap || !currentCanvas) return;
   const point = canvasPoint(currentCanvas, e);
-  const dx = point[0] - pointerDownPoint[0];
-  const dy = point[1] - pointerDownPoint[1];
-  setTranslate(currentMap, [dx, dy]);
+  if (!dragging) {
+    // A touch has no hover, and the press itself does the hit-test.
+    if (e.pointerType === "touch") return;
+    hoverPoint = point;
+    if (hoverFrame === null) hoverFrame = requestAnimationFrame(updateHover);
+    return;
+  }
+  if (e.pointerId !== activePointerId || !pointerDownPoint) return;
+  // Coalesced to one geometry update per frame: pointermove can outpace the
+  // screen, and only the latest position matters.
+  pendingDelta = [point[0] - pointerDownPoint[0], point[1] - pointerDownPoint[1]];
+  if (moveFrame === null) moveFrame = requestAnimationFrame(applyPendingMove);
 }
 
-/** Set both layers' `-translate` in one place — every call site (a drag
- * frame, or resetting to zero) goes through this so the pair can never
- * drift out of sync, and each call checks the layer still exists first
- * (the established defensive pattern in this codebase, e.g. firecard.ts's
- * setPaintProperty calls) rather than assuming the drag can't outlive the
- * layers it's animating. */
-function setTranslate(map: maplibregl.Map, offset: [number, number]): void {
-  if (map.getLayer(LAYER_ID)) map.setPaintProperty(LAYER_ID, "fill-translate", offset);
-  if (map.getLayer(OUTLINE_LAYER_ID)) map.setPaintProperty(OUTLINE_LAYER_ID, "line-translate", offset);
+function applyPendingMove(): void {
+  moveFrame = null;
+  if (dragging && pendingDelta) moveBy(pendingDelta[0], pendingDelta[1]);
 }
 
-/** The one real geometry update per drag: project the current true drop
- * point to screen space, add the total pixel delta the drag moved, unproject
- * back to a real lngLat, commit it via render()'s setData, then zero the
- * `-translate` paint properties (the geometry itself now reflects the new
- * position, so leaving a stale translate would double-offset it). Only
- * called for a genuine drag with real movement — see onPointerUp. */
-function commitDrag(dx: number, dy: number): void {
-  if (!currentMap) return;
-  const screenPos = currentMap.project([dropLon, dropLat]);
-  const newLngLat = currentMap.unproject([screenPos.x + dx, screenPos.y + dy]);
-  dropLat = newLngLat.lat;
-  dropLon = newLngLat.lng;
+/** Place the shape at the drag's start + (dx, dy) screen pixels. */
+function moveBy(dx: number, dy: number): void {
+  if (!currentMap || !dragStartScreen) return;
+  const lngLat = currentMap.unproject([dragStartScreen.x + dx, dragStartScreen.y + dy]);
+  dropLat = lngLat.lat;
+  dropLon = lngLat.lng;
   render(currentMap);
-  setTranslate(currentMap, [0, 0]);
+}
+
+function cancelPendingMove(): void {
+  if (moveFrame !== null) cancelAnimationFrame(moveFrame);
+  moveFrame = null;
+  pendingDelta = null;
 }
 
 function onPointerUp(e: PointerEvent): void {
+  if (offShapePress && e.pointerId === offShapePress.pointerId && currentCanvas) {
+    const [x, y] = canvasPoint(currentCanvas, e);
+    const click =
+      e.type !== "pointercancel" &&
+      Math.hypot(x - offShapePress.point[0], y - offShapePress.point[1]) <= CLICK_TOLERANCE_PX;
+    offShapePress = null;
+    if (click) setSelection(null);
+    return;
+  }
   if (e.pointerId !== activePointerId || !currentCanvas || pointerDownPoint === null) return;
 
   // pointercancel's coordinates aren't reliable across browsers/situations
   // (OS gesture takeover, palm rejection, a dropped touch) — never trust
-  // them for a real geometry commit. Treat a cancel as "abort the drag,
-  // keep the last committed position", the same as a plain click: not a
-  // deliberate drop, so it shouldn't toggle selection either.
+  // them for a geometry commit. A cancel keeps the last committed position.
   const isCancel = e.type === "pointercancel";
   const point = canvasPoint(currentCanvas, e);
   const dx = point[0] - pointerDownPoint[0];
   const dy = point[1] - pointerDownPoint[1];
-  const wasClick = !isCancel && Math.hypot(dx, dy) <= CLICK_TOLERANCE_PX;
+  const moved = !isCancel && Math.hypot(dx, dy) > CLICK_TOLERANCE_PX;
 
-  if (dragging) {
-    try {
-      // A plain click on an already-selected shape (no real movement), or a
-      // cancel whose coordinates can't be trusted, skips the geometry
-      // recompute entirely — with thousands of hexes, paying setData's cost
-      // for a zero-distance "drag" would be exactly the waste this fix
-      // removes. Just snap any sub-tolerance translate residue back to zero.
-      if (isCancel || wasClick) {
-        if (currentMap) setTranslate(currentMap, [0, 0]);
-      } else {
-        commitDrag(dx, dy);
-      }
-    } finally {
-      // Always release drag state, even if commitDrag threw — otherwise
-      // onPointerDown's re-entrancy guard (dragging || pointerDownPoint !==
-      // null) would wedge the shape unresponsive to every future pointer
-      // event until reload.
-      endDrag(e.pointerId);
+  try {
+    cancelPendingMove();
+    if (moved) {
+      // The exact release point, not the last frame's.
+      moveBy(dx, dy);
+    } else if (dropLon !== dragStartLngLat[0] || dropLat !== dragStartLngLat[1]) {
+      // A cancel, or a press that never left the click tolerance, but whose
+      // frames nudged the shape: put it back where it was.
+      [dropLon, dropLat] = dragStartLngLat;
+      if (currentMap) render(currentMap);
     }
-  } else {
-    releasePointerTracking(e.pointerId);
+  } finally {
+    // Always release drag state, even if moveBy threw — otherwise
+    // onPointerDown's re-entrancy guard (dragging || pointerDownPoint !==
+    // null) would wedge the shape unresponsive until reload.
+    endDrag(e.pointerId);
   }
-
-  // A click (not a drag, not a cancel) on the shape toggles selection:
-  // select it if it wasn't, deselect it if it already was. A real drag
-  // leaves it selected — the user should be able to drag again without
-  // re-clicking first.
-  if (wasClick) setSelected(!pointerDownWasSelected);
+  // A click on a band toggles its selection; a drag leaves the selection be.
+  if (!moved && !isCancel && pressedBand !== null) {
+    setSelection(pressedBand === selectedKey ? null : pressedBand);
+  }
+  pressedBand = null;
 }
 
 function releasePointerTracking(pointerId: number): void {
@@ -308,8 +412,13 @@ function releasePointerTracking(pointerId: number): void {
 
 function endDrag(pointerId: number): void {
   dragging = false;
+  dragStartScreen = null;
+  cancelPendingMove();
   releasePointerTracking(pointerId);
-  if (currentCanvas) currentCanvas.style.cursor = selected ? "grab" : "pointer";
+  // The pointer is still over the shape it just dropped.
+  hovering = true;
+  if (currentCanvas) currentCanvas.style.cursor = "grab";
+  applyStyle();
   if (currentMap?.dragPan && dragPanWasEnabled) {
     currentMap.dragPan.enable();
   }
@@ -320,76 +429,96 @@ export function isScaleBlobActive(): boolean {
 }
 
 /**
- * Fetch the current year's packed blob (once per activation — a second call
- * while already active is a no-op, matching the trigger button's toggle
- * behavior) and render it centered on the current viewport, then wire up
- * drag.
+ * Build the year's blob from its per-fire summary and render it centred on
+ * Paris (see DEFAULT_DROP), then wire up drag.
  *
- * Re-entrancy: `active` only flips true once the fetch resolves and the
- * source/layer are added, so it cannot guard a second call issued while the
- * first is still in flight (hung fetch, double-click on an undebounced
- * trigger, etc). `activating` closes that gap — set synchronously before the
- * first `await`, so a second overlapping call sees it immediately and is a
- * safe no-op, matching the already-active behavior. It's reset on every exit
- * path (the not-ok early return, success, and — via `finally` — any thrown
- * error) so a failed activation can be retried.
+ * `summaryP`: the caller's already-running load of blob_{year}_fires.json (the
+ * same one the breakdown panel renders). Given one, it is the answer —
+ * including null, "the file was tried and is not there". Without it, the file
+ * is fetched here.
+ *
+ * Re-entrancy: `active` only flips true once the summary resolves and the
+ * sources/layers are added, so it cannot guard a second call issued while the
+ * first is still in flight. `activating` closes that gap — set synchronously
+ * before the first `await`, reset on every exit path — so an overlapping
+ * second call is a safe no-op and a failed activation can be retried. A
+ * deactivation during that wait cancels it (see `generation`).
  */
 export async function activateScaleBlob(
   map: maplibregl.Map,
   year: number,
   fetchImpl: typeof fetch = fetch,
+  summaryP?: Promise<FiresSummary | null>,
 ): Promise<void> {
   if (active || activating) return;
   activating = true;
+  const gen = generation;
   try {
-    const response = await fetchImpl(`${DATA_BASE}/archive/blob_${year}.json`);
-    if (!response.ok) return;
-    cells = (await response.json()) as ScaleBlobCell[];
+    const fetched = await (summaryP ?? fetchFiresSummary(year, fetchImpl));
+    if (gen !== generation || !fetched) return;
+    const summary = euOnly(fetched);
+    shape = buildBlobShape(summary);
+    if (shape.groups.length === 0) return;
+    blobYear = year;
+    totalKm2 = Object.values(summary).reduce((s, f) => s + f.area_km2, 0);
+    defaultLabel = blobLabel(year, summary);
+    selectedKey = null;
+    pressedBand = null;
+    offShapePress = null;
 
-    const center = map.getCenter();
-    dropLat = center.lat;
-    dropLon = center.lng;
-
-    selected = false;
+    [dropLon, dropLat] = DEFAULT_DROP;
+    // Landing off-screen would read as "nothing happened": bring Paris into
+    // view, at the reader's zoom, when it isn't already.
+    if (!map.getBounds().contains(DEFAULT_DROP)) {
+      map.easeTo({ center: DEFAULT_DROP, duration: 600 });
+    }
     activePointerId = null;
     pointerDownPoint = null;
+    hovering = false;
 
     map.addSource(SOURCE_ID, { type: "geojson", data: toGeoJSON() });
+    map.addSource(LABEL_SOURCE_ID, { type: "geojson", data: labelGeoJSON() });
     map.addLayer({
       id: LAYER_ID,
       type: "fill",
       source: SOURCE_ID,
-      // fill-translate-anchor "viewport" (not "map"): during a drag the
-      // translate is set in literal screen pixels tracking the cursor —
-      // "map" would instead scale/rotate the offset with the map, which is
-      // wrong for "follow the pointer".
       paint: {
         "fill-color": ["get", "color"],
-        "fill-opacity": ["case", ["get", "selected"], 0.85, 0.6],
-        "fill-translate": [0, 0],
-        "fill-translate-anchor": "viewport",
-        // maplibre eases every Transitionable paint property (fill-translate
-        // included) over 300ms by default — without this override, each
-        // pointermove's translate update would visibly lag behind the
-        // cursor by up to 300ms instead of snapping instantly.
-        "fill-translate-transition": { duration: 0 },
+        "fill-opacity": FILL_OPACITY,
+        // The held-shape brighten is instant; maplibre would ease it over 300 ms.
+        "fill-opacity-transition": { duration: 0 },
       },
     });
-    // A border, dim even when unselected — the click-to-pick-up gesture isn't
-    // discoverable if the shape looks like flat, non-interactive fill until
-    // the moment it's clicked. Brightens and thickens once selected, so the
-    // two states still read clearly apart.
+    // One outline per country band — a few rings, not one per hex. Per-hex
+    // outlines were 1–2 px apart at overview zoom and drowned the fill.
     map.addLayer({
       id: OUTLINE_LAYER_ID,
       type: "line",
       source: SOURCE_ID,
       paint: {
-        "line-color": ["get", "stroke"],
-        "line-width": ["case", ["get", "selected"], 3, 1],
-        "line-opacity": ["case", ["get", "selected"], 1, 0.4],
-        "line-translate": [0, 0],
-        "line-translate-anchor": "viewport",
-        "line-translate-transition": { duration: 0 },
+        "line-color": "#ffffff",
+        "line-width": 1.2,
+        "line-opacity": 0.7,
+      },
+    });
+    map.addLayer({
+      id: LABEL_LAYER_ID,
+      type: "symbol",
+      source: LABEL_SOURCE_ID,
+      layout: {
+        "text-field": ["get", "text"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 13,
+        // Lines break only where the text says (\n): the default 10 em
+        // wrapped "18,400 km²" across two lines.
+        "text-max-width": 40,
+        "text-allow-overlap": true,
+        "text-ignore-placement": true,
+      },
+      paint: {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.85)",
+        "text-halo-width": 1.5,
       },
     });
 
@@ -400,12 +529,10 @@ export async function activateScaleBlob(
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
-    // "pointer" (click to select), not "grab" — dragging only works once
-    // selected, see the module doc comment.
-    canvas.style.cursor = "pointer";
     active = true;
   } finally {
-    activating = false;
+    // A cancelled activation must not clear the flag of one started after it.
+    if (gen === generation) activating = false;
   }
 }
 
@@ -413,12 +540,20 @@ export async function activateScaleBlob(
  * pointer listeners, and a captured pointer released if a drag happened to
  * be mid-flight. Safe to call even if never activated. */
 export function deactivateScaleBlob(map: maplibregl.Map): void {
+  generation++;
+  activating = false;
   if (dragging && activePointerId !== null) endDrag(activePointerId);
+  if (hoverFrame !== null) cancelAnimationFrame(hoverFrame);
+  hoverFrame = null;
+  hoverPoint = null;
 
   // Layers referencing a source must go before the source itself.
-  if (map.getLayer(OUTLINE_LAYER_ID)) map.removeLayer(OUTLINE_LAYER_ID);
-  if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
-  if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
+  for (const id of [LABEL_LAYER_ID, OUTLINE_LAYER_ID, LAYER_ID]) {
+    if (map.getLayer(id)) map.removeLayer(id);
+  }
+  for (const id of [LABEL_SOURCE_ID, SOURCE_ID]) {
+    if (map.getSource(id)) map.removeSource(id);
+  }
 
   const canvas = currentCanvas ?? map.getCanvas();
   canvas.removeEventListener("pointerdown", onPointerDown);
@@ -428,11 +563,17 @@ export function deactivateScaleBlob(map: maplibregl.Map): void {
   canvas.style.cursor = "";
 
   dragging = false;
-  selected = false;
+  hovering = false;
   activePointerId = null;
   pointerDownPoint = null;
   active = false;
-  cells = [];
+  shape = { groups: [], polygonsM: [] };
+  pressedBand = null;
+  offShapePress = null;
+  if (selectedKey !== null) {
+    selectedKey = null;
+    selectionListener?.(null);
+  }
   currentMap = null;
   currentCanvas = null;
 }

@@ -55,7 +55,7 @@ test.describe("mobile 375x812", () => {
     // than only in the stylesheet: a large mass of real fire outlines with no
     // statement that it is a PARTIAL footprint reads as the whole season.
     await expect(page.locator("#scale-blob-note")).toHaveText(
-      /detected fire footprint, archived fires only/i,
+      /EU-27 · detected fire footprint, archived fires only/i,
     );
 
     // Structurally inside #sidebar, stacked below the layer checkboxes in
@@ -134,7 +134,7 @@ test.describe("desktop 1280x800", () => {
 
     await expect(page.locator("#scale-blob-toggle")).toBeVisible();
     await expect(page.locator("#scale-blob-note")).toHaveText(
-      /detected fire footprint, archived fires only/i,
+      /EU-27 · detected fire footprint, archived fires only/i,
     );
 
     const control = await boxOf(page, "#scale-blob-control");
