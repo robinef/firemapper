@@ -7,6 +7,7 @@ import {
   deactivateScaleBlob,
   isScaleBlobActive,
   onScaleBlobSelection,
+  scaleBlobHitAt,
   scaleBlobSelection,
   selectScaleBlobBand,
 } from "../src/layer_scale_blob";
@@ -393,6 +394,62 @@ describe("press-and-drag", () => {
     dispatch(canvas, "pointermove", { pointerId: 1, pointerType: "mouse", clientX: 300, clientY: 300 });
     flushFrames();
     expect(canvas.style.cursor).toBe("");
+  });
+});
+
+describe("pointer bookkeeping across gestures", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    return () => vi.unstubAllGlobals();
+  });
+
+  // A pan released over a panel never reaches the canvas. A mouse is always
+  // pointer 1, so that stale press used to claim the NEXT blob drag's release:
+  // the drag never ended and the shape followed the cursor with no button held.
+  it("a map pan released off the canvas does not wedge the next blob drag", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 300, clientY: 300 });
+    dispatch(document.body, "pointerup", { pointerId: 1, clientX: 380, clientY: 300 });
+
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 90, clientY: 10 });
+
+    expect(map.dragPan.isEnabled()).toBe(true);
+    expect(canvas.style.cursor).toBe("grab");
+    expect((canvas as any).releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("a new press by the same pointer supersedes a press whose release was never seen", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    // Released somewhere no listener saw (not even the document's).
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 300, clientY: 300 });
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    expect(map.dragPan.isEnabled()).toBe(false); // the blob drag started
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 90, clientY: 10 });
+    expect(map.dragPan.isEnabled()).toBe(true);
+  });
+
+  it("a second finger landing on the shape mid-pan does not hijack the map gesture", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    dispatch(canvas, "pointerdown", { pointerId: 1, pointerType: "touch", clientX: 300, clientY: 300 });
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 2, pointerType: "touch", clientX: 10, clientY: 10 });
+    expect(map.dragPan.disable).not.toHaveBeenCalled();
+    dispatch(canvas, "pointermove", { pointerId: 2, pointerType: "touch", clientX: 90, clientY: 10 });
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
+});
+
+describe("scaleBlobHitAt", () => {
+  it("tells main.ts's click dispatch when a click landed on the blob", async () => {
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(false); // not active
+    const { map } = await activated();
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(true);
+    map._setHit(false);
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(false);
   });
 });
 

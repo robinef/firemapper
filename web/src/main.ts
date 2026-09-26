@@ -77,6 +77,7 @@ import {
   deactivateScaleBlob,
   isScaleBlobActive,
   onScaleBlobSelection,
+  scaleBlobHitAt,
   scaleBlobSelection,
   selectScaleBlobBand,
 } from "./layer_scale_blob";
@@ -891,6 +892,10 @@ async function boot() {
     };
 
     map.on("click", (e) => {
+      // A click on the scale blob is the blob's (it selects a band), not a
+      // click on whatever fire lies underneath: opening that card would also
+      // switch the blob off via detail:open.
+      if (scaleBlobHitAt(e.point)) return;
       // The zoom gate belongs HERE, not in the season handler: a handler that
       // ignored the click would swallow it, and the day slice underneath —
       // the band actually painted at those zooms — would never see it.

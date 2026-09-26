@@ -269,6 +269,9 @@ function hitsShape(point: [number, number]): boolean {
 function onPointerDown(e: PointerEvent): void {
   if (!currentMap || !currentCanvas || dragging || pointerDownPoint !== null) return;
   const point = canvasPoint(currentCanvas, e);
+  // A new press by the same pointer means its last one is over, whether or not
+  // its release reached us (onDocumentPointerEnd is the usual path).
+  if (offShapePress?.pointerId === e.pointerId) offShapePress = null;
   const hits = shapeHits(point);
   // A press off the shape is the map's: it pans as usual. Nothing here calls
   // preventDefault/stopPropagation. It is only remembered so that, if it turns
@@ -277,6 +280,9 @@ function onPointerDown(e: PointerEvent): void {
     offShapePress = { pointerId: e.pointerId, point };
     return;
   }
+  // Another finger is already panning or pinching the map: a second finger
+  // landing on the shape must not switch that gesture into a blob drag.
+  if (offShapePress !== null) return;
   // Two bands can share the hit box on a seam; the topmost answers.
   pressedBand = (hits[0].properties?.country as string | undefined) ?? null;
 
@@ -396,6 +402,22 @@ function onPointerUp(e: PointerEvent): void {
     setSelection(pressedBand === selectedKey ? null : pressedBand);
   }
   pressedBand = null;
+}
+
+/** A release anywhere on the page ends an off-shape press. The canvas only
+ * hears releases over itself: a pan that ends over a panel would otherwise
+ * leave the press standing, and its pointer id (always 1 for a mouse) would
+ * then claim the release of the next blob drag. Registered on the document,
+ * so it runs after the canvas's own handler has used the press. */
+function onDocumentPointerEnd(e: PointerEvent): void {
+  if (offShapePress?.pointerId === e.pointerId) offShapePress = null;
+}
+
+/** Whether a map click at this canvas point landed on the blob — main.ts's
+ * click dispatch skips such a click, so selecting a band never also opens the
+ * fire or scar underneath (which would close the blob via detail:open). */
+export function scaleBlobHitAt(point: { x: number; y: number }): boolean {
+  return active && hitsShape([point.x, point.y]);
 }
 
 function releasePointerTracking(pointerId: number): void {
@@ -529,6 +551,8 @@ export async function activateScaleBlob(
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    document.addEventListener("pointerup", onDocumentPointerEnd);
+    document.addEventListener("pointercancel", onDocumentPointerEnd);
     active = true;
   } finally {
     // A cancelled activation must not clear the flag of one started after it.
@@ -560,6 +584,8 @@ export function deactivateScaleBlob(map: maplibregl.Map): void {
   canvas.removeEventListener("pointermove", onPointerMove);
   canvas.removeEventListener("pointerup", onPointerUp);
   canvas.removeEventListener("pointercancel", onPointerUp);
+  document.removeEventListener("pointerup", onDocumentPointerEnd);
+  document.removeEventListener("pointercancel", onDocumentPointerEnd);
   canvas.style.cursor = "";
 
   dragging = false;
