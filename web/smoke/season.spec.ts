@@ -119,6 +119,30 @@ test.describe("season playback", () => {
   });
 });
 
+test.describe("season size slider on a phone", () => {
+  test.use({ viewport: { width: 375, height: 812 } });
+
+  // It stayed the native 16px strip while the time bar's slider beside it
+  // was raised to 44px: a size drag was a hunt for a line.
+  test("is a 44px finger target", async ({ page }) => {
+    await page.route(/\/data\/archive\/season_(\d{4})(_sizes|_cells)?\.json$/, async (route: Route) => {
+      const [, year, kind] = route.request().url().match(/season_(\d{4})(_sizes|_cells)?\.json$/)!;
+      const s = season(Number(year));
+      const body = kind === "_cells" ? s.cells : kind === "_sizes" ? s.sizes : s.summary;
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-layers", "layers");
+    await expect(page.locator(".season-filter")).toHaveClass(/is-ready/);
+    const range = page.locator(".season-range");
+    await range.scrollIntoViewIfNeeded();
+    const box = await range.boundingBox();
+    expect(box, "the size slider must be on screen").not.toBeNull();
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+});
+
 /**
  * Clicking burned ground.
  *
@@ -187,6 +211,22 @@ test.describe("a burned cell opens its fire", () => {
     await page.goto("/?fire=big");
     await waitForBoot(page);
     await expect(page.locator(".fc-title")).toHaveText("Oropos");
+    // The flight centres the fire in the map the chrome leaves visible, not
+    // at the canvas centre (map.ts::chromeInsets): read that spot while the
+    // card is still open, since the card is part of what it measures.
+    const target = await page.evaluate(() => {
+      const box = (id: string) => {
+        const r = document.getElementById(id)?.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0 ? r : null;
+      };
+      const vw = innerWidth, vh = innerHeight;
+      const top = box("header")?.bottom ?? 0;
+      const bottom = box("timeline") ? vh - box("timeline")!.top : 0;
+      const rail = box("rail"), view = box("view");
+      let left = rail && rail.height > rail.width ? rail.right : 0;
+      if (view && view.width < vw * 0.6) left = Math.max(left, view.right);
+      return { x: (left + vw) / 2, y: (top + vh - bottom) / 2 };
+    });
     await page.locator(".fc-close").click();
     await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
 
@@ -201,8 +241,7 @@ test.describe("a burned cell opens its fire", () => {
     await page.locator("#rail-layers").click();
     await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
 
-    const canvas = (await page.locator("canvas").boundingBox())!;
-    await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+    await page.mouse.click(target.x, target.y);
 
     // Oropos is big (3 Aug); the cell's own fire_id tag is "shared", 5 Aug,
     // which has no place and would title "Burn scar · 5 Aug 2026".
