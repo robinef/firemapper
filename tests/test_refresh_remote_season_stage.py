@@ -78,7 +78,7 @@ def test_each_season_export_gets_its_own_years_nasa_flagged_zone(monkeypatch):
     monkeypatch.setattr(rr, "run_export", lambda *a, **k: None)
     monkeypatch.setattr(rr, "run_export_season", lambda *a, **k: seen.__setitem__(k["target_year"], k["extra_zone"]))
     monkeypatch.setattr(rr, "season_static_zone", lambda s, year: None)
-    monkeypatch.setattr(rr, "sp_static_zone", lambda year: {f"sp-{year}"})
+    monkeypatch.setattr(rr, "extra_static_zone", lambda year: {f"sp-{year}"})
     monkeypatch.setattr(rr, "_latest_generation", lambda s: "gen-x")
     monkeypatch.setattr(rr, "publish", lambda s, g, c: None)
     rr.main(["full"], client=object(), now=JAN)
