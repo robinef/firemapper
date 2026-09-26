@@ -123,6 +123,20 @@ test.describe("mobile 375x812", () => {
     await expectNoOverlap(page, ".maplibregl-ctrl-attrib", ".fc-peek", "the credits must clear the peek strip");
   });
 
+  test("opens on a map that shows fires, not an empty Alps", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    // The desktop camera (lon 10, zoom 4.2) spans ~100° at 1280px but ~30° at
+    // 375, framing Germany and the Alps: production read "0 of 300 in view".
+    // The sample fires are Iberian, as most of a season's are.
+    await openRail(page, "rail-layers", "layers");
+    // "N in view" when all are drawn, "S of N in view" when some are below the
+    // size gate, and nothing at all when none are in view.
+    const hint = (await page.locator("#layers").textContent()) ?? "";
+    const m = hint.match(/(\d+) of \d+ in view/) ?? hint.match(/(\d+) in view/);
+    expect(Number(m?.[1] ?? 0), `layers panel says: "${m?.[0] ?? "no fire in view"}"`).toBeGreaterThan(0);
+  });
+
   test("text inputs are 16px, so iOS Safari does not zoom in on focus", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);

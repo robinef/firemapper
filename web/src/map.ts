@@ -45,6 +45,62 @@ export function createMap(container: string): maplibregl.Map {
   return map;
 }
 
+/** How far the floating chrome reaches into the map from each edge, in CSS px.
+ *
+ *  The canvas is the whole window, so the camera centre is the window centre —
+ *  and on a phone held sideways the time bar alone covers the bottom half of
+ *  it: a fire flown to "the centre" landed under the time bar and beside the
+ *  card. Measured from the live boxes, because every one of them changes
+ *  height with its content (the fire card swaps its own series into the time
+ *  bar). A box that is missing, hidden or zero-sized reaches nowhere, which is
+ *  also what jsdom reports for all of them. */
+export function chromeInsets(): { top: number; bottom: number; left: number; right: number } {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const box = (id: string): DOMRect | null => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+  };
+  const inset = { top: 0, bottom: 0, left: 0, right: 0 };
+  const header = box("header");
+  if (header) inset.top = header.bottom;
+  const timeline = box("timeline");
+  if (timeline) inset.bottom = vh - timeline.top;
+  // Only chrome that is the SAME before and after a card opens. Search flies
+  // at once and the card flies again when its track lands, to what must be
+  // an identical target or the camera visibly hops twice. On a phone the rail
+  // row is hidden under the full-page search list and back above the peek
+  // strip by the second flight, so neither it nor the strip counts; the
+  // target still lands above both, since the time bar is most of the height.
+  // The desktop rail column and side panel sit in the same place for the
+  // search list and the card alike.
+  const rail = box("rail");
+  if (rail && rail.height > rail.width) inset.left = Math.max(inset.left, rail.right);
+  const view = box("view");
+  if (view && view.width < vw * 0.6) inset.left = Math.max(inset.left, view.right);
+  // Never inset away more than 3/4 of an axis: past that the "visible part" is
+  // a sliver, and centring in it would push the target to the canvas edge.
+  if (inset.top + inset.bottom > vh * 0.75) inset.top = inset.bottom = 0;
+  if (inset.left + inset.right > vw * 0.75) inset.left = inset.right = 0;
+  return inset;
+}
+
+/** flyTo/easeTo `offset` that centres the target in the visible part of the
+ *  map rather than behind the chrome. An offset, not `padding`: maplibre keeps
+ *  a camera's padding after the move, so every later ease would inherit it. */
+export function visibleCentreOffset(): [number, number] {
+  const i = chromeInsets();
+  return [(i.left - i.right) / 2, (i.top - i.bottom) / 2];
+}
+
+/** The wildfire belt a phone opens on: Iberia to Anatolia's coast, the
+ *  Mediterranean up to the Baltic. The desktop default (lon 10, zoom 4.2)
+ *  spans ~100° on a 1280px screen but ~30° on a 390px one, which frames the
+ *  Alps and Germany — "0 of 300 fires in view" on first load. */
+export const PHONE_START_BOUNDS: [[number, number], [number, number]] = [[-10, 35], [30, 56]];
+
 const colorExpr = [
   "match",
   ["get", "state"],

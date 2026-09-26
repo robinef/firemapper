@@ -14,7 +14,7 @@ import {
 import { badgeText } from "./freshness";
 import { areaText, numOr } from "./area";
 import { escapeHtml } from "./escape";
-import { createMap } from "./map";
+import { PHONE_START_BOUNDS, chromeInsets, createMap, visibleCentreOffset } from "./map";
 import {
   CLOSED_LAYER_IDS,
   CLOSED_LEGEND,
@@ -610,7 +610,7 @@ async function boot() {
       // supersedes this one first. Fly immediately, to the SAME zoom open()
       // uses, so its later flyTo to an identical target is a no-op rather
       // than a second visible hop.
-      map.flyTo({ center: [entry.lon, entry.lat], zoom: 10.5 });
+      map.flyTo({ center: [entry.lon, entry.lat], zoom: 10.5, offset: visibleCentreOffset() });
       fireCard.openFire({
         features: [feature],
         lngLat: { lng: entry.lon, lat: entry.lat },
@@ -630,7 +630,7 @@ async function boot() {
     const openScarFromList = (id: string): boolean => {
       const s = scarIndex.get(id);
       if (!s) return false;
-      map.flyTo({ center: [s.lon, s.lat], zoom: 10.5 });
+      map.flyTo({ center: [s.lon, s.lat], zoom: 10.5, offset: visibleCentreOffset() });
       fireCard.openScar({
         features: [{
           properties: { ...s },
@@ -1056,6 +1056,25 @@ async function boot() {
     // Boot done + layers mounted → drop the cold-start splash and let the rail
     // be used; ⚙ before this point would open an unmounted registry.
     shell.ready();
+    // A phone opens on the whole fire belt, fitted into the map left visible
+    // above the time bar — held sideways too, where the time bar takes half
+    // the height. Here, not in createMap: the time bar has only just been
+    // mounted and measured. Before the ?fire= deep link below, which then
+    // flies on from here. Never below z3, where the largest fires still draw.
+    if (window.matchMedia?.("not all and (min-width: 641px), (pointer: coarse)").matches) {
+      const insets = chromeInsets();
+      // The phone rail row is up now (shell.ready), and stays up on the map
+      // view. (The desktop-layout rail column is already in insets.left.)
+      const rail = document.getElementById("rail")?.getBoundingClientRect();
+      const railRow = rail && rail.width > rail.height;
+      const bottom = railRow ? Math.max(insets.bottom, window.innerHeight - rail.top) : insets.bottom;
+      const camera = map.cameraForBounds(PHONE_START_BOUNDS, {
+        padding: { ...insets, top: insets.top + 8, bottom: bottom + 8 },
+      });
+      if (camera?.center) {
+        map.jumpTo({ center: camera.center, zoom: Math.max(camera.zoom ?? 3, 3) });
+      }
+    }
     const splash = document.getElementById("loading");
     if (splash) {
       splash.classList.add("done");

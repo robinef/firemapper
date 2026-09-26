@@ -4,6 +4,7 @@ import { areaText, footprintNote, numOr } from "./area";
 import { loadFootprint, loadTrack } from "./data";
 import { isTrackId, scarFromArchive } from "./season_click";
 import { mountTimeline } from "./timeline";
+import { visibleCentreOffset } from "./map";
 import { fireLayerIds } from "./layer_fires";
 import { SCAR_LAYER_IDS } from "./layer_scars";
 import type { FeatureSnapshot, Scar } from "./layer_imagery";
@@ -588,7 +589,7 @@ export function setupFireCard(
     document.body.classList.add("fire-focus");
     switcher.setLevel(2, { historical }); // swap to this fire's detail layers
     emitUi("detail:open");
-    map.flyTo({ center: [lon, lat], zoom: 10.5 });
+    map.flyTo({ center: [lon, lat], zoom: 10.5, offset: visibleCentreOffset() });
     dim(id);
     if (fireSeries) {
       let onSelect: ((d: TimelineDay, i: number) => void) | undefined;

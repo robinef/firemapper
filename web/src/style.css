@@ -304,22 +304,30 @@ body.compare-mode #fire-readout { display: none; }
      without it the native thumb stays ~12px on iOS Safari / Chrome Android,
      the two mobile engines that matter most here. Resetting appearance also
      drops the native track, so the track is restyled by hand below. */
-  .scrub-range {
+  .scrub-range, .season-range {
     -webkit-appearance: none; appearance: none; height: 44px; background: transparent;
   }
-  .scrub-range::-webkit-slider-runnable-track {
+  .scrub-range::-webkit-slider-runnable-track,
+  .season-range::-webkit-slider-runnable-track {
     height: 4px; border-radius: 2px; background: rgba(255,255,255,.25);
   }
-  .scrub-range::-webkit-slider-thumb {
+  .scrub-range::-webkit-slider-thumb,
+  .season-range::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none; width: 28px; height: 28px;
     border-radius: 50%; background: #ff6b00; margin-top: -12px;
   }
-  .scrub-range::-moz-range-track {
+  .scrub-range::-moz-range-track,
+  .season-range::-moz-range-track {
     height: 4px; border-radius: 2px; background: rgba(255,255,255,.25);
   }
-  .scrub-range::-moz-range-thumb {
+  .scrub-range::-moz-range-thumb,
+  .season-range::-moz-range-thumb {
     width: 28px; height: 28px; border: none; border-radius: 50%; background: #ff6b00;
   }
+  /* The season size slider ("Burned this year") was a native 16px strip
+     beside a 44px time bar. Same finger, same treatment; its own colour. */
+  .season-range::-webkit-slider-thumb { background: #d1874f; }
+  .season-range::-moz-range-thumb { background: #d1874f; }
 }
 
 @media not all and (min-width: 641px) {

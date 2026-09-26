@@ -17,11 +17,12 @@ vi.mock("../src/data", () => ({
 
 /** The camera calls a card makes, in order. */
 function recordingMap() {
-  const flights: { center: [number, number]; zoom?: number }[] = [];
+  const flights: { center: [number, number]; zoom?: number; offset?: [number, number] }[] = [];
   const map = {
     getLayer: () => null, getSource: () => null, setPaintProperty: () => {},
     getPaintProperty: () => 1, on: () => {}, off: () => {},
-    flyTo: (o: { center: [number, number]; zoom?: number }) => void flights.push(o),
+    flyTo: (o: { center: [number, number]; zoom?: number; offset?: [number, number] }) =>
+      void flights.push(o),
     getCanvas: () => ({ style: {} }),
   } as unknown as maplibregl.Map;
   return { map, flights };
@@ -146,5 +147,23 @@ describe("fire card camera position", () => {
     // Not [0, 0] — a polygon click still has to land somewhere real.
     expect(flights).toHaveLength(1);
     expect(flights[0].center).toEqual([3, 4]);
+  });
+
+  it("lands the fire in the part of the map the chrome leaves visible", async () => {
+    // A phone held sideways: the time bar covers y 166-378 of 390, so the
+    // canvas centre (y 195) is under it. build() rewrites the body, so the
+    // time bar's box is stubbed after it.
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { map, flights } = recordingMap();
+    const card = build(map, null);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 844 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 390 });
+    document.getElementById("timeline")!.getBoundingClientRect = () =>
+      ({ left: 80, top: 166, width: 752, height: 212, right: 832, bottom: 378 }) as DOMRect;
+    await card.openFire(offCentreFireClick());
+
+    expect(flights).toHaveLength(1);
+    const [, dy] = flights[0].offset ?? [0, 0];
+    expect(390 / 2 + dy).toBeLessThan(166);
   });
 });
