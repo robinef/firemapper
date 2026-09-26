@@ -78,6 +78,30 @@ describe("nav stack", () => {
     expect(seen).toEqual(["detail"]);
   });
 
+  it("ignores back/backTo/reset while its own navigation awaits popstate", () => {
+    // A browser answers history.back()/go() with popstate LATER. Until then
+    // the cursor is stale, and a second request computed from it overshoots:
+    // a double tap on "‹" at depth 1 used to walk right off the site.
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    const queued: number[] = [];
+    const realGo = history.go.bind(history);
+    vi.spyOn(history, "go").mockImplementation((d) => void queued.push(d));
+    vi.spyOn(history, "back").mockImplementation(() => void queued.push(-1));
+    nav.back();
+    nav.back();
+    nav.backTo(0);
+    nav.reset();
+    expect(queued).toEqual([-1]);
+    // The popstate lands; nav answers requests again.
+    realGo(queued.shift()!);
+    expect(nav.top.view).toBe("search");
+    nav.back();
+    expect(queued).toEqual([-1]);
+  });
+
   it("backTo() at or above the current depth is a no-op", () => {
     const { history, target } = fakeHistory();
     const nav = createNav({ history, target });

@@ -87,6 +87,11 @@ export function createNav(opts: {
   const entries: Entry[] = [opts.base ?? BASE];
   let cursor = 0;
   let unwinding = false;
+  /** A back()/backTo()/reset() asked the browser to navigate and its popstate
+   *  has not landed yet. The cursor is stale until it does, so a second
+   *  request computed from it would overshoot — two quick taps on "‹" at
+   *  depth 1 walked off the site. Requests in that window are dropped. */
+  let pending = false;
   const exits = new Map<ViewId, Array<() => void>>();
   const changes: Array<(s: readonly Entry[]) => void> = [];
 
@@ -137,6 +142,7 @@ export function createNav(opts: {
   };
 
   target.addEventListener("popstate", (ev) => {
+    pending = false;
     const state = (ev as PopStateEvent).state as { depth?: number } | null;
     goTo(typeof state?.depth === "number" ? state.depth : 0);
   });
@@ -176,16 +182,19 @@ export function createNav(opts: {
       // to be exactly one deep; from [map, search, detail] it lets a nested
       // pop run to completion, and the outer pop then re-grows `entries` over
       // the shorter array, leaving a hole that throws on the next restore().
-      if (unwinding || cursor === 0) return; // never navigate off the site
+      if (unwinding || pending || cursor === 0) return; // never navigate off the site
+      pending = true;
       history.back();
     },
     backTo(depth) {
       const wanted = Math.max(0, depth);
-      if (unwinding || wanted >= cursor) return;
+      if (unwinding || pending || wanted >= cursor) return;
+      pending = true;
       history.go(wanted - cursor);
     },
     reset() {
-      if (unwinding || cursor === 0) return;
+      if (unwinding || pending || cursor === 0) return;
+      pending = true;
       history.go(-cursor);
     },
     onExit(view, fn) {
