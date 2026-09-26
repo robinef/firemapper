@@ -257,6 +257,22 @@ describe("openArchived opens a season fire that never made the scar shortlist", 
     expect(panel.querySelector(".fc-title")?.textContent).toBe("Burn scar · 24 Jul 2026");
   });
 
+  // On a phone the peek strip is all the reader sees until they expand the
+  // sheet. Once a town took the title, the date has to ride in the peek.
+  it("keeps the date in the peek of a named scar, and does not repeat it for an unnamed one", async () => {
+    ({ setupFireCard } = await import("../src/firecard"));
+    const { card } = build();
+    const panel = document.getElementById("panel")!;
+
+    await card.openArchived("fire-1", [31.5, "ES", "2026-07-24", "Ávila"]);
+    expect(panel.querySelector(".fc-peek b")?.textContent).toBe("Ávila");
+    expect(panel.querySelector(".fc-peek span")?.textContent).toBe("Past fire · 24 Jul 2026");
+
+    await card.openArchived("fire-2", [31.5, "ES", "2026-07-24"]);
+    expect(panel.querySelector(".fc-peek b")?.textContent).toBe("Burn scar · 24 Jul 2026");
+    expect(panel.querySelector(".fc-peek span")?.textContent).toBe("Past fire");
+  });
+
   it("opens nothing when the fire has no archived track", async () => {
     ({ setupFireCard } = await import("../src/firecard"));
     const { card } = build();
