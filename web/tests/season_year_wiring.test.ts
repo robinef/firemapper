@@ -32,3 +32,15 @@ describe("season year wiring in main.ts", () => {
     expect(mainSource).toMatch(/const year = fires\?\.year \?\? new Date\(\)\.getUTCFullYear\(\);/);
   });
 });
+
+describe("fire-scale compare source in main.ts", () => {
+  // blob_{year}_fires.json holds every archived track, static heat sources
+  // included (~8% of 2026's area); the season sidecar is the filtered view the
+  // "Burned this year" layer paints. The compare blob must read the same.
+  it("feeds the compare blob from the season sidecar, the raw blob only as fallback", () => {
+    expect(mainSource).toMatch(
+      /get promise\(\) \{\s*return sizesP\.then\(\(s\) => \(s && sidecarCountries\(s\)\) \?\? firesSummary\(\)\);\s*\}/,
+    );
+    expect(mainSource).not.toMatch(/get promise\(\) \{ return firesSummary\(\); \}/);
+  });
+});
