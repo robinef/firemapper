@@ -574,9 +574,22 @@ async function boot() {
       map,
       document.getElementById("scale-blob-toggle") as HTMLButtonElement,
       document.getElementById("scale-blob-breakdown") as HTMLElement,
-      // A getter: the panel reads `promise` only when it opens, so the file is
-      // fetched then (once, shared with the season layer's fallback), not at boot.
-      season ? { year: seasonYear, get promise() { return firesSummary(); } } : undefined,
+      // A getter: the panel reads `promise` only when it opens. The season
+      // sidecar first: it is the season layer's own filtered view — static heat
+      // sources dropped, plant cells trimmed off, ground shared by two fires
+      // counted once — so the blob matches the "Burned this year" layer. The
+      // raw blob_{year}_fires.json kept every archived track, ~8% of 2026's
+      // area in refineries and steelworks. The blob file (fetched then, once,
+      // shared with the season layer's fallback) only when the sidecar is
+      // missing or places no fire.
+      season
+        ? {
+          year: seasonYear,
+          get promise() {
+            return sizesP.then((s) => (s && sidecarCountries(s)) ?? firesSummary());
+          },
+        }
+        : undefined,
     );
     // Search is the only route into a card that survives the rolling windows:
     // a dot vanishes 48 h after the last detection, the scar list is capped,
