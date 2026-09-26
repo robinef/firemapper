@@ -36,6 +36,9 @@ function mediaConditions(css: string): string[] {
 
 const DESKTOP = "(min-width: 641px)";
 const MOBILE = `not all and ${DESKTOP}`;
+/** Touch sizing: the mobile half OR a coarse pointer. A media-query list is an
+ *  OR, so this widens the mobile half (landscape phones) without opening a gap. */
+const TOUCH = `${MOBILE}, (pointer: coarse)`;
 
 describe("style.css breakpoints", () => {
   it("splits on exactly one number, shared with firecard.ts", () => {
@@ -53,7 +56,7 @@ describe("style.css breakpoints", () => {
     expect(conditions.length).toBeGreaterThan(0);
     for (const condition of conditions) {
       expect(
-        [DESKTOP, MOBILE],
+        [DESKTOP, MOBILE, TOUCH],
         `unrecognised media condition "${condition}" — a third width-bounded ` +
           `query breaks the two-way partition this file relies on`,
       ).toContain(condition);
@@ -74,6 +77,9 @@ describe("style.css breakpoints", () => {
     const conditions = mediaConditions(styleSource);
     expect(conditions).toContain(DESKTOP);
     expect(conditions).toContain(MOBILE);
+    // Landscape phones are >=641px wide: without this block they fall back to
+    // desktop-sized touch targets (a 29x24 close button).
+    expect(conditions).toContain(TOUCH);
   });
 
   // A fifth test used to walk Chrome's 1/64 px grid across the boundary and
