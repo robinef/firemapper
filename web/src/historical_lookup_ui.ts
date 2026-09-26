@@ -61,7 +61,14 @@ export function validateDateRange(before: string, after: string): { ok: true } |
   return { ok: true };
 }
 
-export function renderHistoricalLookupForm(): string {
+/** Local calendar date as YYYY-MM-DD — toISOString() is UTC, which in
+ *  Europe is still "yesterday" for the first hours after local midnight. */
+export function localToday(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+export function renderHistoricalLookupForm(today: string = localToday()): string {
   // No .panel-close of its own — see web/tests/nav_integration.test.ts's
   // "search has exactly one way out" precedent: a .panel-close here would
   // hide #panel and emit detail:close while nav's stack still says
@@ -71,26 +78,53 @@ export function renderHistoricalLookupForm(): string {
   // bar (rendered whenever this view is pushed), the rail icon's toggle,
   // and Escape all correctly call nav.back() regardless of which view is
   // on top — that's this view's one, working way out.
+  //
+  // Two forms, not one: the place search is its own <form> so Enter in the
+  // place field runs the search (implicit submission clicks ITS submit
+  // button) instead of submitting the whole lookup with no location yet.
   return `
-    <h2>Find a past fire</h2>
-    <p>Search a place, or click anywhere on the map, then pick the date range you think it burned.</p>
+    <h2 class="hl-title">Find a past fire</h2>
+    <p class="hl-lede">Rebuild a fire from satellite detections: say where, then roughly when.</p>
+    <section class="hl-step">
+      <h3 class="hl-step-title"><span class="hl-num">1</span> Where</h3>
+      <form id="historical-lookup-geo-form" class="hl-search" role="search">
+        <label for="historical-lookup-q" class="hl-sr">Place name</label>
+        <!-- type="search" + an explicit submit is the ONLY way this ever
+             fires a request — no input/keyup listener anywhere near this
+             element. Nominatim's usage policy forbids autocomplete outright. -->
+        <input id="historical-lookup-q" name="q" type="search" autocomplete="off" placeholder="Town, region… e.g. Gironde" />
+        <button type="submit" id="historical-lookup-search">Search</button>
+      </form>
+      <div id="historical-lookup-geocode-result" class="hl-hint" aria-live="polite"></div>
+      <div id="historical-lookup-location" class="hl-location" aria-live="polite">📍 Search a place, or click anywhere on the map</div>
+    </section>
     <form id="historical-lookup-form">
-      <label for="historical-lookup-q">Place name</label>
-      <!-- type="search" + a real <form> submit is the ONLY way this ever
-           fires a request — no input/keyup listener anywhere near this
-           element. Nominatim's usage policy forbids autocomplete outright. -->
-      <input id="historical-lookup-q" name="q" type="search" autocomplete="off" placeholder="e.g. Gironde" />
-      <button type="button" id="historical-lookup-search">Search</button>
-      <div id="historical-lookup-geocode-result" aria-live="polite"></div>
-      <label for="historical-lookup-before">Before (earliest it might have started)</label>
-      <input id="historical-lookup-before" name="before" type="date" />
-      <label for="historical-lookup-after">After (latest it might have settled)</label>
-      <input id="historical-lookup-after" name="after" type="date" />
-      <div id="historical-lookup-location" aria-live="polite">No location picked yet — search above or click the map.</div>
-      <button type="submit">Look up this fire</button>
+      <section class="hl-step">
+        <h3 class="hl-step-title"><span class="hl-num">2</span> When</h3>
+        <div class="hl-dates">
+          <label for="historical-lookup-before">From<small>earliest it could start</small></label>
+          <label for="historical-lookup-after">To<small>latest it could end</small></label>
+          <input id="historical-lookup-before" name="before" type="date" min="2000-11-01" max="${today}" required />
+          <input id="historical-lookup-after" name="after" type="date" min="2000-11-01" max="${today}" required />
+        </div>
+        <div class="hl-hint">Up to ${MAX_SPAN_DAYS} days. Searches ${DEFAULT_RADIUS_KM} km around the location.</div>
+      </section>
+      <button type="submit" class="hl-go">Look up this fire</button>
     </form>
-    <div id="historical-lookup-result" aria-live="polite"></div>
+    <div id="historical-lookup-result" class="hl-result" aria-live="polite"></div>
   `;
+}
+
+/** Keeps To ≥ From in the native pickers: To's minimum follows From. */
+export function wireDateRange(container: HTMLElement): void {
+  const before = container.querySelector<HTMLInputElement>("#historical-lookup-before");
+  const after = container.querySelector<HTMLInputElement>("#historical-lookup-after");
+  if (!before || !after) return;
+  before.addEventListener("change", () => {
+    if (!before.value) return;
+    after.min = before.value;
+    if (after.value && after.value < before.value) after.value = before.value;
+  });
 }
 
 export function renderAmbiguousResult(clusters: { cellCount: number; rowCount: number }[]): string {
@@ -175,7 +209,11 @@ export function wireGeocodeSearch(
   const resultEl = container.querySelector<HTMLElement>("#historical-lookup-geocode-result");
   if (!button || !input) return;
 
-  button.addEventListener("click", async () => {
+  // The search's own <form> (Enter in the place field) must never fall
+  // through to a real navigation; the button's click is the one trigger.
+  input.form?.addEventListener("submit", (ev) => ev.preventDefault());
+  button.addEventListener("click", async (ev) => {
+    ev.preventDefault();
     const q = input.value.trim();
     if (!q) return;
     if (resultEl) resultEl.textContent = "Searching…";

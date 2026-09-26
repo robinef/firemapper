@@ -261,3 +261,65 @@ describe("wireGeocodeSearch", () => {
     expect(container.querySelector("#historical-lookup-geocode-result")?.textContent).toMatch(/no match|not found/i);
   });
 });
+
+import { wireDateRange } from "../src/historical_lookup_ui";
+
+describe("historical lookup form layout", () => {
+  it("puts the place search in its own form, so Enter there searches instead of submitting the lookup", () => {
+    document.body.innerHTML = renderHistoricalLookupForm();
+    const q = document.querySelector<HTMLInputElement>("#historical-lookup-q")!;
+    const search = document.querySelector<HTMLButtonElement>("#historical-lookup-search")!;
+    const lookup = document.querySelector<HTMLFormElement>("#historical-lookup-form")!;
+    expect(q.form).not.toBeNull();
+    expect(q.form).not.toBe(lookup);
+    // Implicit submission clicks the form's default button: it must be Search.
+    expect(search.type).toBe("submit");
+    expect(search.form).toBe(q.form);
+  });
+
+  it("never navigates when the search form is submitted", () => {
+    document.body.innerHTML = renderHistoricalLookupForm();
+    wireGeocodeSearch(document.body, vi.fn(async () => new Response("[]")), vi.fn());
+    const geo = document.querySelector<HTMLFormElement>("#historical-lookup-geo-form")!;
+    const ev = new Event("submit", { cancelable: true });
+    geo.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("caps both date pickers at today", () => {
+    document.body.innerHTML = renderHistoricalLookupForm("2026-09-26");
+    for (const id of ["#historical-lookup-before", "#historical-lookup-after"]) {
+      expect(document.querySelector<HTMLInputElement>(id)!.max).toBe("2026-09-26");
+    }
+  });
+});
+
+describe("wireDateRange", () => {
+  it("makes To's minimum follow From, and pulls an earlier To up to it", () => {
+    document.body.innerHTML = renderHistoricalLookupForm("2026-09-26");
+    wireDateRange(document.body);
+    const before = document.querySelector<HTMLInputElement>("#historical-lookup-before")!;
+    const after = document.querySelector<HTMLInputElement>("#historical-lookup-after")!;
+    after.value = "2022-07-01";
+    before.value = "2022-07-10";
+    before.dispatchEvent(new Event("change"));
+    expect(after.min).toBe("2022-07-10");
+    expect(after.value).toBe("2022-07-10");
+  });
+});
+
+import { localToday } from "../src/historical_lookup_ui";
+
+describe("localToday", () => {
+  it("uses the local calendar day, not UTC's", () => {
+    // Pin the zone: built from local fields, this would pass under a UTC CI
+    // runner even with the old toISOString() version.
+    vi.stubEnv("TZ", "Europe/Paris");
+    try {
+      // 22:30 UTC on the 25th is 00:30 on the 26th in Paris (UTC+2).
+      expect(localToday(new Date("2026-09-25T22:30:00Z"))).toBe("2026-09-26");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

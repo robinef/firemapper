@@ -93,7 +93,7 @@ import { buildFireIndex, renderFireList, searchFires } from "./firelist";
 import { emitUi, onUi } from "./ui_events";
 import {
   renderHistoricalLookupForm, renderAmbiguousResult, renderNoDataResult,
-  runHistoricalLookup, wireGeocodeSearch,
+  runHistoricalLookup, wireGeocodeSearch, wireDateRange,
 } from "./historical_lookup_ui";
 import type { FiresSummary, Manifest, SeasonCells, SeasonSizes } from "./types";
 
@@ -654,6 +654,20 @@ async function boot() {
     // is long since assigned.
     let pickedLocation: { lon: number; lat: number; place: string } | null = null;
     let historicalClickHandler: ((e: maplibregl.MapMouseEvent) => void) | null = null;
+    // The picked point, shown on the map so a click visibly "took".
+    let historicalMarker: maplibregl.Marker | null = null;
+    // Bumped per render: a geocode reply that lands after the form was left
+    // or re-rendered belongs to a form that no longer exists.
+    let historicalRender = 0;
+    let historicalBusy = false;
+    const stopHistoricalPicking = () => {
+      if (historicalClickHandler) {
+        map.off("click", historicalClickHandler);
+        historicalClickHandler = null;
+      }
+      historicalMarker?.remove();
+      historicalMarker = null;
+    };
     const showHistoricalLookup = () => {
       pickedLocation = null;
       panel.showHtml(renderHistoricalLookupForm());
@@ -671,18 +685,34 @@ async function boot() {
       // defensively before arming a new one, rather than relying solely on
       // nav.onExit("historical", ...) below, which only fires when this
       // entry is actually popped, not when it's merely covered and restored.
-      if (historicalClickHandler) {
-        map.off("click", historicalClickHandler);
-        historicalClickHandler = null;
-      }
+      stopHistoricalPicking();
+      const render = ++historicalRender;
+      historicalBusy = false;
 
       const container = document.getElementById("panel")!;
       const locationEl = document.getElementById("historical-lookup-location")!;
+      const pick = (lon: number, lat: number, place: string, label: string) => {
+        // Moving the point mid-lookup would leave the marker on a spot the
+        // pending result was not computed for.
+        if (historicalBusy) return;
+        pickedLocation = { lon, lat, place };
+        locationEl.textContent = `📍 ${label}`;
+        locationEl.classList.add("is-set");
+        document.getElementById("historical-lookup-result")!.textContent = "";
+        if (!historicalMarker) {
+          const dot = document.createElement("div");
+          dot.className = "hl-marker";
+          historicalMarker = new maplibregl.Marker({ element: dot });
+        }
+        historicalMarker.setLngLat([lon, lat]).addTo(map);
+      };
 
       wireGeocodeSearch(container, fetch, (lon, lat, place) => {
-        pickedLocation = { lon, lat, place };
-        locationEl.textContent = `Location: ${place}`;
+        if (render !== historicalRender || nav.top.view !== "historical") return;
+        pick(lon, lat, place, place);
+        map.easeTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 8) });
       });
+      wireDateRange(container);
 
       // Map-click mode: only active while this view is the current one.
       // Deliberately the plain, layer-less map.on('click', ...) form (not
@@ -691,8 +721,8 @@ async function boot() {
       // Cleaned up by nav.onExit("historical", ...) below, and defensively
       // at the top of this function on re-entry (see above).
       historicalClickHandler = (e) => {
-        pickedLocation = { lon: e.lngLat.lng, lat: e.lngLat.lat, place: "Picked on map" };
-        locationEl.textContent = `Location: ${e.lngLat.lat.toFixed(2)}, ${e.lngLat.lng.toFixed(2)}`;
+        const { lng, lat } = e.lngLat;
+        pick(lng, lat, "Picked on map", `Picked on map · ${lat.toFixed(2)}, ${lng.toFixed(2)}`);
       };
       map.on("click", historicalClickHandler);
 
@@ -706,27 +736,32 @@ async function boot() {
         const before = (document.getElementById("historical-lookup-before") as HTMLInputElement).value;
         const after = (document.getElementById("historical-lookup-after") as HTMLInputElement).value;
         const resultEl = document.getElementById("historical-lookup-result")!;
-        resultEl.textContent = "Looking up…";
-        await runHistoricalLookup(pickedLocation.lon, pickedLocation.lat, pickedLocation.place, before, after, {
-          fetchFn: fetch,
-          // A successful lookup calls fireCard.openHistoricalLookup, which
-          // overwrites #panel with the fire card and fires detail:open while
-          // this "historical" entry is still nav's top — openDetail()
-          // replace()s it (it's not "map"/"search"), which never fires
-          // nav.onExit("historical", ...). Strip the listener here,
-          // proactively, right before that happens — the only path that
-          // leaves this view without popping it off the stack first.
-          openHistoricalLookup: (track, meta) => {
-            if (historicalClickHandler) {
-              map.off("click", historicalClickHandler);
-              historicalClickHandler = null;
-            }
-            return fireCard.openHistoricalLookup(track, meta);
-          },
-          onAmbiguous: (clusters) => { resultEl.innerHTML = renderAmbiguousResult(clusters); },
-          onNoData: () => { resultEl.innerHTML = renderNoDataResult(); },
-          onError: (message) => { resultEl.textContent = message; },
-        });
+        const go = form.querySelector<HTMLButtonElement>(".hl-go");
+        resultEl.textContent = "Looking up… this can take a few seconds.";
+        if (go) go.disabled = true;
+        historicalBusy = true;
+        try {
+          await runHistoricalLookup(pickedLocation.lon, pickedLocation.lat, pickedLocation.place, before, after, {
+            fetchFn: fetch,
+            // A successful lookup calls fireCard.openHistoricalLookup, which
+            // overwrites #panel with the fire card and fires detail:open while
+            // this "historical" entry is still nav's top — openDetail()
+            // replace()s it (it's not "map"/"search"), which never fires
+            // nav.onExit("historical", ...). Strip the listener here,
+            // proactively, right before that happens — the only path that
+            // leaves this view without popping it off the stack first.
+            openHistoricalLookup: (track, meta) => {
+              stopHistoricalPicking();
+              return fireCard.openHistoricalLookup(track, meta);
+            },
+            onAmbiguous: (clusters) => { resultEl.innerHTML = renderAmbiguousResult(clusters); },
+            onNoData: () => { resultEl.innerHTML = renderNoDataResult(); },
+            onError: (message) => { resultEl.textContent = message; },
+          });
+        } finally {
+          historicalBusy = false;
+          if (go) go.disabled = false;
+        }
       });
     };
     const nav = createNav();
@@ -777,14 +812,13 @@ async function boot() {
     // way round; these two lines are the only inbound direction.
     nav.onExit("detail", () => fireCard.close());
     if (compare) nav.onExit("compare", () => compare.exit());
-    // Stop the plain map-click listener the moment the reader leaves this
-    // view — without this, a click on the map after backing out of the form
-    // would still silently update a `pickedLocation` nothing reads anymore.
-    nav.onExit("historical", () => {
-      if (historicalClickHandler) {
-        map.off("click", historicalClickHandler);
-        historicalClickHandler = null;
-      }
+    // Stop picking the moment this view stops being on top — popped, OR
+    // covered by another rail view (which pushes without popping, so onExit
+    // never fires). Otherwise the marker would sit over, say, a fire card
+    // and follow every later map click. Coming back re-runs
+    // showHistoricalLookup via the entry's restore, which re-arms it.
+    nav.onChange((stack) => {
+      if (stack[stack.length - 1]?.view !== "historical") stopHistoricalPicking();
     });
     // Precedence, highest first. Halos come before their visible layer so the
     // larger target wins, and fires beat scars where they overlap. A single
@@ -892,6 +926,11 @@ async function boot() {
     };
 
     map.on("click", (e) => {
+      // Picking a spot for "Find a past fire": the click is the lookup's own
+      // (historicalClickHandler). Opening a fire under it would replace the
+      // form, and a miss would nav.back() it away — #panel hosts the form, so
+      // fireCard.isOpen reads true.
+      if (nav.top.view === "historical") return;
       // A click on the scale blob is the blob's (it selects a band), not a
       // click on whatever fire lies underneath: opening that card would also
       // switch the blob off via detail:open.

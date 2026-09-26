@@ -46,6 +46,49 @@ test.describe("getting back out", () => {
 test.describe("desktop navigation", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
+  test("picking a spot on the map for a past-fire lookup keeps the form open", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-historical", "historical");
+
+    // #panel hosts this form, so the map's miss-click handler saw a "card"
+    // open and nav.back()'d the form away on the very click it asked for.
+    await page.mouse.click(760, 330);
+    await expect(page.locator("#view")).toHaveAttribute("data-view", "historical");
+    await expect(page.locator("#historical-lookup-location")).toHaveClass(/is-set/);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+  });
+
+  test("the past-fire marker leaves with the form, even when a late search reply lands", async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    await page.route("**/api/geocode**", async (route) => {
+      await held;
+      await route.fulfill({ json: [{ lat: "44.84", lon: "-0.58", display_name: "Test Place" }] });
+    });
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-historical", "historical");
+
+    // Covered, not popped: another rail view pushes on top, so onExit never
+    // fires — the marker must still go.
+    await page.mouse.click(760, 330);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+    await openRail(page, "rail-layers", "layers");
+    await expect(page.locator(".hl-marker")).toHaveCount(0);
+    await page.goBack();
+    await expect(page.locator("#view")).toHaveAttribute("data-view", "historical");
+
+    // A search answered only after the reader left must not drop a marker.
+    await page.fill("#historical-lookup-q", "Test");
+    await page.press("#historical-lookup-q", "Enter");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
+    release();
+    await page.waitForTimeout(300);
+    await expect(page.locator(".hl-marker")).toHaveCount(0);
+  });
+
   test("the rail icon opens and closes the same view", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);

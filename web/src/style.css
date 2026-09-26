@@ -630,3 +630,51 @@ body.compare-mode #timeline { display: none; }
 .maplibregl-ctrl-scale {
   background: var(--panel); border-color: var(--fg); color: var(--fg);
 }
+
+/* ---- Find a past fire (historical lookup) -------------------------- */
+.hl-title { margin: 0 0 4px; font-size: 20px; }
+.hl-lede { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.hl-step { margin-bottom: 18px; }
+.hl-step-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; }
+.hl-num { display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; background: #ff6b00; color: #111;
+  font-size: 12px; letter-spacing: 0; }
+.hl-sr { position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; }
+.hl-search { display: flex; gap: 6px; }
+.hl-search input, .hl-dates input {
+  min-width: 0; padding: 8px 10px; border-radius: 8px; min-height: 40px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+  color: var(--fg); font: inherit; font-size: 13px; color-scheme: dark;
+}
+.hl-search input { flex: 1 1 auto; }
+.hl-search input:focus, .hl-dates input:focus { outline: none; border-color: #ff6b00; }
+.hl-search button {
+  flex: 0 0 auto; padding: 0 14px; border-radius: 8px; cursor: pointer; font: inherit;
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+}
+.hl-search button:hover { border-color: #ff6b00; }
+.hl-hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.hl-hint:empty { display: none; }
+.hl-location { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  color: var(--muted); border: 1px dashed rgba(255,255,255,.18); }
+.hl-location.is-set { color: var(--fg); border: 1px solid #ff6b00;
+  background: rgba(255,107,0,.1); }
+/* Labels on row 1, inputs on row 2, so the two columns line up whatever the
+   hint text wraps to. */
+.hl-dates { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; row-gap: 4px;
+  align-items: end; }
+.hl-dates label { font-size: 13px; font-weight: 600; }
+.hl-dates label small { display: block; font-weight: 400; font-size: 11px; color: var(--muted); }
+.hl-go {
+  width: 100%; min-height: 44px; border-radius: 10px; cursor: pointer; font: inherit;
+  font-size: 14px; font-weight: 700; color: #111; background: #ff6b00; border: none;
+}
+.hl-go:hover { background: #ff8a33; }
+.hl-go:disabled { opacity: .6; cursor: progress; }
+.hl-result { margin-top: 12px; font-size: 13px; }
+.hl-result:empty { display: none; }
+.hl-marker { width: 18px; height: 18px; border-radius: 50%; background: #ff6b00;
+  border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(255,107,0,.3); }
