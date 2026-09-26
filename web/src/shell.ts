@@ -258,9 +258,13 @@ export function createShell(deps: ShellDeps): Shell {
   /** Open a rail view. Re-tapping the icon of the view you are already on is a
    *  no-op rather than a second identical entry, so back does not need two
    *  presses to undo one deliberate action. */
-  let closingFire = false;
+  /** Set while a rail tap waits for the fire's pop to land. Expires, like
+   *  nav's own pending window, so a swallowed popstate cannot leave the rail
+   *  dead — or a stale listener to open a view on some later, unrelated
+   *  stack change. */
+  let closingFireUntil = 0;
   const openRail = (view: ViewId, title: string, enter?: () => void) => {
-    if (closingFire) return; // a tap while the fire's pop is still in flight
+    if (Date.now() < closingFireUntil) return; // the fire's pop is still in flight
     // The icon is a toggle: tapping the one you are already on closes it.
     // It used to be a no-op, which left the icon looking like a dead control
     // and made the back bar the only way out of a panel the same icon had
@@ -277,10 +281,12 @@ export function createShell(deps: ShellDeps): Shell {
     // asynchronous (nav only moves on popstate), hence the one-shot listener.
     const fireAt = nav.stack.findIndex((e) => e.view === "detail");
     if (fireAt > 0 && (view === "search" || view === "historical")) {
-      closingFire = true;
-      const off = nav.onChange(() => {
+      closingFireUntil = Date.now() + 1000;
+      const off = nav.onChange((stack) => {
         off();
-        closingFire = false;
+        const late = Date.now() >= closingFireUntil;
+        closingFireUntil = 0;
+        if (late || stack.some((e) => e.view === "detail")) return;
         // Opened from search: popping the fire already restored the results.
         if (nav.top.view === view) return;
         enter?.();

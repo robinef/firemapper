@@ -90,8 +90,14 @@ export function createNav(opts: {
   /** A back()/backTo()/reset() asked the browser to navigate and its popstate
    *  has not landed yet. The cursor is stale until it does, so a second
    *  request computed from it would overshoot — two quick taps on "‹" at
-   *  depth 1 walked off the site. Requests in that window are dropped. */
-  let pending = false;
+   *  depth 1 walked off the site. Requests in that window are dropped.
+   *  The window EXPIRES rather than waiting forever: a frozen tab or a
+   *  bfcache round trip can swallow the popstate, and a flag that never
+   *  cleared would turn every later "‹", Escape and ✕ into a silent no-op.
+   *  A real popstate lands in milliseconds, so a second is generous. */
+  let pendingUntil = 0;
+  const PENDING_MS = 1000;
+  const pending = () => Date.now() < pendingUntil;
   const exits = new Map<ViewId, Array<() => void>>();
   const changes: Array<(s: readonly Entry[]) => void> = [];
 
@@ -142,7 +148,7 @@ export function createNav(opts: {
   };
 
   target.addEventListener("popstate", (ev) => {
-    pending = false;
+    pendingUntil = 0;
     const state = (ev as PopStateEvent).state as { depth?: number } | null;
     goTo(typeof state?.depth === "number" ? state.depth : 0);
   });
@@ -182,19 +188,19 @@ export function createNav(opts: {
       // to be exactly one deep; from [map, search, detail] it lets a nested
       // pop run to completion, and the outer pop then re-grows `entries` over
       // the shorter array, leaving a hole that throws on the next restore().
-      if (unwinding || pending || cursor === 0) return; // never navigate off the site
-      pending = true;
+      if (unwinding || pending() || cursor === 0) return; // never navigate off the site
+      pendingUntil = Date.now() + PENDING_MS;
       history.back();
     },
     backTo(depth) {
       const wanted = Math.max(0, depth);
-      if (unwinding || pending || wanted >= cursor) return;
-      pending = true;
+      if (unwinding || pending() || wanted >= cursor) return;
+      pendingUntil = Date.now() + PENDING_MS;
       history.go(wanted - cursor);
     },
     reset() {
-      if (unwinding || pending || cursor === 0) return;
-      pending = true;
+      if (unwinding || pending() || cursor === 0) return;
+      pendingUntil = Date.now() + PENDING_MS;
       history.go(-cursor);
     },
     onExit(view, fn) {

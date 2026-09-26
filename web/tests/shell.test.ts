@@ -551,6 +551,29 @@ describe("a fire kept under a level-1 view", () => {
     expect(calls).toEqual(["historical"]);
   });
 
+  it("a rail tap whose fire pop never lands does not leave the rail dead", () => {
+    vi.useFakeTimers();
+    try {
+      mountShellDom();
+      const { history, target } = fakeHistory();
+      const nav = createNav({ history, target });
+      createShell({ nav, showFireList: () => {}, infoContent: () => "" });
+      nav.push({ view: "detail", title: "Pedrógão" });
+      // A frozen tab swallows the pop: history.go never answers.
+      const go = vi.spyOn(history, "go").mockImplementation(() => {});
+      document.getElementById("rail-search")!.click();
+      expect(go).toHaveBeenCalledOnce();
+      go.mockRestore();
+      vi.advanceTimersByTime(1500);
+      // Both guards have expired: the rail answers again, and the stale
+      // listener from the swallowed pop does not hijack this change.
+      document.getElementById("rail-info")!.click();
+      expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail", "info"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hides the pill in compare, whose own bar already names the fire", () => {
     const { nav, pill } = setupWithDeps();
     nav.push({ view: "detail", title: "Pedrógão" });

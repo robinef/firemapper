@@ -102,6 +102,26 @@ describe("nav stack", () => {
     expect(queued).toEqual([-1]);
   });
 
+  it("stops waiting for a popstate that never lands, so back can never freeze", () => {
+    // A frozen tab or a bfcache round trip can swallow the popstate; without
+    // an expiry every later "‹", Escape and ✕ would be a silent no-op.
+    vi.useFakeTimers();
+    try {
+      const { history, target } = fakeHistory();
+      const nav = createNav({ history, target });
+      nav.push(entry("detail", "Pedrógão"));
+      const back = vi.spyOn(history, "back").mockImplementation(() => {});
+      nav.back();
+      nav.back();
+      expect(back).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(1500);
+      nav.back();
+      expect(back).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backTo() at or above the current depth is a no-op", () => {
     const { history, target } = fakeHistory();
     const nav = createNav({ history, target });
