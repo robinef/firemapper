@@ -60,6 +60,10 @@ export interface Nav {
   push(e: Entry): void;
   replace(e: Entry): void;
   back(): void;
+  /** Unwind to `depth` (0 = the map) in ONE browser navigation. A loop of
+   *  back() cannot do this: each back() only asks the browser, so the second
+   *  would run before the first popstate arrives. */
+  backTo(depth: number): void;
   reset(): void;
   onExit(v: ViewId, fn: () => void): () => void;
   onChange(fn: (stack: readonly Entry[]) => void): () => void;
@@ -174,6 +178,11 @@ export function createNav(opts: {
       // the shorter array, leaving a hole that throws on the next restore().
       if (unwinding || cursor === 0) return; // never navigate off the site
       history.back();
+    },
+    backTo(depth) {
+      const wanted = Math.max(0, depth);
+      if (unwinding || wanted >= cursor) return;
+      history.go(wanted - cursor);
     },
     reset() {
       if (unwinding || cursor === 0) return;

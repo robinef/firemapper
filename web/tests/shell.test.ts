@@ -429,6 +429,118 @@ describe("level-2 toggles from a peeked card", () => {
   });
 });
 
+describe("a fire kept under a level-1 view", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+  function setupWithDeps() {
+    mountShellDom();
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    const calls: string[] = [];
+    createShell({
+      nav,
+      showFireList: (q) => calls.push(`list:${q}`),
+      lastQuery: () => "porto",
+      infoContent: () => "<p>sources</p>",
+      showHistoricalLookup: () => calls.push("historical"),
+    });
+    return { nav, calls, pill: document.getElementById("fire-pill")! };
+  }
+
+  it("shows no pill on the map or on the fire card itself", () => {
+    const { nav, pill } = setupWithDeps();
+    expect(pill.hidden).toBe(true);
+    nav.push({ view: "detail", title: "Pedrógão" });
+    expect(pill.hidden).toBe(true);
+  });
+
+  it("⚙ over a fire shows a pill naming the fire that is still selected", () => {
+    const { nav, pill } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-layers")!.click();
+    expect(pill.hidden).toBe(false);
+    expect(pill.textContent).toContain("Pedrógão");
+  });
+
+  it("escapes the fire name, which comes from feature properties", () => {
+    const { nav, pill } = setupWithDeps();
+    nav.push({ view: "detail", title: "<img src=x onerror=alert(1)>" });
+    document.getElementById("rail-layers")!.click();
+    expect(pill.querySelector("img")).toBeNull();
+    expect(pill.textContent).toContain("<img src=x onerror=alert(1)>");
+  });
+
+  it("the pill's Show returns to the fire card and hides the pill", () => {
+    const { nav, pill } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-layers")!.click();
+    pill.querySelector<HTMLButtonElement>(".fp-show")!.click();
+    expect(nav.top.view).toBe("detail");
+    expect(pill.hidden).toBe(true);
+  });
+
+  it("the pill's ✕ deselects the fire, landing where the fire was opened from", () => {
+    const { nav, pill } = setupWithDeps();
+    nav.push({ view: "search", title: "Search" });
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-layers")!.click();
+    pill.querySelector<HTMLButtonElement>(".fp-close")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    expect(pill.hidden).toBe(true);
+  });
+
+  it("switching ⚙ → ℹ over a fire keeps the fire directly beneath", () => {
+    const { nav } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-layers")!.click();
+    document.getElementById("rail-info")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "detail", "info"]);
+    // The back bar names its destination, and that destination is the fire.
+    expect(document.querySelector(".view-back")!.textContent).toContain("Pedrógão");
+  });
+
+  it("🔍 over a fire closes the fire first — search owns the card's panel", () => {
+    const { nav, calls } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-search")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    expect(calls).toEqual(["list:"]);
+  });
+
+  it("🔍 over a fire opened from search returns to those results", () => {
+    const { nav, calls } = setupWithDeps();
+    document.getElementById("rail-search")!.click();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-search")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    expect(calls).toEqual(["list:", "list:porto"]);
+  });
+
+  it("🔍 from ⚙-over-a-fire also closes the fire", () => {
+    const { nav } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-layers")!.click();
+    document.getElementById("rail-search")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+  });
+
+  it("🕘 over a fire closes the fire first", () => {
+    const { nav, calls } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    document.getElementById("rail-historical")!.click();
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "historical"]);
+    expect(calls).toEqual(["historical"]);
+  });
+
+  it("hides the pill in compare, whose own bar already names the fire", () => {
+    const { nav, pill } = setupWithDeps();
+    nav.push({ view: "detail", title: "Pedrógão" });
+    nav.push({ view: "compare", title: "Compare" });
+    expect(pill.hidden).toBe(true);
+  });
+});
+
 describe("--timebar measurement", () => {
   beforeEach(() => {
     document.body.innerHTML = "";

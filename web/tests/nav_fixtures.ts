@@ -56,6 +56,7 @@ export function mountShellDom(): void {
       <button id="rail-layers"></button>
       <button id="rail-search"></button>
       <button id="rail-info"></button>
+      <button id="rail-historical"></button>
       <a id="rail-scale" href="/scale"></a>
     </nav>
     <div id="view" data-view="map">
@@ -66,6 +67,7 @@ export function mountShellDom(): void {
     </div>
     <div id="compare-bar"></div>
     <button id="view-chip" type="button">‹ Map</button>
+    <div id="fire-pill" hidden></div>
     <div id="notice"></div>
     <div id="timeline"></div>`;
   delete document.body.dataset.view;

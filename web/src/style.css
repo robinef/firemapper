@@ -580,6 +580,25 @@ body.compare-mode #timeline { display: none; }
   background: var(--panel); color: var(--fg); font: inherit; font-weight: 600;
   border: 1px solid rgba(255,255,255,.14); cursor: pointer;
   box-shadow: 0 2px 12px rgba(0,0,0,.45); align-items: center; }
+/* The fire still selected under ⚙ / ℹ. Centred under #header (which ends
+   above 56px at every width, as #compare-bar relies on too), so it reads as
+   the map's current state rather than part of the panel. Desktop only: on a
+   phone every view is full-page and would sit under it, and there the back
+   bar already names the fire (openRail keeps the fire directly beneath). */
+#fire-pill { position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  z-index: 9; display: flex; align-items: center; gap: 4px; max-width: 60vw;
+  padding: 0 4px 0 14px; border-radius: 999px; background: var(--panel);
+  border: 1px solid #ff6b00; box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+#fire-pill[hidden] { display: none; }
+#fire-pill .fp-text { font-size: 13px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#fire-pill .fp-text b { color: var(--fg); }
+#fire-pill button { background: none; border: none; color: var(--fg); font: inherit;
+  cursor: pointer; min-height: 40px; padding: 0 10px; flex: 0 0 auto; }
+#fire-pill .fp-show { font-weight: 600; color: #ff9a4d; }
+#fire-pill .fp-close { font-size: 17px; min-width: 40px; }
+#fire-pill button:hover { color: #ffcf8f; }
+@media not all and (min-width: 641px) { #fire-pill { display: none; } }
 /* Live count under a layer toggle, and the layer's own filter. */
 .layer-count { font-size: 10.5px; color: #8fd8ff; margin-top: 2px; }
 .layer-filter {

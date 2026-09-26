@@ -62,6 +62,33 @@ describe("nav stack", () => {
     expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
   });
 
+  it("backTo(depth) unwinds to that depth in one navigation", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    const seen: string[] = [];
+    nav.onExit("detail", () => seen.push("detail"));
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    nav.push(entry("layers", "Layers"));
+    const spy = vi.spyOn(history, "go");
+    nav.backTo(1);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith(-2);
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    expect(seen).toEqual(["detail"]);
+  });
+
+  it("backTo() at or above the current depth is a no-op", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.push(entry("detail", "Pedrógão"));
+    const spy = vi.spyOn(history, "go");
+    nav.backTo(1);
+    nav.backTo(5);
+    expect(spy).not.toHaveBeenCalled();
+    expect(nav.stack).toHaveLength(2);
+  });
+
   it("calls onExit for every level it unwinds, deepest first", () => {
     const { history, target } = fakeHistory();
     const nav = createNav({ history, target });

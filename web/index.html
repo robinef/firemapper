@@ -76,6 +76,9 @@
       <div id="info"></div>
     </div>
     <button id="view-chip" type="button">‹ Map</button>
+    <!-- Names the fire still selected under ⚙ / ℹ, with Show and ✕ — see
+         shell.ts renderFirePill. Outside #view so it floats over the map. -->
+    <div id="fire-pill" hidden></div>
     <!-- Compare's chrome lives OUTSIDE #view: compare shows the bare map with
          the swipe divider, so #view is hidden for it — a back bar rendered
          inside would be hidden along with it. -->
