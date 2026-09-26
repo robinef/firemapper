@@ -108,19 +108,30 @@ any behaviour change, and confirm it fails without the fix.
 
 `main` is protected: a PR merges only when `pipeline (pytest)`,
 `web (tsc + vitest + build)`, `web (browser smoke)`, CodeQL's `Analyze (*)`
-jobs and a `claude-review` commit status are all green. No Claude credential
-lives in the repo or in Actions — the review runs in the local agent session:
+jobs, the `CodeQL` code-scanning result (the one that fails on new alerts)
+and a `claude-review` commit status are all green. Each check is pinned to
+the app that produces it. No Claude credential lives in the repo or in
+Actions — the review runs in the local agent session:
 
 1. Push the branch and open the PR.
 2. Run `/code-review` and `/security-review` on the pushed head. Fix findings,
    push, and review again — the status binds to one SHA, so every push needs
-   a fresh review.
-3. `bash scripts/review_gate.sh <pr> success "<one-line summary>"` (or
-   `failure`) posts the status; it refuses unless the clean local HEAD is the
-   PR head.
+   a fresh review. Treat any workflow that asks for `statuses: write` or
+   `checks: write` as a blocking finding: it could attest its own PR.
+3. `firemapper-review-gate <pr> success "<one-line summary>"` (or `failure`)
+   posts the status; it refuses fork PRs, a dirty tree, or a local HEAD that
+   is not the PR head.
 4. `gh pr merge --auto --squash --delete-branch <pr> --repo robinef/firemapper`
    queues the merge; GitHub performs it once every required check is green,
-   and the merge deploys (see below).
+   and the merge deploys (see below). Keep one queued auto-merge at a time:
+   branches are not required to be up to date, so two PRs queued together
+   each pass against a `main` that lacks the other.
+
+`firemapper-review-gate` is a copy of `scripts/review_gate.sh` installed from
+`origin/main` into `~/.local/bin` — never run the file from a checkout, which
+is the PR's own copy (see the script header). Re-install it after a merge that
+changes the script. The permission rules that let the agent run it and queue
+the merge live in user-level settings, not in this repo, for the same reason.
 
 Fork PRs never get the status, so they wait for a human. Dependency review
 runs on every PR as an advisory check.
