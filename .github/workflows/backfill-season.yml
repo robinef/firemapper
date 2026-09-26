@@ -42,7 +42,7 @@ jobs:
   timeout-minutes: 60
   steps:
    - uses: actions/checkout@v7
-   - uses: astral-sh/setup-uv@v10.1.0
+   - uses: astral-sh/setup-uv@v10.2.0
      with:
       enable-cache: true
    - run: uv sync
@@ -76,7 +76,7 @@ jobs:
    queue: max
   steps:
    - uses: actions/checkout@v7
-   - uses: astral-sh/setup-uv@v10.1.0
+   - uses: astral-sh/setup-uv@v10.2.0
      with:
       enable-cache: true
    - run: uv sync
@@ -107,7 +107,7 @@ jobs:
    queue: max
   steps:
    - uses: actions/checkout@v7
-   - uses: astral-sh/setup-uv@v10.1.0
+   - uses: astral-sh/setup-uv@v10.2.0
      with:
       enable-cache: true
    - run: uv sync
