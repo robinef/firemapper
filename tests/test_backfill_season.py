@@ -157,6 +157,56 @@ def test_a_transient_failure_is_retried(tmp_path):
     assert report["rows"]["VIIRS_SNPP_SP"] == {"2026-01": 4}
 
 
+def _typed_csv(dets) -> str:
+    """The SP layout with its trailing `type` column: (lat, lon, t, type)."""
+    lines = [
+        f"{lat},{lon},330.0,0.4,0.4,{t:%Y-%m-%d},{t:%H%M},N,VIIRS,n,2.0SP,290.0,5.0,D,{kind}"
+        for lat, lon, t, kind in dets
+    ]
+    return HEADER.rstrip("\n") + ",type\n" + "".join(line + "\n" for line in lines)
+
+
+def test_fetch_tallies_nasa_type_flags_per_cell_with_flagged_days(tmp_path):
+    """NASA's per-detection flag is the only signal that names a plant cell
+    the NRT-built season zone never saw: every cell with a flagged row is
+    reported with its per-type counts and its distinct flagged days. A
+    type-0-only cell (a fire) is not reported at all."""
+    plant = h3.latlng_to_cell(*MADRID, H3_RES)
+    fire = h3.latlng_to_cell(*VALLADOLID, H3_RES)
+    body = _typed_csv([
+        (*MADRID, U(2026, 1, 1, 1), 2),
+        (*MADRID, U(2026, 1, 1, 13), 2),  # same day: one flagged day
+        (*MADRID, U(2026, 1, 2, 1), 2),
+        (*MADRID, U(2026, 1, 3, 1), 0),
+        (*VALLADOLID, U(2026, 1, 2, 1), 0),
+    ])
+    report = bf.fetch_sp(
+        KEY, tmp_path / "sp.parquet", [(date(2026, 1, 1), 5)], bf.sp_sources()[:1],
+        http_get=lambda url: body,
+    )
+    assert report["type_cells"] == {plant: {"2": 3, "0": 1, "flagged_days": 2}}
+    assert fire not in report["type_cells"]
+    assert report["types"] == {"VIIRS_SNPP_SP": {"2": 3, "0": 2}}
+
+
+def test_build_writes_the_type_cells_beside_the_summary_never_under_archive(tmp_path):
+    """--publish uploads archive/; the flag tally is a measurement input and
+    must not reach R2 with the tracks."""
+    settings = _settings(tmp_path)
+    body = _typed_csv([(*MADRID, U(2026, 1, 1, 1), 2)])
+    first = "/VIIRS_SNPP_SP/-25.0,34.0,45.0,72.0/5/2026-01-01"
+    out = tmp_path / "bf"
+    summary = bf.build(
+        settings, out, tmp_path / "sp.parquet", {}, {},
+        http_get=lambda url: body if url.endswith(first) else _typed_csv([]),
+    )
+    cell = h3.latlng_to_cell(*MADRID, H3_RES)
+    assert json.loads((out / "sp_type_cells.json").read_text()) == {cell: {"2": 1, "flagged_days": 1}}
+    assert summary["fetch"]["flagged_cells"] == 1
+    assert "type_cells" not in summary["fetch"]
+    assert not list((out / "archive").rglob("sp_type_cells.json"))
+
+
 # --- stepped clustering -----------------------------------------------------
 
 def _rows(dets):
