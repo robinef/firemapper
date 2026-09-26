@@ -142,7 +142,12 @@ export function createShell(deps: ShellDeps): Shell {
   };
   const onPillClick = (e: Event) => {
     const btn = (e.target as HTMLElement)?.closest("button");
-    if (!btn) return;
+    if (!btn || !firePill) return;
+    // Gone at once, not on the next sync: the pop lands on a later popstate,
+    // and a second tap before it would compute its target from a stale stack
+    // (a double ✕ overshoots, from a shallow stack right off the site).
+    firePill.hidden = true;
+    firePill.innerHTML = "";
     // Show: the fire is the entry directly beneath. ✕: unwind the fire too,
     // landing on whatever it was opened from (the map, or search results).
     if (btn.classList.contains("fp-show")) nav.back();

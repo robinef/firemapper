@@ -490,6 +490,24 @@ describe("a fire kept under a level-1 view", () => {
     expect(pill.hidden).toBe(true);
   });
 
+  it("a double tap on the pill navigates once — the pop is async in a browser", () => {
+    mountShellDom();
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    createShell({ nav });
+    nav.push({ view: "search", title: "Search" });
+    nav.push({ view: "detail", title: "Pedrógão" });
+    nav.push({ view: "layers", title: "Layers" });
+    // A real browser answers history.go with popstate LATER; until then the
+    // stack is stale, and a second ✕ computed from it would overshoot.
+    const go = vi.spyOn(history, "go").mockImplementation(() => {});
+    const pill = document.getElementById("fire-pill")!;
+    pill.querySelector<HTMLButtonElement>(".fp-close")!.click();
+    pill.querySelector<HTMLButtonElement>(".fp-close")?.click();
+    expect(go).toHaveBeenCalledOnce();
+    expect(pill.hidden).toBe(true);
+  });
+
   it("switching ⚙ → ℹ over a fire keeps the fire directly beneath", () => {
     const { nav } = setupWithDeps();
     nav.push({ view: "detail", title: "Pedrógão" });
