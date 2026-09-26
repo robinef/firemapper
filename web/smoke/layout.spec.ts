@@ -9,6 +9,31 @@ import { boxOf, expectNoOverlap, fireRows, openRail, waitForBoot } from "./helpe
  * came within one review of shipping, while the suite was green.
  */
 
+/** Rotate the map the way a mouse does it: right-button drag across the
+ *  canvas. The built bundle has no map handle, so the gesture is the API. */
+async function rotateMap(page: import("@playwright/test").Page): Promise<void> {
+  const c = (await page.locator("canvas").boundingBox())!;
+  const x = c.x + c.width / 2, y = c.y + c.height * 0.3;
+  await page.mouse.move(x - 80, y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(x + 80, y + 40, { steps: 12 });
+  await page.mouse.up({ button: "right" });
+}
+
+/** The north-up compass: absent at north, present once rotated, clear of
+ *  the chrome it stacks beside, and one tap puts north back up. */
+async function compassRoundTrip(page: import("@playwright/test").Page): Promise<void> {
+  const compass = page.locator(".maplibregl-ctrl-compass");
+  await expect(compass, "no compass while the map points north").toBeHidden();
+  await rotateMap(page);
+  await expect(compass, "a rotated map offers the way back").toBeVisible();
+  await expectNoOverlap(page, ".maplibregl-ctrl-compass", "#timeline", "the compass must clear the time bar");
+  await expectNoOverlap(page, ".maplibregl-ctrl-compass", "#rail", "the compass must clear the rail");
+  await expectNoOverlap(page, ".maplibregl-ctrl-compass", ".maplibregl-ctrl-attrib", "the compass must clear the credits");
+  await compass.click();
+  await expect(compass, "north is back up, so the compass goes").toBeHidden();
+}
+
 test.describe("mobile 375x812", () => {
   test.use({ viewport: { width: 375, height: 812 } });
 
@@ -137,6 +162,17 @@ test.describe("mobile 375x812", () => {
     expect(Number(m?.[1] ?? 0), `layers panel says: "${m?.[0] ?? "no fire in view"}"`).toBeGreaterThan(0);
   });
 
+  test("a rotated map gets a north-up compass, 44px, clear of the chrome", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await compassRoundTrip(page);
+    // A two-finger twist rotates the map on a phone; the fix is a finger target.
+    await rotateMap(page);
+    const box = await boxOf(page, ".maplibregl-ctrl-compass");
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+
   test("text inputs are 16px, so iOS Safari does not zoom in on focus", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
@@ -205,6 +241,12 @@ test.describe("desktop 1280x800", () => {
     // collide".
     await expect(page.locator("#view-chip")).toBeHidden();
     await expect(page.locator(".fc-peek")).toBeHidden();
+  });
+
+  test("a rotated map gets a north-up compass, clear of the chrome", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await compassRoundTrip(page);
   });
 
   test("the map attribution and scale bar clear the time bar and the rail", async ({ page }) => {

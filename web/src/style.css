@@ -677,6 +677,16 @@ body.compare-mode #timeline { display: none; }
 .maplibregl-ctrl-scale {
   background: var(--panel); border-color: var(--fg); color: var(--fg);
 }
+/* North-up compass (map.ts::addCompass): only while the map is rotated or
+   tilted. #map-prefixed for the same bundle-order reason as the lift above. */
+#map .maplibregl-ctrl-group.is-north { display: none; }
+#map .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+  border-radius: 50%; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.45);
+}
+@media not all and (min-width: 641px), (pointer: coarse) {
+  /* A finger target, like every other control here (44px, WCAG 2.5.8). */
+  #map .maplibregl-ctrl-group .maplibregl-ctrl-compass { width: 44px; height: 44px; }
+}
 
 /* ---- Find a past fire (historical lookup) -------------------------- */
 .hl-title { margin: 0 0 4px; font-size: 20px; }
