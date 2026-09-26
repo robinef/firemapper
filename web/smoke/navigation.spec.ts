@@ -51,6 +51,17 @@ test.describe("getting back out", () => {
     await page.click(".hl-pickbar button");
     await expect(page.locator("#view")).toBeVisible();
     await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("#historical-lookup-location")).toHaveClass(/is-set/);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+
+    // Turning the phone to landscape crosses to the desktop layout, where the
+    // bar would cover the rail and the view's back button: picking ends.
+    await page.click("#historical-lookup-pick");
+    await page.setViewportSize({ width: 812, height: 375 });
+    await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("body")).not.toHaveClass(/hl-picking/);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(page.locator("#view")).toBeVisible();
 
     // Back while picking leaves the form, and picking mode with it.
     await page.click("#historical-lookup-pick");

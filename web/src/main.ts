@@ -669,6 +669,11 @@ async function boot() {
       historicalPickBar?.remove();
       historicalPickBar = null;
     };
+    // Picking is a phone-only mode: turning a phone to landscape crosses the
+    // breakpoint, where #view is back and the bar would sit over the rail and
+    // the view's back button. Optional-chained like firecard.ts: jsdom has no
+    // matchMedia.
+    window.matchMedia?.("(min-width: 641px)")?.addEventListener?.("change", endMapPicking);
     const stopHistoricalPicking = () => {
       if (historicalClickHandler) {
         map.off("click", historicalClickHandler);
