@@ -180,7 +180,11 @@ it:
   buttons, the Escape key and the hardware back gesture one operation instead
   of three that drift apart. `web/src/shell.ts` owns everything that is chrome
   rather than content: the icon rail, the `#view` container, the back bars and
-  the map's camera padding.
+  the map's camera padding. A fire stays selected under ⚙ and ℹ, which swap
+  in place directly above it, and `#fire-pill` names it with Show / ✕. 🔍 and
+  🕘 close the fire first, because they render into `#panel`, the fire card's
+  own element. `back`/`backTo`/`reset` ignore calls while their own popstate
+  is still pending (for at most 1 s), so a double tap cannot overshoot off the site.
 
 Layers live in `web/src/layer_*.ts`, one module per layer. The overview's
 "Burned this year" layer (`layer_season.ts`) is the one that renders a whole
