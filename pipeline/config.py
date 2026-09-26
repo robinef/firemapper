@@ -48,10 +48,6 @@ ARCHIVE_FOOTPRINTS_INDEX = "archive/footprints_index.json"  # {id: sha256 of its
 SCALE_BLOB_STATE_KEY = "archive/scale_blob_state.json"
 
 
-def scale_blob_key(year: int) -> str:
-    return f"archive/blob_{year}.json"
-
-
 def scale_blob_fires_key(year: int) -> str:
     return f"archive/blob_{year}_fires.json"
 

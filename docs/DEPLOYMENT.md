@@ -48,9 +48,9 @@ be a manual `backfill-season` dispatch on `main`; any other run is refused)
 exactly the published ids from the live track index, `archive/season_state.json`,
 `archive/season_2026_cells.json` and `archive/season_2026_sizes.json` (the next
 export recomputes `season_2026.json`), and — if the scale blob took any of
-them — deletes `archive/scale_blob_state.json`, `archive/blob_2026.json` and
-`archive/blob_2026_fires.json`, which the next refreshes rebuild cold: the
-blob packs fires into one gap-free spiral that cannot lose a fire in place.
+them — deletes `archive/scale_blob_state.json` and
+`archive/blob_2026_fires.json`, which the next refreshes rebuild cold from the
+cleaned index.
 It also deletes the published track bodies, so a later re-publish of a
 changed build uploads fresh ones instead of skipping the stale keys.
 Every object it changes or deletes is first copied to

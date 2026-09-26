@@ -530,6 +530,8 @@ SEASON_STATE = "data/archive/season_state.json"
 SEASON_CELLS = "data/archive/season_2026_cells.json"
 SEASON_SIZES = "data/archive/season_2026_sizes.json"
 SCALE_STATE = "data/archive/scale_blob_state.json"
+# The retired per-hex blob: no longer published, but still in the bucket from
+# before. Rollback must leave it alone — nothing reads it any more.
 SCALE_BLOB = "data/archive/blob_2026.json"
 SCALE_FIRES = "data/archive/blob_2026_fires.json"
 BODY_A = "data/archive/tracks/bfA.json"
@@ -574,12 +576,13 @@ def test_rollback_removes_exactly_the_backfill_ids_from_every_file_after_backing
     assert set(json.loads(s3.objects[SEASON_STATE])) == {"live1", "__zone__"}
     assert set(json.loads(s3.objects[SEASON_CELLS])) == {"live1"}
     assert json.loads(s3.objects[SEASON_SIZES]) == {"year": 2026, "fires": {"live1": [1.0, "ES", "2026-07-20"]}}
-    for key in (SCALE_STATE, SCALE_BLOB, SCALE_FIRES):  # cold rebuild: packed spiral can't lose a fire
+    for key in (SCALE_STATE, SCALE_FIRES):  # cold rebuild from the cleaned index
         assert key not in s3.objects
+    assert s3.objects[SCALE_BLOB] == before[SCALE_BLOB]  # retired file: not the rollback's business
     # a stale body would be kept by a later publish (it never overwrites a key)
     assert BODY_A not in s3.objects
     assert s3.objects[BODY_LIVE1] == before[BODY_LIVE1]  # protected id: body untouched
-    touched = [INDEX_KEY, SEASON_STATE, SEASON_CELLS, SEASON_SIZES, SCALE_STATE, SCALE_BLOB, SCALE_FIRES, BODY_A]
+    touched = [INDEX_KEY, SEASON_STATE, SEASON_CELLS, SEASON_SIZES, SCALE_STATE, SCALE_FIRES, BODY_A]
     for key in touched:
         assert s3.objects[f"{key}.pre-rollback-{STAMP}"] == before[key]
     n = len(touched)
@@ -589,7 +592,7 @@ def test_rollback_removes_exactly_the_backfill_ids_from_every_file_after_backing
     # then the scale-blob deletes; bodies after the index no longer names them
     assert s3.ops[n:] == [
         ("put", INDEX_KEY), ("put", SEASON_CELLS), ("put", SEASON_SIZES), ("put", SEASON_STATE),
-        ("delete", SCALE_STATE), ("delete", SCALE_BLOB), ("delete", SCALE_FIRES),
+        ("delete", SCALE_STATE), ("delete", SCALE_FIRES),
         ("delete", BODY_A),
     ]
     assert plan["ids"] == ["bfA", "bfB"]
@@ -599,7 +602,7 @@ def test_rollback_dry_run_writes_nothing(tmp_path):
     s3 = PublishS3(_ingested_bucket())
     plan = bf.rollback(s3, "bucket", {"bfA", "bfB"}, now=datetime(2026, 10, 1, 8, tzinfo=timezone.utc), dry_run=True)
     assert s3.ops == []
-    assert plan["removed"][INDEX_KEY] == 2 and plan["delete"] == [SCALE_STATE, SCALE_BLOB, SCALE_FIRES]
+    assert plan["removed"][INDEX_KEY] == 2 and plan["delete"] == [SCALE_STATE, SCALE_FIRES]
     assert plan["bodies"] == [BODY_A]
 
 

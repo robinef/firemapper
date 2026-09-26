@@ -106,11 +106,11 @@ extension when adjacency math is needed).
 Two things live outside the generation directories, under `archive/`, which
 generation pruning never touches: the permanent per-fire track archive
 (`pipeline/archive_tracks.py`, one JSON per settled fire) and the derived,
-incrementally-maintained year files built from it — the scale-comparison blob
-(`pipeline/export_scale_blob.py`; the web draws it from the per-fire summary
-`blob_{year}_fires.json` alone, EU-27 fires packed into one country band each
-by `web/src/scale_blob_shape.ts`, so the per-hex `blob_{year}.json` is no
-longer read by the site) and the "Burned this year" season layer
+incrementally-maintained year files built from it — the scale-comparison
+blob's per-fire summary (`pipeline/export_scale_blob.py`:
+`blob_{year}_fires.json`, each fire's country and true km²; the web packs the
+shape itself, EU-27 fires in one country band each, in
+`web/src/scale_blob_shape.ts`) and the "Burned this year" season layer
 (`pipeline/export_season.py`: `season_{year}.json` with res-6 hex aggregates
 and the season floor date, `season_{year}_sizes.json` with every fire's km²,
 country, first date and nearest-town place name (`enrich.place_for` over the

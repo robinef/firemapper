@@ -27,7 +27,6 @@ from .config import (
     TRACK_INDEX,
     Settings,
     scale_blob_fires_key,
-    scale_blob_key,
     season_cells_key,
     season_key,
     season_sizes_key,
@@ -187,8 +186,8 @@ def hydrate(settings: Settings, client, now: datetime | None = None) -> str | No
         footprints_index_path.parent.mkdir(parents=True, exist_ok=True)
         footprints_index_path.write_bytes(footprints_index_body)
 
-    # The scale-comparison year blob and its incremental export state
-    # (pipeline/export_scale_blob.py). Same explicit-restore pattern as the
+    # The scale-comparison blob's per-fire summary and its incremental export
+    # state (pipeline/export_scale_blob.py). Same explicit-restore pattern as the
     # archive index above — publish() already uploads these generically via
     # its archive/ walk, so only hydrate() needs a named addition.
     # Every year the pipeline will export this run (config.season_years):
@@ -198,7 +197,7 @@ def hydrate(settings: Settings, client, now: datetime | None = None) -> str | No
     years = season_years(now or datetime.now(timezone.utc))
     for extra_key in (
         SCALE_BLOB_STATE_KEY,
-        *(k for y in years for k in (scale_blob_key(y), scale_blob_fires_key(y))),
+        *(scale_blob_fires_key(y) for y in years),
         # The season layer's state, summary, per-fire cells and per-fire
         # sizes (pipeline/export_season.py) — same rationale as the scale blob.
         SEASON_STATE_KEY,

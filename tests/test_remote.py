@@ -19,7 +19,6 @@ from pipeline.config import (
     SEASON_STATE_KEY,
     load_settings,
     scale_blob_fires_key,
-    scale_blob_key,
     season_cells_key,
     season_sizes_key,
     season_key,
@@ -556,12 +555,13 @@ def test_hydrate_tolerates_no_footprints_index_yet(tmp_path):
     assert not (settings.out_dir / ARCHIVE_FOOTPRINTS_INDEX).exists()
 
 
-def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
-    """The scale-comparison year blob and its incremental export state
-    (pipeline/export_scale_blob.py) need the same explicit-restore hydrate
-    already does for the permanent archive index above — publish()'s generic
-    archive/ walk uploads them, but only a named fetch here brings them back
-    on a fresh runner with an empty out_dir."""
+def test_hydrate_restores_scale_blob_state_and_fires_summary_not_the_retired_blob(tmp_path):
+    """The scale-comparison blob's per-fire summary and its incremental export
+    state (pipeline/export_scale_blob.py) need the same explicit-restore
+    hydrate already does for the permanent archive index above — publish()'s
+    generic archive/ walk uploads them, but only a named fetch here brings them
+    back on a fresh runner with an empty out_dir. The retired per-hex
+    blob_{year}.json (57 MB, still in the bucket) must NOT be downloaded."""
     gen = "gen-20260805T000000Z"
     year = datetime.now(timezone.utc).year
     state_body = json.dumps({"fire-1": {"digest": "abc", "year": year}}).encode()
@@ -573,7 +573,7 @@ def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
         MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
         f"data/{gen}/events.geojson": b"{}",
         f"data/{SCALE_BLOB_STATE_KEY}": state_body,
-        f"data/{scale_blob_key(year)}": blob_body,
+        f"data/archive/blob_{year}.json": blob_body,
         f"data/{scale_blob_fires_key(year)}": fires_body,
     }
     client = FakeS3(objects)
@@ -582,7 +582,7 @@ def test_hydrate_restores_scale_blob_state_and_year_blob(tmp_path):
     hydrate(settings, client)
 
     assert (settings.out_dir / SCALE_BLOB_STATE_KEY).read_bytes() == state_body
-    assert (settings.out_dir / scale_blob_key(year)).read_bytes() == blob_body
+    assert not (settings.out_dir / f"archive/blob_{year}.json").exists()
     assert (settings.out_dir / scale_blob_fires_key(year)).read_bytes() == fires_body
 
 
@@ -625,7 +625,7 @@ def test_hydrate_in_january_restores_the_ended_season_too(tmp_path):
         MANIFEST_KEY: json.dumps({"generation": gen}).encode(),
         f"data/{gen}/events.geojson": b"{}",
         **{f"data/{k}": k.encode() for y in (2026, 2027) for k in (
-            season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_key(y), scale_blob_fires_key(y),
+            season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_fires_key(y),
         )},
     }
     settings = _settings(tmp_path)
@@ -633,7 +633,7 @@ def test_hydrate_in_january_restores_the_ended_season_too(tmp_path):
     hydrate(settings, FakeS3(objects), now=datetime(2027, 1, 3, 1, 17, tzinfo=timezone.utc))
 
     for y in (2026, 2027):
-        for k in (season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_key(y), scale_blob_fires_key(y)):
+        for k in (season_key(y), season_cells_key(y), season_sizes_key(y), scale_blob_fires_key(y)):
             assert (settings.out_dir / k).read_bytes() == k.encode(), k
 
     # Past the export grace (config.SEASON_EXPORT_GRACE_DAYS) only the new
