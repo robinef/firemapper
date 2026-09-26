@@ -348,13 +348,18 @@ test.describe("small phone landscape 568x320, touch", () => {
   test("a peeked card leaves the header, the rail and the credits on screen", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
-    // The histogram alone was 176px of the 320; the play/slider row stays.
+    // The whole time bar was 176px of the 320. One day picker stays: the
+    // play/slider row where there is one...
     await expect(page.locator("#timeline .tl-bars")).toBeHidden();
     await expect(page.locator("#timeline .scrub-play")).toBeVisible();
-
+    // ...else the histogram. The sample's first fire has no cell_bins, so
+    // its card timeline has no scrubber and must keep its bars.
     await openRail(page, "rail-search", "search");
     await fireRows(page).first().tap();
     await expect(page.locator("#view")).toHaveAttribute("data-size", "peek");
+    await expect(page.locator("#timeline .scrub-row")).toHaveCount(0);
+    await expect(page.locator("#timeline .tl-bars")).toBeVisible();
+
     // Raised for the peek strip, the rail row rode up over the header and
     // pushed the credits off the top edge.
     await expectNoOverlap(page, "#rail", "#header", "the rail must clear the header");

@@ -787,11 +787,14 @@ body.compare-mode #map .maplibregl-ctrl-bottom-right { z-index: 3; }
   /* A phone held sideways at 320px keeps the phone layout, and the time bar
      alone took 176px of it: with a card peeked, the rail row rode up over the
      header and the credits off the top edge, leaving no map at all. Short
-     screens keep only the time bar's play/slider row — the slider picks a
-     day just as a bar tap does, and its label names the day and its count.
+     screens drop the title row and the date axis, and keep one day picker:
+     the play/slider row when there is one (its label names the day and its
+     count), else the histogram — a one-bin fire or a track without
+     cell_bins gets no scrubber, and the bars are then all there is.
      Nested, not ANDed: a width query written as a negation cannot be joined
      to a height feature without negating that too. */
   @media (max-height: 480px) {
-    #timeline .tl-head, #timeline .tl-bars, #timeline .tl-axis { display: none; }
+    #timeline .tl-head, #timeline .tl-axis { display: none; }
+    #timeline:has(.scrub-row) .tl-bars { display: none; }
   }
 }
