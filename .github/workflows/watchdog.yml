@@ -104,8 +104,54 @@ jobs:
             gh issue close "$NUM"
           fi
 
-      - name: Fail the run when the map is not advancing
-        if: steps.check.outputs.verdict != 'fresh'
+      # The full tier's own alarm, on its own issue: the fast tier keeps the
+      # manifest fresh on its own, so a dead refresh-full never trips the one
+      # above. "skipped" (manifest unreadable) touches neither this issue nor
+      # its closing — that outage is already reported above.
+      - name: Open or update the full-refresh issue
+        if: steps.check.outputs.full_verdict == 'stale' || steps.check.outputs.full_verdict == 'broken'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DETAIL: ${{ steps.check.outputs.full_detail }}
+          LIMIT: ${{ steps.check.outputs.full_limit }}
+          CHECKED: ${{ steps.check.outputs.full_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          echo "watchdog verdict: ${{ steps.check.outputs.verdict }}" >&2
+          set -euo pipefail
+          TITLE='[watchdog] full refresh is stale'
+          # Same local-filter dedupe as the stale-data issue above.
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          BODY="The full refresh tier has stopped publishing: the season summary is **${DETAIL}** (limit ${LIMIT} min). The live layers may still look fine — the fast tier keeps the manifest fresh on its own — but the FIRMS archive top-up, EFFIS, imagery and the \"Burned this year\" layer are frozen.
+
+          Where to look, in order:
+          1. Cloudflare → the Worker → Cron Events: is the \`17 */2 * * *\` trigger firing?
+          2. The most recent \`refresh-full\` run logs (the \`refresh\` concurrency group is serial; a stuck run blocks the queue)
+          3. \`GH_DISPATCH_TOKEN\` expiry
+
+          Checked \`${CHECKED}\` via ${RUN_URL}"
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close the full-refresh issue on recovery
+        if: steps.check.outputs.full_verdict == 'fresh'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE='[watchdog] full refresh is stale'
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Recovered — the full tier is publishing again. Closed by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue close "$NUM"
+          fi
+
+      - name: Fail the run when the map is not advancing
+        if: steps.check.outputs.verdict != 'fresh' || steps.check.outputs.full_verdict != 'fresh'
+        run: |
+          echo "watchdog verdict: ${{ steps.check.outputs.verdict }}, full tier: ${{ steps.check.outputs.full_verdict }}" >&2
           exit 1

@@ -201,6 +201,13 @@ order they will actually reach you:
    cannot drift). It opens one deduped issue titled `[watchdog] data is stale`
    and closes it on recovery.
 
+   The manifest cannot see the **full** tier stop: the fast tier re-stamps every
+   layer each half hour. So the watchdog also reads the public
+   `archive/season_{season_year}.json`, which only full runs rewrite, and fails
+   when its `generated_at` is over 5 hours old (`FULL_STALE_AFTER_MIN`: two
+   missed two-hourly Worker ticks) — on its own issue, `[watchdog] full refresh
+   is stale`. The drill fixture covers both (`tests/fixtures/archive/`).
+
    It goes through the public URL rather than R2 deliberately: that exercises
    the Worker serving `/data/**` too, so a healthy bucket behind a broken Worker
    still reads as broken — which is what a visitor gets.

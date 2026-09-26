@@ -15,6 +15,14 @@ manifest and see how old it is. Going through the public URL rather than R2 is
 the point — it exercises the Worker serving /data/** too, so a healthy bucket
 behind a broken Worker still reads as broken, which is what a visitor gets.
 
+The manifest alone cannot see the FULL tier stop: the fast tier re-stamps
+every layer each half hour, so a dead refresh-full (FIRMS archive, EFFIS,
+imagery, the season layer) still reads fresh. The only public file only the
+full tier writes is archive/season_{year}.json, whose `generated_at` every
+full run rewrites (pipeline/export_season.py::summarize). Its age is the
+full tier's heartbeat, checked through the same public URL for the same
+reason, and alarmed on its own issue so the two outages stay distinct.
+
 Residual risk, stated rather than hidden: GitHub disables scheduled workflows
 after ~60 days of repository inactivity. If that happens this dies the same
 quiet way it exists to catch. Closing that needs a third party outside both
@@ -42,6 +50,13 @@ MANIFEST_URL = os.environ.get("WATCHDOG_MANIFEST_URL") or (
     "https://firemapper.robinef.workers.dev/data/manifest.json"
 )
 ISSUE_TITLE = "[watchdog] data is stale"
+
+# The full tier runs every 2 h from the Worker's cron (worker/index.ts
+# FULL_CRON), with GitHub's own schedule every 6 h as a fallback. 5 h rides out
+# two missed ticks plus a slow run without crying wolf; a Worker-side outage
+# of the full cron alone then surfaces within one missed fallback cycle.
+FULL_STALE_AFTER_MIN = 300
+FULL_ISSUE_TITLE = "[watchdog] full refresh is stale"
 
 
 class Verdict(str, Enum):
@@ -113,6 +128,44 @@ def issue_action(verdict: Verdict, open_issue: dict | None) -> IssueAction:
     return IssueAction("create")
 
 
+def season_url(manifest_url: str, body: str | None) -> str | None:
+    """The shown season's summary beside the manifest: archive/season_{year}.json
+    for the manifest's `season_year` (its generated_at year for manifests
+    published before that field existed). None if the manifest is unreadable."""
+    try:
+        manifest = json.loads(body) if body is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    year = manifest.get("season_year")
+    if not isinstance(year, int):
+        generated = manifest.get("generated_at")
+        if not isinstance(generated, str) or not generated[:4].isdigit():
+            return None
+        year = int(generated[:4])
+    return f"{manifest_url.rsplit('/', 1)[0]}/archive/season_{year}.json"
+
+
+def season_age_min(body: str | None, now: float) -> float | None:
+    """Minutes since the full tier last wrote the season summary, or None."""
+    try:
+        season = json.loads(body) if body is not None else None
+        raw = season.get("generated_at") if isinstance(season, dict) else None
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return (now - stamp) / 60.0
+
+
+def full_verdict_for(body: str | None, now: float) -> Verdict:
+    """FRESH, STALE or BROKEN for the full tier — never FRESH by default."""
+    age = season_age_min(body, now)
+    if age is None:
+        return Verdict.BROKEN
+    return Verdict.STALE if age > FULL_STALE_AFTER_MIN else Verdict.FRESH
+
+
 def fetch(url: str, attempts: int = 2, pause: float = 5.0) -> str | None:
     """Fetch the manifest, retrying once.
 
@@ -141,6 +194,26 @@ def main(argv: list[str] | None = None) -> int:
     detail = f"{age:.0f} min old" if age is not None else "unreadable"
     print(f"[watchdog] {verdict.value}: manifest {detail} (limit {STALE_AFTER_MIN} min)", flush=True)
 
+    # The full tier. "skipped" when the manifest itself is unreadable: that
+    # outage already alarms above, and one cause should not open two issues
+    # (nor close the full-tier one it cannot judge).
+    full_url = season_url(MANIFEST_URL, body)
+    if verdict is Verdict.BROKEN:
+        full, full_detail = "skipped", "manifest unreadable"
+    elif full_url is None:
+        # A readable manifest that names no season: unknown is never fresh.
+        full, full_detail = Verdict.BROKEN.value, "manifest names no season"
+    else:
+        season_body = fetch(full_url)
+        full = full_verdict_for(season_body, now).value
+        full_age = season_age_min(season_body, now)
+        full_detail = f"{full_age:.0f} min old" if full_age is not None else "unreadable"
+    print(
+        f"[watchdog] full tier {full}: season summary {full_detail} "
+        f"(limit {FULL_STALE_AFTER_MIN} min)",
+        flush=True,
+    )
+
     # GITHUB_OUTPUT lets the workflow open or close the issue without this
     # script needing a token of its own.
     out = os.environ.get("GITHUB_OUTPUT")
@@ -150,7 +223,11 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(f"detail={detail}\n")
             fh.write(f"limit={STALE_AFTER_MIN}\n")
             fh.write(f"url={MANIFEST_URL}\n")
-    return 0 if verdict is Verdict.FRESH else 1
+            fh.write(f"full_verdict={full}\n")
+            fh.write(f"full_detail={full_detail}\n")
+            fh.write(f"full_limit={FULL_STALE_AFTER_MIN}\n")
+            fh.write(f"full_url={full_url or ''}\n")
+    return 0 if verdict is Verdict.FRESH and full == Verdict.FRESH.value else 1
 
 
 if __name__ == "__main__":  # pragma: no cover - entrypoint

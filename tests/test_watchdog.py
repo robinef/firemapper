@@ -22,10 +22,13 @@ from pathlib import Path
 import pytest
 
 from scripts.watchdog import (
+    FULL_STALE_AFTER_MIN,
     STALE_AFTER_MIN,
     Verdict,
+    full_verdict_for,
     issue_action,
     manifest_age_min,
+    season_url,
     verdict_for,
 )
 
@@ -205,3 +208,91 @@ class TestWorkflowWiring:
         wf = self._wf()
         assert "continue-on-error: true" in wf
         assert "exit 1" in wf
+
+
+class TestFullTier:
+    """The fast tier re-stamps every manifest layer each half hour, so a dead
+    refresh-full reads fresh there. archive/season_{year}.json is written only
+    by the full tier; its generated_at is that tier's public heartbeat."""
+
+    @staticmethod
+    def _season(age_min: float) -> str:
+        return json.dumps({"generated_at": _iso(NOW - age_min * 60).replace("+00:00", "Z")})
+
+    def test_the_season_file_sits_beside_the_manifest_for_the_shown_year(self):
+        body = json.dumps({"season_year": 2026, "generated_at": "2027-01-03T00:00:00+00:00", "layers": {}})
+        assert season_url("https://x.invalid/data/manifest.json", body) == (
+            "https://x.invalid/data/archive/season_2026.json"
+        )
+
+    def test_a_manifest_without_season_year_falls_back_to_its_generated_at(self):
+        body = json.dumps({"generated_at": "2026-09-26T13:00:00+00:00", "layers": {}})
+        assert season_url("https://x.invalid/data/manifest.json", body).endswith("/season_2026.json")
+
+    def test_no_season_is_named_when_the_manifest_cannot_say(self):
+        assert season_url("https://x.invalid/m.json", None) is None
+        assert season_url("https://x.invalid/m.json", "{nope") is None
+        assert season_url("https://x.invalid/m.json", json.dumps({"layers": {}})) is None
+
+    def test_a_full_tier_within_its_limit_is_quiet_and_past_it_alarms(self):
+        assert full_verdict_for(self._season(FULL_STALE_AFTER_MIN - 1), NOW) == Verdict.FRESH
+        assert full_verdict_for(self._season(FULL_STALE_AFTER_MIN + 1), NOW) == Verdict.STALE
+
+    @pytest.mark.parametrize("body", [None, "", "{nope", "[]", json.dumps({"year": 2026}),
+                                      json.dumps({"generated_at": "yesterday"})])
+    def test_an_unreadable_season_summary_is_broken_never_fresh(self, body):
+        assert full_verdict_for(body, NOW) == Verdict.BROKEN
+
+    def test_the_limit_rides_out_two_missed_two_hourly_ticks(self):
+        """worker/index.ts FULL_CRON fires every 2 h; one missed tick is 4 h
+        between runs, which must not alarm; the 6-hourly GitHub fallback alone
+        (Worker cron gone) must."""
+        assert 4 * 60 < FULL_STALE_AFTER_MIN < 6 * 60
+        import re
+
+        src = (Path(__file__).resolve().parents[1] / "worker" / "index.ts").read_text()
+        assert re.search(r'FULL_CRON\s*=\s*"17 \*/2 \* \* \*"', src), "full cron cadence changed: revisit the limit"
+
+    def test_the_drill_fixtures_trip_the_full_tier_alarm_too(self):
+        import time
+
+        fixtures = Path(__file__).resolve().parent / "fixtures"
+        manifest = (fixtures / "stale_manifest.json").read_text()
+        url = season_url("https://raw.invalid/tests/fixtures/stale_manifest.json", manifest)
+        assert url == "https://raw.invalid/tests/fixtures/archive/season_2020.json"
+        season = (fixtures / "archive" / "season_2020.json").read_text()
+        assert full_verdict_for(season, time.time()) == Verdict.STALE
+
+    def test_main_reports_both_tiers_and_fails_on_a_dead_full_tier(self, monkeypatch, tmp_path):
+        import scripts.watchdog as wd
+
+        manifest = json.dumps({"season_year": 2026, "layers": {"events": {"attempted_at": _iso(NOW - 60)}}})
+        bodies = {wd.MANIFEST_URL: manifest,
+                  season_url(wd.MANIFEST_URL, manifest): self._season(FULL_STALE_AFTER_MIN + 60)}
+        monkeypatch.setattr(wd, "fetch", lambda url: bodies.get(url))
+        monkeypatch.setattr(wd.time, "time", lambda: NOW)
+        out = tmp_path / "out"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        assert wd.main() == 1
+        text = out.read_text()
+        assert "verdict=fresh\n" in text and "full_verdict=stale\n" in text
+
+        bodies[season_url(wd.MANIFEST_URL, manifest)] = self._season(30)
+        out.write_text("")
+        assert wd.main() == 0
+        assert "full_verdict=fresh\n" in out.read_text()
+
+    def test_an_unreadable_manifest_skips_the_full_tier_rather_than_double_alarming(self, monkeypatch, tmp_path):
+        import scripts.watchdog as wd
+
+        monkeypatch.setattr(wd, "fetch", lambda url: None)
+        out = tmp_path / "out"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        assert wd.main() == 1
+        assert "verdict=broken\n" in out.read_text() and "full_verdict=skipped\n" in out.read_text()
+
+    def test_the_workflow_keeps_the_full_tier_on_its_own_issue(self):
+        wf = TestWorkflowWiring._wf()
+        assert "TITLE='[watchdog] full refresh is stale'" in wf
+        assert "steps.check.outputs.full_verdict == 'fresh'" in wf  # closes on recovery
+        assert "steps.check.outputs.full_verdict != 'fresh'" in wf  # fails the run
