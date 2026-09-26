@@ -37,6 +37,11 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
+# Least privilege: each job only reads the repo. A job that needs more
+# declares its own `permissions`, which replaces this block.
+permissions:
+  contents: read
+
 jobs:
   refresh:
     runs-on: ubuntu-latest

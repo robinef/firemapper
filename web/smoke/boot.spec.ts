@@ -18,7 +18,8 @@ test.describe("the built app boots", () => {
       // The Cloudflare Web Analytics beacon is fire-and-forget and optional
       // to boot; CI runners often have no egress to it (and ad-blockers kill
       // it in the wild too), so a failure here says nothing about the app.
-      if (r.url().includes("cloudflareinsights.com")) return;
+      const host = new URL(r.url()).hostname;
+      if (host === "cloudflareinsights.com" || host.endsWith(".cloudflareinsights.com")) return;
       failures.push(`failed: ${r.url()}`);
     });
     page.on("response", (r) => {
