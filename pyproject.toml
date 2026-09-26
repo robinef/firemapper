@@ -3,7 +3,7 @@ name = "firemaper"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.43.93",
+    "boto3>=1.43.100",
     "contourpy>=1.4.0",
     "duckdb>=1.0",
     "global-land-mask>=1.0.0",
