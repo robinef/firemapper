@@ -307,3 +307,13 @@ describe("wireDateRange", () => {
     expect(after.value).toBe("2022-07-10");
   });
 });
+
+import { localToday } from "../src/historical_lookup_ui";
+
+describe("localToday", () => {
+  it("uses the local calendar day, not UTC's", () => {
+    // 00:30 local on 26 Sep: toISOString() would still say the 25th east of UTC.
+    expect(localToday(new Date(2026, 8, 26, 0, 30))).toBe("2026-09-26");
+    expect(localToday(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
+  });
+});

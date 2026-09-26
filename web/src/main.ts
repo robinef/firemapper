@@ -656,6 +656,10 @@ async function boot() {
     let historicalClickHandler: ((e: maplibregl.MapMouseEvent) => void) | null = null;
     // The picked point, shown on the map so a click visibly "took".
     let historicalMarker: maplibregl.Marker | null = null;
+    // Bumped per render: a geocode reply that lands after the form was left
+    // or re-rendered belongs to a form that no longer exists.
+    let historicalRender = 0;
+    let historicalBusy = false;
     const stopHistoricalPicking = () => {
       if (historicalClickHandler) {
         map.off("click", historicalClickHandler);
@@ -682,10 +686,15 @@ async function boot() {
       // nav.onExit("historical", ...) below, which only fires when this
       // entry is actually popped, not when it's merely covered and restored.
       stopHistoricalPicking();
+      const render = ++historicalRender;
+      historicalBusy = false;
 
       const container = document.getElementById("panel")!;
       const locationEl = document.getElementById("historical-lookup-location")!;
       const pick = (lon: number, lat: number, place: string, label: string) => {
+        // Moving the point mid-lookup would leave the marker on a spot the
+        // pending result was not computed for.
+        if (historicalBusy) return;
         pickedLocation = { lon, lat, place };
         locationEl.textContent = `📍 ${label}`;
         locationEl.classList.add("is-set");
@@ -699,6 +708,7 @@ async function boot() {
       };
 
       wireGeocodeSearch(container, fetch, (lon, lat, place) => {
+        if (render !== historicalRender || nav.top.view !== "historical") return;
         pick(lon, lat, place, place);
         map.easeTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 8) });
       });
@@ -729,6 +739,7 @@ async function boot() {
         const go = form.querySelector<HTMLButtonElement>(".hl-go");
         resultEl.textContent = "Looking up… this can take a few seconds.";
         if (go) go.disabled = true;
+        historicalBusy = true;
         try {
           await runHistoricalLookup(pickedLocation.lon, pickedLocation.lat, pickedLocation.place, before, after, {
             fetchFn: fetch,
@@ -748,6 +759,7 @@ async function boot() {
             onError: (message) => { resultEl.textContent = message; },
           });
         } finally {
+          historicalBusy = false;
           if (go) go.disabled = false;
         }
       });
@@ -800,10 +812,14 @@ async function boot() {
     // way round; these two lines are the only inbound direction.
     nav.onExit("detail", () => fireCard.close());
     if (compare) nav.onExit("compare", () => compare.exit());
-    // Stop the plain map-click listener the moment the reader leaves this
-    // view — without this, a click on the map after backing out of the form
-    // would still silently update a `pickedLocation` nothing reads anymore.
-    nav.onExit("historical", stopHistoricalPicking);
+    // Stop picking the moment this view stops being on top — popped, OR
+    // covered by another rail view (which pushes without popping, so onExit
+    // never fires). Otherwise the marker would sit over, say, a fire card
+    // and follow every later map click. Coming back re-runs
+    // showHistoricalLookup via the entry's restore, which re-arms it.
+    nav.onChange((stack) => {
+      if (stack[stack.length - 1]?.view !== "historical") stopHistoricalPicking();
+    });
     // Precedence, highest first. Halos come before their visible layer so the
     // larger target wins, and fires beat scars where they overlap. A single
     // map-level click handler (instead of one per layer) is what makes "one

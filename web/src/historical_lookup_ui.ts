@@ -61,7 +61,14 @@ export function validateDateRange(before: string, after: string): { ok: true } |
   return { ok: true };
 }
 
-export function renderHistoricalLookupForm(today: string = new Date().toISOString().slice(0, 10)): string {
+/** Local calendar date as YYYY-MM-DD — toISOString() is UTC, which in
+ *  Europe is still "yesterday" for the first hours after local midnight. */
+export function localToday(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+export function renderHistoricalLookupForm(today: string = localToday()): string {
   // No .panel-close of its own — see web/tests/nav_integration.test.ts's
   // "search has exactly one way out" precedent: a .panel-close here would
   // hide #panel and emit detail:close while nav's stack still says
