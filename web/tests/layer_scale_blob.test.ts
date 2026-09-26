@@ -2,11 +2,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateScaleBlob,
+  bandLabel,
+  blobLabel,
   deactivateScaleBlob,
   isScaleBlobActive,
-  type ScaleBlobCell,
+  onScaleBlobSelection,
+  scaleBlobHitAt,
+  scaleBlobSelection,
+  selectScaleBlobBand,
 } from "../src/layer_scale_blob";
-import { projectVertices } from "../src/geo_local";
+import type { FiresSummary } from "../src/types";
 import type * as maplibregl from "maplibre-gl";
 
 /**
@@ -20,7 +25,11 @@ import type * as maplibregl from "maplibre-gl";
  * letting these tests dispatch real PointerEvents and exercise the actual
  * listener wiring instead of re-implementing it against a stand-in.
  */
-function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } = {}) {
+/** `hit`: false = the press misses the shape; true = it lands on the FR band;
+ * a string = it lands on that band. */
+type Hit = boolean | string;
+
+function stubMap(opts: { center?: { lat: number; lng: number }; hit?: Hit; parisInView?: boolean } = {}) {
   const sources: Record<string, any> = {};
   const layers: string[] = [];
   const layerDefs: Record<string, any> = {};
@@ -32,7 +41,7 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
   (canvas as any).setPointerCapture = vi.fn();
   (canvas as any).releasePointerCapture = vi.fn();
 
-  let hit = opts.hit ?? true;
+  let hit: Hit = opts.hit ?? true;
   const dragPan = {
     _enabled: true,
     enable: vi.fn(function (this: any) {
@@ -68,6 +77,9 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
     },
     getCanvas: () => canvas,
     getCenter: () => opts.center ?? { lat: 45.0, lng: 5.0 },
+    // In view unless the test says otherwise.
+    getBounds: () => ({ contains: () => opts.parisInView ?? true }),
+    easeTo: vi.fn(),
     // Deterministic, purely-numeric pixel->lngLat mapping (and its exact
     // inverse) — not real geography, but exact and easy to hand-verify in
     // assertions, and round-trips cleanly for commitDrag's project+unproject.
@@ -79,19 +91,29 @@ function stubMap(opts: { center?: { lat: number; lng: number }; hit?: boolean } 
       const [lng, lat] = Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat];
       return { x: lng * 1000, y: lat * 1000 };
     },
-    setPaintProperty: vi.fn(),
-    queryRenderedFeatures: vi.fn(() => (hit ? [{}] : [])),
+    setPaintProperty: vi.fn((id: string, prop: string, value: unknown) => {
+      layerDefs[id].paint[prop] = value;
+    }),
+    queryRenderedFeatures: vi.fn(() => (hit === false ? [] : [{ properties: { country: hit === true ? "FR" : hit } }])),
     dragPan,
-    _setHit: (v: boolean) => {
+    _setHit: (v: Hit) => {
       hit = v;
     },
   };
-  return map as unknown as maplibregl.Map & { _setHit: (v: boolean) => void; dragPan: typeof dragPan; getCanvas: () => HTMLCanvasElement };
+  return map as unknown as maplibregl.Map & { _setHit: (v: Hit) => void; dragPan: typeof dragPan; getCanvas: () => HTMLCanvasElement };
 }
 
-const sampleBlob: ScaleBlobCell[] = [
-  { fire_id: "fire-1", cell_id: "cell-a", res: 8, vertices_m: [[0, 0], [10, 0], [10, 10], [0, 10]] },
-];
+const sample: FiresSummary = {
+  "fire-1": { country: "FR", area_km2: 30 },
+  "fire-2": { country: "ES", area_km2: 12 },
+  // Outside the blob's EU-27 scope: an unplaced fire, and a non-member.
+  "fire-3": { country: null, area_km2: 1 },
+  "fire-4": { country: "UA", area_km2: 500 },
+};
+
+function okFetch(summary: FiresSummary = sample) {
+  return vi.fn().mockResolvedValue({ ok: true, json: async () => summary });
+}
 
 function dispatch(target: EventTarget, type: string, init: PointerEventInit) {
   target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, ...init }));
@@ -99,8 +121,18 @@ function dispatch(target: EventTarget, type: string, init: PointerEventInit) {
 
 /** The stub source's `.data` isn't part of maplibre-gl's real `Source`
  * type — this narrows through `any` for test assertions only. */
-function blobSource(map: maplibregl.Map): { data: GeoJSON.FeatureCollection; setData: (d: unknown) => void } {
+function blobSource(map: maplibregl.Map): { data: GeoJSON.FeatureCollection; setData: ReturnType<typeof vi.fn> } {
   return (map as any).getSource("scale-blob");
+}
+
+function layerDef(map: maplibregl.Map, id: string): any {
+  return (map as any).getLayerDef(id);
+}
+
+async function activated(opts: { hit?: Hit } = {}) {
+  const map = stubMap(opts);
+  await activateScaleBlob(map, 2026, okFetch() as unknown as typeof fetch);
+  return { map, canvas: map.getCanvas() };
 }
 
 beforeEach(() => {
@@ -108,380 +140,444 @@ beforeEach(() => {
 });
 
 describe("activateScaleBlob", () => {
-  it("fetches the year blob and adds a source with projected geometry", async () => {
+  it("builds the shape from the year's fires summary — one feature per country band, not per hex", async () => {
     const map = stubMap();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
+    const fetchImpl = okFetch();
 
     await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
 
-    expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("blob_2026.json"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("blob_2026_fires.json"));
     expect(isScaleBlobActive()).toBe(true);
-    const source = blobSource(map);
-    expect(source).toBeDefined();
-    expect(source.data.features).toHaveLength(1);
-    expect((source.data.features[0].properties as any).color).toMatch(/^#[0-9a-f]{6}$/);
-    expect((source.data.features[0].properties as any).fire_id).toBe("fire-1");
-
-    // Initial drop point is the current map viewport center.
-    const expected = projectVertices(sampleBlob[0].vertices_m, 45.0, 5.0);
-    expect((source.data.features[0].geometry as GeoJSON.Polygon).coordinates[0]).toEqual(expected);
+    const features = blobSource(map).data.features;
+    // EU-27 only: UA (the biggest) and the unplaced fire are left out.
+    expect(features.map((f) => f.properties!.country)).toEqual(["FR", "ES"]);
+    expect(features.every((f) => f.geometry.type === "MultiPolygon")).toBe(true);
   });
 
-  it("disables the default 300ms transition on the translate paint properties", async () => {
-    // maplibre eases every Transitionable paint property (fill-translate and
-    // line-translate included) over 300ms unless overridden per-property —
-    // without this, each pointermove's translate would visibly lag the
-    // cursor by up to 300ms instead of snapping instantly.
-    const map = stubMap() as unknown as maplibregl.Map & { getLayerDef: (id: string) => any };
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
+  it("brings Paris into view when the reader is looking elsewhere, and leaves the camera alone when not", async () => {
+    const away = stubMap({ parisInView: false });
+    await activateScaleBlob(away, 2026, okFetch() as unknown as typeof fetch);
+    expect((away as any).easeTo).toHaveBeenCalledWith(expect.objectContaining({ center: [2.3522, 48.8566] }));
+    deactivateScaleBlob(away);
 
-    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
+    const { map } = await activated();
+    expect((map as any).easeTo).not.toHaveBeenCalled();
+  });
 
-    expect(map.getLayerDef("scale-blob-fill").paint["fill-translate-transition"]).toEqual({ duration: 0 });
-    expect(map.getLayerDef("scale-blob-outline").paint["line-translate-transition"]).toEqual({ duration: 0 });
+  it("lands the shape and its label on Paris, wherever the viewport is", async () => {
+    const { map } = await activated();
+    const label = (map as any).getSource("scale-blob-label").data.features[0];
+    expect(label.geometry.coordinates).toEqual([2.3522, 48.8566]);
+    expect(label.properties.text).toContain("EU-27 fires, 2026 · 42 km² detected");
+    // The centre band surrounds the drop point.
+    const ring = (blobSource(map).data.features[0].geometry as GeoJSON.MultiPolygon).coordinates[0][0];
+    const lons = ring.map((p) => p[0]);
+    const lats = ring.map((p) => p[1]);
+    expect(Math.min(...lons)).toBeLessThan(2.3522);
+    expect(Math.max(...lons)).toBeGreaterThan(2.3522);
+    expect(Math.min(...lats)).toBeLessThan(48.8566);
+    expect(Math.max(...lats)).toBeGreaterThan(48.8566);
+  });
+
+  it("uses the summary it is given without fetching", async () => {
+    const map = stubMap();
+    const fetchImpl = okFetch();
+    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch, Promise.resolve(sample));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(isScaleBlobActive()).toBe(true);
   });
 
   it("does not re-fetch on a second activation while already active", async () => {
     const map = stubMap();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
-
+    const fetchImpl = okFetch();
     await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
     await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("does not double-fetch or double-add-source when two calls overlap before either resolves", async () => {
     const map = stubMap();
-    // A controllable fetch: doesn't resolve until we say so, so both
-    // activateScaleBlob calls are genuinely in flight at once (not merely
-    // sequential microtasks) — this is what a hung fetch or a double-click on
-    // a not-yet-debounced trigger button looks like.
-    let resolveFetch!: (value: { ok: boolean; json: () => Promise<ScaleBlobCell[]> }) => void;
+    let resolveFetch!: (value: { ok: boolean; json: () => Promise<FiresSummary> }) => void;
     const fetchImpl = vi.fn(
       () =>
         new Promise((resolve) => {
           resolveFetch = resolve;
         }),
     );
-
     const addSourceSpy = vi.spyOn(map, "addSource");
 
     const first = activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
     const second = activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-
-    resolveFetch({ ok: true, json: async () => sampleBlob });
-    // The second, guarded call must resolve to a safe no-op rather than
-    // rejecting — a real maplibre map throws from addSource if a source
-    // with that id already exists, and an unguarded second call reaching
-    // addSource would surface that rejection here.
+    resolveFetch({ ok: true, json: async () => sample });
+    // A real maplibre map throws from addSource on a duplicate id, so an
+    // unguarded second call would reject here.
     await expect(Promise.all([first, second])).resolves.toBeDefined();
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(addSourceSpy).toHaveBeenCalledTimes(1);
+    expect(addSourceSpy).toHaveBeenCalledTimes(2); // shape + label, once each
     expect(isScaleBlobActive()).toBe(true);
-    expect(blobSource(map)).toBeDefined();
   });
 
   it("does nothing and leaves isScaleBlobActive false when the fetch response is not ok", async () => {
     const map = stubMap();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, json: async () => sampleBlob });
-
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, json: async () => sample });
     await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-
     expect(isScaleBlobActive()).toBe(false);
     expect(map.getSource("scale-blob")).toBeUndefined();
   });
 
-  it("renders cells in a deterministic cell_id order, independent of fetch order", async () => {
-    // Every hex now has its own distinct spiral position (pack_blob.py), so
-    // there's nothing left to overlap — this just confirms render order is
-    // stable (sorted by cell_id) rather than depending on array/object
-    // insertion order, which would make painting order flicker across reloads.
+  it("does nothing for a year with no fires", async () => {
     const map = stubMap();
-    const cells: ScaleBlobCell[] = [
-      { fire_id: "fire-1", cell_id: "fire-1-2", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
-      { fire_id: "fire-1", cell_id: "fire-1-0", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
-      { fire_id: "fire-1", cell_id: "fire-1-1", res: 8, vertices_m: [[0, 0], [1, 0], [1, 1], [0, 1]] },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => cells });
-
-    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-
-    const order = blobSource(map).data.features.map((f: any) => f.properties.cell_id);
-    expect(order).toEqual(["fire-1-0", "fire-1-1", "fire-1-2"]);
+    await activateScaleBlob(map, 2026, okFetch({}) as unknown as typeof fetch);
+    expect(isScaleBlobActive()).toBe(false);
+    expect(map.getSource("scale-blob")).toBeUndefined();
   });
 });
 
-describe("select-then-drag lifecycle", () => {
-  async function activated(hit = true) {
-    const map = stubMap({ hit });
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
-    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-    const canvas = map.getCanvas();
-    return { map, canvas };
-  }
-
-  /** A click (down+up at ~the same point) on the shape — selects it. */
-  function click(canvas: HTMLCanvasElement, pointerId = 1, x = 10, y = 10) {
-    dispatch(canvas, "pointerdown", { pointerId, clientX: x, clientY: y });
-    dispatch(canvas, "pointerup", { pointerId, clientX: x, clientY: y });
-  }
-
-  function selectedFlag(map: maplibregl.Map): boolean {
-    return (blobSource(map).data.features[0].properties as any).selected;
-  }
-
-  it("starts unselected on activation", async () => {
-    const { map } = await activated();
-    expect(selectedFlag(map)).toBe(false);
-  });
-
-  it("a click on the shape selects it without moving it", async () => {
-    const { map, canvas } = await activated();
-    const before = blobSource(map).data.features[0].geometry;
-
-    click(canvas);
-
-    expect(selectedFlag(map)).toBe(true);
-    expect(blobSource(map).data.features[0].geometry).toEqual(before);
-  });
-
-  it("a click on the shape while it's already selected deselects it", async () => {
-    const { map, canvas } = await activated();
-    click(canvas); // select
-    expect(selectedFlag(map)).toBe(true);
-
-    click(canvas); // click again
-    expect(selectedFlag(map)).toBe(false);
-  });
-
-  it("a press elsewhere on the canvas deselects it", async () => {
-    const { map, canvas } = await activated();
-    click(canvas);
-    expect(selectedFlag(map)).toBe(true);
-
-    (map as any)._setHit(false); // this press misses the shape
-    dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 300, clientY: 300 });
-
-    expect(selectedFlag(map)).toBe(false);
-  });
-
-  it("dragging is a no-op while unselected — no translate, no dragPan suppression", async () => {
-    const { map, canvas } = await activated();
-    const before = blobSource(map).data;
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    expect(blobSource(map).data).toBe(before); // setData never called for a move
-    expect(map.setPaintProperty).not.toHaveBeenCalled();
-    expect(map.dragPan.disable).not.toHaveBeenCalled();
-  });
-
-  it("once selected, pointermove sets a pure pixel-space translate — no geometry recompute per frame", async () => {
-    // The performance fix: with thousands of real hexes, recomputing every
-    // vertex's lat/lon and re-uploading the whole source on every pointermove
-    // was the actual drag lag, not H3 itself. Moving now only sets the
-    // fill/line layers' `-translate` paint properties (a GPU-side pixel
-    // offset) — setData is never called until the drag ends.
-    const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-    const beforeMove = blobSource(map).data;
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    // Cursor moves by (+50, +30) canvas px from the grab point.
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [50, 30]);
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-outline", "line-translate", [50, 30]);
-    // No geometry recompute happened — setData was never called for the move.
-    expect(blobSource(map).data).toBe(beforeMove);
-  });
-
-  it("dropping (pointerup) commits the real geometry once and resets the translate to zero", async () => {
-    const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    // stubMap's project/unproject are exact inverses (x/1000 <-> lng*1000),
-    // so committing a (+50, +30) px drag from the original drop point
-    // (45.0, 5.0) must land on exactly (45.03, 5.05) — the same true
-    // position the old per-frame lat/lon math targeted, now computed once.
-    const expected = projectVertices(sampleBlob[0].vertices_m, 45.03, 5.05);
-    const actual = (blobSource(map).data.features[0].geometry as GeoJSON.Polygon).coordinates[0];
-    actual.forEach((vertex: number[], i: number) => {
-      expect(vertex[0]).toBeCloseTo(expected[i][0], 9);
-      expect(vertex[1]).toBeCloseTo(expected[i][1], 9);
-    });
-
-    // The translate must reset to zero — the new geometry already reflects
-    // the drop position, so a lingering translate would double-offset it.
-    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
-  });
-
-  it("a real drag while selected leaves it selected afterward, not toggled off", async () => {
-    const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    expect(selectedFlag(map)).toBe(true);
-  });
-
-  it("does not start a drag when pointerdown misses the rendered shape", async () => {
-    const { map, canvas } = await activated(false);
-    const before = blobSource(map).data;
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    expect(blobSource(map).data).toBe(before); // setData never called again
-  });
-
-  it("hit-tests a small box around the click, not the exact pixel — a click can land on a hex boundary", async () => {
-    const { map, canvas } = await activated();
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-
-    // A bare point would miss a click that lands exactly on the WebGL seam
-    // between two adjacent hexes — querying a box around it instead gives
-    // an edge click the same forgiveness a real finger or mouse needs.
-    expect(map.queryRenderedFeatures).toHaveBeenCalledWith(
-      [
-        [100 - 3, 200 - 3],
-        [100 + 3, 200 + 3],
-      ],
-      { layers: ["scale-blob-fill"] },
+describe("blobLabel", () => {
+  it("quotes the real detected area, rounded, and says the shape can be dragged", () => {
+    expect(blobLabel(2026, { a: { country: "FR", area_km2: 162_812.4 } })).toBe(
+      "EU-27 fires, 2026 · 162,800 km² detected\nDrag to compare",
     );
+    expect(blobLabel(2026, { a: { country: "FR", area_km2: 42.4 } })).toContain("42 km²");
+  });
+});
+
+/** Label position — the drop point — as [lng, lat]. */
+function labelAt(map: maplibregl.Map): [number, number] {
+  return (map as any).getSource("scale-blob-label").data.features[0].geometry.coordinates;
+}
+
+describe("press-and-drag", () => {
+  // Drag frames are rAF-coalesced; run them by hand.
+  let frames: FrameRequestCallback[] = [];
+  const flushFrames = () => {
+    const run = frames;
+    frames = [];
+    run.forEach((cb) => cb(0));
+  };
+  beforeEach(() => {
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    return () => vi.unstubAllGlobals();
   });
 
-  it("captures the pointer on pointerdown and releases it on pointerup, even while unselected", async () => {
+  it("a press on the shape starts the drag at once — no select step first", async () => {
     const { map, canvas } = await activated();
-
-    dispatch(canvas, "pointerdown", { pointerId: 7, clientX: 10, clientY: 10 });
-    expect(canvas.setPointerCapture).toHaveBeenCalledWith(7);
-
-    dispatch(canvas, "pointerup", { pointerId: 7, clientX: 10, clientY: 10 });
-    expect(canvas.releasePointerCapture).toHaveBeenCalledWith(7);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 40, clientY: 25 });
+    flushFrames();
+    // The stub's project/unproject are x/1000, y/1000: +30 px → +0.03°, +15 px → +0.015°
+    // from Paris, where the blob lands.
+    const [lng, lat] = labelAt(map);
+    expect(lng).toBeCloseTo(2.3822, 9);
+    expect(lat).toBeCloseTo(48.8716, 9);
   });
 
-  it("pointercancel ends a drag without committing geometry — cancel coordinates aren't trustworthy", async () => {
+  it("moves the real geometry, not a paint offset maplibre clips at tile edges", async () => {
     const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 150, clientY: 230 });
-    const beforeCancel = blobSource(map).data; // still the pre-drag geometry — move only translates
-
-    dispatch(canvas, "pointercancel", { pointerId: 1, clientX: 150, clientY: 230 });
-
-    // No setData — cancel resets the translate but never commits geometry.
-    expect(blobSource(map).data).toBe(beforeCancel);
-    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
-
-    // Further movement of the same (now-released) pointer must not move the shape.
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 300, clientY: 300 });
-    expect(blobSource(map).data).toBe(beforeCancel);
-    expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+    const before = (blobSource(map).data.features[0].geometry as GeoJSON.MultiPolygon).coordinates[0][0][0];
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 110, clientY: 10 });
+    flushFrames();
+    const after = (blobSource(map).data.features[0].geometry as GeoJSON.MultiPolygon).coordinates[0][0][0];
+    expect(after[0] - before[0]).toBeCloseTo(0.1, 9);
+    expect(layerDef(map, "scale-blob-fill").paint["fill-translate"]).toBeUndefined();
   });
 
-  it("a plain click on an already-selected, dragging shape resets translate but skips the geometry commit", async () => {
+  it("updates the geometry once per frame, however many pointermoves arrive", async () => {
     const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 200 });
-    const setDataCalls = () => (blobSource(map).setData as ReturnType<typeof vi.fn>).mock.calls.length;
-    const beforeUp = setDataCalls();
-
-    // No real movement — within CLICK_TOLERANCE_PX — so this is a click, not a drag.
-    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 101, clientY: 200 });
-
-    // Selection toggling still re-renders once (to flip the "selected" paint
-    // property) — but commitDrag's geometry recompute must not run on top of
-    // it, so setData fires exactly once, not twice, for this zero-distance "drag".
-    expect(setDataCalls()).toBe(beforeUp + 1);
-    expect(map.setPaintProperty).toHaveBeenLastCalledWith("scale-blob-outline", "line-translate", [0, 0]);
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [0, 0]);
-    // A click while already selected toggles it off, same as any other click.
-    expect(selectedFlag(map)).toBe(false);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    for (let x = 11; x < 60; x++) dispatch(canvas, "pointermove", { pointerId: 1, clientX: x, clientY: 10 });
+    expect(frames).toHaveLength(1);
+    flushFrames();
+    expect(blobSource(map).setData).toHaveBeenCalledTimes(1);
+    expect(labelAt(map)[0]).toBeCloseTo(2.4012, 9);
   });
 
-  it("a second pointer cannot hijack an active drag", async () => {
+  it("dropping places the shape at the exact release point", async () => {
     const { map, canvas } = await activated();
-    click(canvas, 1, 100, 100);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 60, clientY: 30 });
+    flushFrames();
+    // Released further on, before another frame ran.
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 110, clientY: 60 });
+    const [lng, lat] = labelAt(map);
+    expect(lng).toBeCloseTo(2.4522, 9);
+    expect(lat).toBeCloseTo(48.9066, 9);
+    // ...and a later pointermove moves nothing: the drag is over.
+    dispatch(canvas, "pointermove", { pointerId: 1, pointerType: "mouse", clientX: 300, clientY: 300 });
+    flushFrames();
+    expect(labelAt(map)[0]).toBeCloseTo(2.4522, 9);
+  });
 
-    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
-    (map.setPaintProperty as ReturnType<typeof vi.fn>).mockClear();
+  it("a press without movement does not recompute the geometry", async () => {
+    const { map, canvas } = await activated();
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 11, clientY: 11 });
+    flushFrames();
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
 
-    // A second finger lands mid-drag — must be ignored, no translate from it.
-    dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 0, clientY: 0 });
-    dispatch(canvas, "pointermove", { pointerId: 2, clientX: 0, clientY: 0 });
-    expect(map.setPaintProperty).not.toHaveBeenCalled();
+  it("a press off the shape is left to the map — no drag, no dragPan suppression", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 60, clientY: 60 });
+    flushFrames();
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 60, clientY: 60 });
+    expect(map.dragPan.disable).not.toHaveBeenCalled();
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
 
-    // The original pointer still drives the drag.
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 110, clientY: 100 });
-    expect(map.setPaintProperty).toHaveBeenCalledWith("scale-blob-fill", "fill-translate", [10, 0]);
+  it("hit-tests a small box around the press, not the exact pixel — a press can land on a band seam", async () => {
+    const { map, canvas } = await activated();
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    const [box] = (map.queryRenderedFeatures as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect(box).toEqual([[7, 7], [13, 13]]);
   });
 
   it("suppresses map dragPan while dragging and restores it on release", async () => {
     const { map, canvas } = await activated();
-    click(canvas, 1, 10, 10);
-
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
-    // Real movement, past the click tolerance, so this is a drag not a click.
-    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 30, clientY: 30 });
-    expect(map.dragPan.disable).toHaveBeenCalled();
     expect(map.dragPan.isEnabled()).toBe(false);
-
     dispatch(canvas, "pointerup", { pointerId: 1, clientX: 30, clientY: 30 });
-    expect(map.dragPan.enable).toHaveBeenCalled();
     expect(map.dragPan.isEnabled()).toBe(true);
+  });
+
+  it("brightens the shape while it is held", async () => {
+    const { map, canvas } = await activated();
+    const resting = layerDef(map, "scale-blob-fill").paint["fill-opacity"];
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    expect(layerDef(map, "scale-blob-fill").paint["fill-opacity"]).toBeGreaterThan(resting);
+    // Dropped after a real move — a release in place would be a click, which selects.
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 60, clientY: 10 });
+    expect(layerDef(map, "scale-blob-fill").paint["fill-opacity"]).toBe(resting);
+  });
+
+  it("captures the pointer on press and releases it on drop", async () => {
+    const { canvas } = await activated();
+    dispatch(canvas, "pointerdown", { pointerId: 7, clientX: 10, clientY: 10 });
+    expect((canvas as any).setPointerCapture).toHaveBeenCalledWith(7);
+    dispatch(canvas, "pointerup", { pointerId: 7, clientX: 10, clientY: 10 });
+    expect((canvas as any).releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+
+  it("pointercancel puts the shape back where the drag started — cancel coordinates aren't trustworthy", async () => {
+    const { map, canvas } = await activated();
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointermove", { pointerId: 1, clientX: 80, clientY: 80 });
+    flushFrames();
+    expect(labelAt(map)[0]).not.toBeCloseTo(2.3522, 6);
+    dispatch(canvas, "pointercancel", { pointerId: 1, clientX: 80, clientY: 80 });
+    expect(labelAt(map)).toEqual([2.3522, 48.8566]);
+    expect(map.dragPan.isEnabled()).toBe(true);
+  });
+
+  it("a second pointer cannot hijack an active drag", async () => {
+    const { map, canvas } = await activated();
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 100, clientY: 100 });
+    dispatch(canvas, "pointermove", { pointerId: 2, clientX: 300, clientY: 300 });
+    flushFrames();
+    dispatch(canvas, "pointerup", { pointerId: 2, clientX: 300, clientY: 300 });
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
+
+  it("shows a grab cursor while hovering the shape, and none off it", async () => {
+    const { map, canvas } = await activated();
+    dispatch(canvas, "pointermove", { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 10 });
+    flushFrames();
+    expect(canvas.style.cursor).toBe("grab");
+    map._setHit(false);
+    dispatch(canvas, "pointermove", { pointerId: 1, pointerType: "mouse", clientX: 300, clientY: 300 });
+    flushFrames();
+    expect(canvas.style.cursor).toBe("");
+  });
+});
+
+describe("pointer bookkeeping across gestures", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    return () => vi.unstubAllGlobals();
+  });
+
+  // A pan released over a panel never reaches the canvas. A mouse is always
+  // pointer 1, so that stale press used to claim the NEXT blob drag's release:
+  // the drag never ended and the shape followed the cursor with no button held.
+  it("a map pan released off the canvas does not wedge the next blob drag", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 300, clientY: 300 });
+    dispatch(document.body, "pointerup", { pointerId: 1, clientX: 380, clientY: 300 });
+
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 90, clientY: 10 });
+
+    expect(map.dragPan.isEnabled()).toBe(true);
+    expect(canvas.style.cursor).toBe("grab");
+    expect((canvas as any).releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("a new press by the same pointer supersedes a press whose release was never seen", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    // Released somewhere no listener saw (not even the document's).
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 300, clientY: 300 });
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    expect(map.dragPan.isEnabled()).toBe(false); // the blob drag started
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 90, clientY: 10 });
+    expect(map.dragPan.isEnabled()).toBe(true);
+  });
+
+  it("a second finger landing on the shape mid-pan does not hijack the map gesture", async () => {
+    const { map, canvas } = await activated({ hit: false });
+    dispatch(canvas, "pointerdown", { pointerId: 1, pointerType: "touch", clientX: 300, clientY: 300 });
+    map._setHit(true);
+    dispatch(canvas, "pointerdown", { pointerId: 2, pointerType: "touch", clientX: 10, clientY: 10 });
+    expect(map.dragPan.disable).not.toHaveBeenCalled();
+    dispatch(canvas, "pointermove", { pointerId: 2, pointerType: "touch", clientX: 90, clientY: 10 });
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
+});
+
+describe("scaleBlobHitAt", () => {
+  it("tells main.ts's click dispatch when a click landed on the blob", async () => {
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(false); // not active
+    const { map } = await activated();
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(true);
+    map._setHit(false);
+    expect(scaleBlobHitAt({ x: 10, y: 10 })).toBe(false);
+  });
+});
+
+describe("band selection", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    return () => {
+      vi.unstubAllGlobals();
+      onScaleBlobSelection(null);
+    };
+  });
+
+  const click = (canvas: HTMLCanvasElement, x = 10, y = 10) => {
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: x, clientY: y });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: x, clientY: y });
+  };
+
+  it("a click on a band selects it: that band lit, the rest dimmed, the label quoting it", async () => {
+    const { map, canvas } = await activated({ hit: "ES" });
+    const seen: (string | null)[] = [];
+    onScaleBlobSelection((k) => seen.push(k));
+
+    click(canvas);
+
+    expect(scaleBlobSelection()).toBe("ES");
+    expect(seen).toEqual(["ES"]);
+    expect(layerDef(map, "scale-blob-fill").paint["fill-opacity"]).toEqual([
+      "case", ["==", ["get", "country"], "ES"], 0.9, 0.2,
+    ]);
+    expect(layerDef(map, "scale-blob-outline").paint["line-width"]).toEqual(["case", ["==", ["get", "country"], "ES"], 3, 1.2]);
+    expect((map as any).getSource("scale-blob-label").data.features[0].properties.text).toMatch(/^Spain · 12 km² · 1 fire\n/);
+    // Selecting re-paints; it never re-uploads the shape.
+    expect(blobSource(map).setData).not.toHaveBeenCalled();
+  });
+
+  it("a second click on the selected band clears it; a click on another band switches", async () => {
+    const { map, canvas } = await activated({ hit: "ES" });
+    click(canvas);
+    map._setHit("FR");
+    click(canvas);
+    expect(scaleBlobSelection()).toBe("FR");
+    click(canvas);
+    expect(scaleBlobSelection()).toBeNull();
+    expect(layerDef(map, "scale-blob-fill").paint["fill-opacity"]).toBe(0.6);
+    expect((map as any).getSource("scale-blob-label").data.features[0].properties.text).toContain("EU-27 fires, 2026");
+  });
+
+  it("a drag moves the shape without touching the selection", async () => {
+    const { canvas } = await activated({ hit: "ES" });
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 90, clientY: 10 });
+    expect(scaleBlobSelection()).toBeNull();
+  });
+
+  it("keeps the selection lit while the shape is held", async () => {
+    const { map, canvas } = await activated({ hit: "ES" });
+    click(canvas);
+    dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
+    expect(layerDef(map, "scale-blob-fill").paint["fill-opacity"]).toEqual([
+      "case", ["==", ["get", "country"], "ES"], 0.9, 0.2,
+    ]);
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 60, clientY: 10 });
+  });
+
+  it("a click off the shape clears the selection; a pan off the shape leaves it", async () => {
+    const { map, canvas } = await activated({ hit: "ES" });
+    click(canvas);
+    map._setHit(false);
+    dispatch(canvas, "pointerdown", { pointerId: 2, clientX: 300, clientY: 300 });
+    dispatch(canvas, "pointerup", { pointerId: 2, clientX: 360, clientY: 300 });
+    expect(scaleBlobSelection()).toBe("ES");
+    click(canvas, 300, 300);
+    expect(scaleBlobSelection()).toBeNull();
+  });
+
+  it("selects from outside (the panel): toggles, and ignores a band the shape doesn't have", async () => {
+    await activated();
+    selectScaleBlobBand("ES");
+    expect(scaleBlobSelection()).toBe("ES");
+    selectScaleBlobBand("ES");
+    expect(scaleBlobSelection()).toBeNull();
+    // Not on the shape: UA is outside the EU-27 scope.
+    selectScaleBlobBand("UA");
+    expect(scaleBlobSelection()).toBeNull();
+  });
+
+  it("deactivation clears the selection and says so", async () => {
+    const { map, canvas } = await activated({ hit: "ES" });
+    click(canvas);
+    const seen: (string | null)[] = [];
+    onScaleBlobSelection((k) => seen.push(k));
+    deactivateScaleBlob(map);
+    expect(scaleBlobSelection()).toBeNull();
+    expect(seen).toEqual([null]);
+  });
+});
+
+describe("bandLabel", () => {
+  it("names the country and quotes its area, fires and share of the year", () => {
+    const g = { key: "FR", color: "#000", hexes: 8000, areaKm2: 5629.8, fires: 875 };
+    expect(bandLabel(g, 2026, 38_400)).toBe("France · 5,600 km² · 875 fires\n14.7% of the EU-27 total, 2026");
+    expect(bandLabel({ ...g, key: "Other", fires: 1 }, 2026, 38_400)).toMatch(/^Other countries · .* · 1 fire\n/);
   });
 });
 
 describe("deactivateScaleBlob", () => {
-  it("removes the layer and source and clears active state", async () => {
-    const map = stubMap();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
-    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-
+  it("removes the layers and sources and clears active state", async () => {
+    const { map } = await activated();
     deactivateScaleBlob(map);
-
     expect(isScaleBlobActive()).toBe(false);
-    expect(map.getSource("scale-blob")).toBeUndefined();
-    expect(map.getLayer("scale-blob-fill")).toBeUndefined();
+    for (const id of ["scale-blob", "scale-blob-label"]) expect(map.getSource(id)).toBeUndefined();
+    for (const id of ["scale-blob-fill", "scale-blob-outline", "scale-blob-label"]) {
+      expect(map.getLayer(id)).toBeUndefined();
+    }
   });
 
   it("removes the pointer listeners so a stray event after deactivation does nothing", async () => {
-    const map = stubMap();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
-    await activateScaleBlob(map, 2026, fetchImpl as unknown as typeof fetch);
-    const canvas = map.getCanvas();
-
+    const { map, canvas } = await activated();
     deactivateScaleBlob(map);
-
-    // Re-activate on a fresh map so there IS a live source to accidentally
-    // corrupt if the old canvas's listeners were left attached.
-    const map2 = stubMap();
-    const fetchImpl2 = vi.fn().mockResolvedValue({ ok: true, json: async () => sampleBlob });
-    await activateScaleBlob(map2, 2026, fetchImpl2 as unknown as typeof fetch);
+    const { map: map2 } = await activated();
 
     dispatch(canvas, "pointerdown", { pointerId: 1, clientX: 10, clientY: 10 });
     dispatch(canvas, "pointermove", { pointerId: 1, clientX: 200, clientY: 200 });
+    dispatch(canvas, "pointerup", { pointerId: 1, clientX: 200, clientY: 200 });
 
-    // The old, deactivated map's (now-empty) source registry must not have
-    // been touched, and map2's active drag state must be untouched by the
-    // stray old-canvas events.
     expect(map.getSource("scale-blob")).toBeUndefined();
-
+    expect(blobSource(map2).setData).not.toHaveBeenCalled();
     deactivateScaleBlob(map2);
   });
 

@@ -64,8 +64,9 @@
                real fire outlines and has no way to know it is a partial one.
                A separate element, not part of the button's label: main.ts's
                wireScaleBlobToggle assigns the button's textContent on every state
-               change, which would delete any child node placed inside it. -->
-          <p id="scale-blob-note">Detected fire footprint, archived fires only</p>
+               change, which would delete any child node placed inside it.
+               Scoped to EU-27 (scale_blob_shape.ts::euOnly), and says so. -->
+          <p id="scale-blob-note">EU-27 · Detected fire footprint, archived fires only</p>
           <!-- Populated by scale_blob_panel.ts while the blob is active; empty
                (and collapsed via :empty in CSS) otherwise. -->
           <div id="scale-blob-breakdown"></div>

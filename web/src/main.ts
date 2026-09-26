@@ -72,8 +72,16 @@ import {
   type Scar,
 } from "./layer_imagery";
 import { mountSwitcher, type LayerModule } from "./registry";
-import { activateScaleBlob, deactivateScaleBlob, isScaleBlobActive } from "./layer_scale_blob";
-import { hideScaleBlobPanel, showScaleBlobPanel } from "./scale_blob_panel";
+import {
+  activateScaleBlob,
+  deactivateScaleBlob,
+  isScaleBlobActive,
+  onScaleBlobSelection,
+  scaleBlobHitAt,
+  scaleBlobSelection,
+  selectScaleBlobBand,
+} from "./layer_scale_blob";
+import { fetchFiresSummary, hideScaleBlobPanel, showScaleBlobPanel } from "./scale_blob_panel";
 import { createNav } from "./nav";
 import { createShell } from "./shell";
 import { infoHtml } from "./info";
@@ -884,6 +892,10 @@ async function boot() {
     };
 
     map.on("click", (e) => {
+      // A click on the scale blob is the blob's (it selects a band), not a
+      // click on whatever fire lies underneath: opening that card would also
+      // switch the blob off via detail:open.
+      if (scaleBlobHitAt(e.point)) return;
       // The zoom gate belongs HERE, not in the season handler: a handler that
       // ignored the click would swallow it, and the day slice underneath —
       // the band actually painted at those zooms — would never see it.
@@ -983,7 +995,7 @@ async function boot() {
  * layer_scale_blob.ts is deliberately not a registry.ts LayerModule (see that
  * file's own header comment), so its trigger is wired here rather than joining
  * `modules` in boot(). activateScaleBlob resolves NORMALLY (without throwing)
- * on a 404 — no archive/blob_<year>.json for this year yet — so success is read
+ * on a 404 — no archive/blob_<year>_fires.json for this year yet — so success is read
  * back from isScaleBlobActive() after the await, not assumed from the promise
  * settling; otherwise a missing archive would silently flip the button into a
  * bogus "active" state.
@@ -1007,7 +1019,12 @@ export function wireScaleBlobToggle(
   breakdown: HTMLElement,
   fires?: { year: number; promise: Promise<FiresSummary | null> },
 ): () => void {
+  // Bumped by every reset, so a click still loading when compare:enter or
+  // detail:open resets the button doesn't come back afterwards and relabel it
+  // "unavailable" (the layer itself cancels that activation).
+  let attempt = 0;
   const reset = () => {
+    attempt++;
     button.setAttribute("aria-pressed", "false");
     button.textContent = "Compare fire scale";
     hideScaleBlobPanel(breakdown);
@@ -1025,31 +1042,28 @@ export function wireScaleBlobToggle(
       // with the UTC-keyed files around midnight on 1 Jan, and through January
       // the shown season is the ended one.
       const year = fires?.year ?? new Date().getUTCFullYear();
-      await activateScaleBlob(map, year);
+      // One load of blob_{year}_fires.json feeds both the shape and the
+      // breakdown panel.
+      const summaryP = fires?.year === year ? fires.promise : fetchFiresSummary(year);
+      const mine = attempt;
+      await activateScaleBlob(map, year, fetch, summaryP);
+      if (mine !== attempt) return;
       if (isScaleBlobActive()) {
         button.setAttribute("aria-pressed", "true");
         button.textContent = "Exit fire-scale compare";
-        // Best-effort: a failed/empty fetch here just leaves the breakdown
-        // panel empty (showScaleBlobPanel is tolerant of that), it doesn't
-        // affect whether the blob itself activated. Fire-and-forget, but
+        // Best-effort: the summary already resolved for the shape, so this
+        // only renders it. Fire-and-forget, but
         // guarded: a slow fetch can still be in flight after the reader
         // deactivates (or compare:enter deactivates for them) — without the
         // isScaleBlobActive() recheck, this would resolve afterward and
         // silently repopulate the panel for a blob that is no longer shown.
         //
-        // The .catch is not decoration: the enclosing try/catch is already
-        // past by the time this settles, and the fallback path really can
-        // REJECT (fetchFiresSummary does not swallow a network error, unlike
-        // data.ts::loadFiresSummary). Unhandled, that is a console error on a
-        // blob that activated perfectly well.
-        void showScaleBlobPanel(
-          breakdown,
-          year,
-          fetch,
-          fires?.year === year ? fires.promise : undefined,
-        )
+        // The .catch keeps a throw in rendering from surfacing as an
+        // unhandled rejection: the enclosing try/catch is already past.
+        void showScaleBlobPanel(breakdown, year, fetch, summaryP)
           .then(() => {
             if (!isScaleBlobActive()) hideScaleBlobPanel(breakdown);
+            else markSelectedRow(scaleBlobSelection());
           })
           .catch(() => {});
       } else {
@@ -1062,6 +1076,32 @@ export function wireScaleBlobToggle(
     }
   })();
   button.addEventListener("click", onClick);
+
+  // The breakdown panel is the blob's legend, and its rows select bands like a
+  // click on the map does. One listener on the container: the rows are
+  // re-rendered with every activation.
+  const markSelectedRow = (key: string | null) => {
+    breakdown.querySelectorAll<HTMLElement>("[data-band]").forEach((row) => {
+      const on = row.dataset.band === key;
+      row.classList.toggle("selected", on);
+      row.setAttribute("aria-pressed", String(on));
+    });
+  };
+  const rowBand = (e: Event) => (e.target as Element | null)?.closest<HTMLElement>("[data-band]")?.dataset.band;
+  const onRowClick = (e: MouseEvent) => {
+    const band = rowBand(e);
+    if (band !== undefined) selectScaleBlobBand(band);
+  };
+  const onRowKey = (e: KeyboardEvent) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const band = rowBand(e);
+    if (band === undefined) return;
+    e.preventDefault();
+    selectScaleBlobBand(band);
+  };
+  breakdown.addEventListener("click", onRowClick);
+  breakdown.addEventListener("keydown", onRowKey);
+  onScaleBlobSelection(markSelectedRow);
 
   // Entering compare mode must TURN THE BLOB OFF, not merely hide its button.
   // style.css drops #scale-blob-control under body.compare-mode because
@@ -1097,6 +1137,9 @@ export function wireScaleBlobToggle(
 
   return () => {
     button.removeEventListener("click", onClick);
+    breakdown.removeEventListener("click", onRowClick);
+    breakdown.removeEventListener("keydown", onRowKey);
+    onScaleBlobSelection(null);
     offCompare();
     offDetail();
   };
