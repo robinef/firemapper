@@ -1,0 +1,6 @@
+{
+  "_comment": "Drill fixture for watchdog.yml's full-tier check: the season summary stale_manifest.json points at (season_year 2020, beside it under archive/). Deliberately ancient so the full-refresh alarm fires on demand. Never referenced by the site.",
+  "generated_at": "2020-01-01T00:00:00Z",
+  "year": 2020,
+  "fires": 0
+}
