@@ -13,7 +13,7 @@
 #   git fetch origin main
 #   git show origin/main:scripts/review_gate.sh > ~/.local/bin/firemapper-review-gate
 #   chmod +x ~/.local/bin/firemapper-review-gate
-#   firemapper-review-gate <pr-number> success|failure "<one-line summary>"
+#   ~/.local/bin/firemapper-review-gate <pr-number> success|failure "<summary>"
 #
 # No Claude credential lives in the repo or in Actions: the review runs in
 # the local session and this posts its verdict with the local `gh` login.
@@ -43,7 +43,10 @@ if [[ "$head_sha" != "$local_sha" ]]; then
 fi
 
 # GitHub caps the description at 140 characters; cut on bytes, then drop any
-# multibyte character the cut split, or the API rejects invalid UTF-8.
+# multibyte character the cut split, or the API rejects invalid UTF-8. Trim in
+# bash first: a note bigger than the pipe buffer would SIGPIPE printf once
+# head exits, and pipefail + set -e would abort without a word.
+note="${note:0:140}"
 desc="$(printf '%s' "$note" | head -c 140 | { iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; })"
 
 gh api -X POST "repos/$repo/statuses/$head_sha" \

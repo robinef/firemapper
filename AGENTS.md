@@ -116,22 +116,35 @@ Actions — the review runs in the local agent session:
 1. Push the branch and open the PR.
 2. Run `/code-review` and `/security-review` on the pushed head. Fix findings,
    push, and review again — the status binds to one SHA, so every push needs
-   a fresh review. Treat any workflow that asks for `statuses: write` or
-   `checks: write` as a blocking finding: it could attest its own PR.
-3. `firemapper-review-gate <pr> success "<one-line summary>"` (or `failure`)
-   posts the status; it refuses fork PRs, a dirty tree, or a local HEAD that
-   is not the PR head.
-4. `gh pr merge --auto --squash --delete-branch <pr> --repo robinef/firemapper`
-   queues the merge; GitHub performs it once every required check is green,
+   a fresh review. Blocking findings, whatever else the review says: a
+   workflow that asks for `statuses: write` or `checks: write` (it could
+   attest its own PR), and any change under `.claude/` or to a `CLAUDE.md` /
+   `AGENTS.md` that loads agent config. For a PR you did not write, read
+   `gh pr diff` for those paths BEFORE checking it out — checking out is what
+   lets Claude Code load them.
+3. `~/.local/bin/firemapper-review-gate <pr> success "<one-line summary>"`
+   (or `failure`) posts the status; it refuses fork PRs, a dirty tree, or a
+   local HEAD that is not the PR head.
+4. `~/.local/bin/firemapper-merge <pr>` queues the merge (`gh pr merge --auto
+   --squash --delete-branch`, by PR number only, never a fork); GitHub performs it once every required check is green,
    and the merge deploys (see below). Keep one queued auto-merge at a time:
    branches are not required to be up to date, so two PRs queued together
    each pass against a `main` that lacks the other.
 
-`firemapper-review-gate` is a copy of `scripts/review_gate.sh` installed from
-`origin/main` into `~/.local/bin` — never run the file from a checkout, which
-is the PR's own copy (see the script header). Re-install it after a merge that
-changes the script. The permission rules that let the agent run it and queue
-the merge live in user-level settings, not in this repo, for the same reason.
+Both commands are copies of `scripts/review_gate.sh` and `scripts/merge_gate.sh`
+installed from `origin/main` into `~/.local/bin` — never run the files from a
+checkout, which is the PR's own copy (see the script headers). Re-install them
+after a merge that changes either script:
+
+```bash
+git fetch origin main
+git show origin/main:scripts/review_gate.sh > ~/.local/bin/firemapper-review-gate
+git show origin/main:scripts/merge_gate.sh  > ~/.local/bin/firemapper-merge
+chmod +x ~/.local/bin/firemapper-review-gate ~/.local/bin/firemapper-merge
+```
+
+The permission rules that let the agent run them live in user-level settings
+(allowlisted by absolute path), not in this repo, for the same reason.
 
 Fork PRs never get the status, so they wait for a human. Dependency review
 runs on every PR as an advisory check.
