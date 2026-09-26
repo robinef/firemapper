@@ -97,6 +97,9 @@ export function renderHistoricalLookupForm(today: string = localToday()): string
       </form>
       <div id="historical-lookup-geocode-result" class="hl-hint" aria-live="polite"></div>
       <div id="historical-lookup-location" class="hl-location" aria-live="polite">📍 Search a place, or click anywhere on the map</div>
+      <!-- Phones only (CSS): there the form covers the map, so picking needs
+           the sheet out of the way first. -->
+      <button type="button" id="historical-lookup-pick" class="hl-pick">📍 Pick on the map</button>
     </section>
     <form id="historical-lookup-form">
       <section class="hl-step">

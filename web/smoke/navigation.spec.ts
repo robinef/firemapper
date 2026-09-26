@@ -30,6 +30,48 @@ test.describe("getting back out", () => {
     await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
   });
 
+  test("a phone can pick a past-fire location on the map", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-historical", "historical");
+
+    // Full-page sheet: the map is unreachable until the sheet steps aside.
+    await page.click("#historical-lookup-pick");
+    await expect(page.locator("#view")).toBeHidden();
+    await expect(page.locator(".hl-pickbar")).toBeVisible();
+
+    await page.mouse.click(190, 420);
+    await expect(page.locator("#view")).toBeVisible();
+    await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("#historical-lookup-location")).toHaveClass(/is-set/);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+
+    // Cancel brings the sheet back without moving the point.
+    await page.click("#historical-lookup-pick");
+    await page.click(".hl-pickbar button");
+    await expect(page.locator("#view")).toBeVisible();
+    await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("#historical-lookup-location")).toHaveClass(/is-set/);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+
+    // Turning the phone to landscape crosses to the desktop layout, where the
+    // bar would cover the rail and the view's back button: picking ends.
+    await page.click("#historical-lookup-pick");
+    await page.setViewportSize({ width: 812, height: 375 });
+    await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("body")).not.toHaveClass(/hl-picking/);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(page.locator("#view")).toBeVisible();
+
+    // Back while picking leaves the form, and picking mode with it.
+    await page.click("#historical-lookup-pick");
+    await page.goBack();
+    await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
+    await expect(page.locator(".hl-pickbar")).toHaveCount(0);
+    await expect(page.locator("body")).not.toHaveClass(/hl-picking/);
+    await expect(page.locator(".hl-marker")).toHaveCount(0);
+  });
+
   test("hardware back leaves a view, rather than the site", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
@@ -85,7 +127,10 @@ test.describe("desktop navigation", () => {
     await page.keyboard.press("Escape");
     await expect(page.locator("#view")).toHaveAttribute("data-view", "map");
     release();
-    await page.waitForTimeout(300);
+    // wireGeocodeSearch writes "Found: …" synchronously right before it calls
+    // back, so once the text is there the callback has already run — no
+    // fixed sleep that a slow reply could outlast.
+    await expect(page.locator("#historical-lookup-geocode-result")).toHaveText(/Found: Test Place/);
     await expect(page.locator(".hl-marker")).toHaveCount(0);
   });
 

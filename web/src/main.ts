@@ -660,6 +660,20 @@ async function boot() {
     // or re-rendered belongs to a form that no longer exists.
     let historicalRender = 0;
     let historicalBusy = false;
+    // Phone picking mode: the form is a full-screen sheet there, so "click
+    // the map" needs the sheet out of the way. body.hl-picking hides #view
+    // (CSS, phones only) and this bar is the one thing left on top.
+    let historicalPickBar: HTMLElement | null = null;
+    const endMapPicking = () => {
+      document.body.classList.remove("hl-picking");
+      historicalPickBar?.remove();
+      historicalPickBar = null;
+    };
+    // Picking is a phone-only mode: turning a phone to landscape crosses the
+    // breakpoint, where #view is back and the bar would sit over the rail and
+    // the view's back button. Optional-chained like firecard.ts: jsdom has no
+    // matchMedia.
+    window.matchMedia?.("(min-width: 641px)")?.addEventListener?.("change", endMapPicking);
     const stopHistoricalPicking = () => {
       if (historicalClickHandler) {
         map.off("click", historicalClickHandler);
@@ -667,6 +681,7 @@ async function boot() {
       }
       historicalMarker?.remove();
       historicalMarker = null;
+      endMapPicking();
     };
     const showHistoricalLookup = () => {
       pickedLocation = null;
@@ -683,8 +698,8 @@ async function boot() {
       // is being re-entered without ever having been popped off the nav
       // stack (its entry's `restore` re-runs this function) — remove it
       // defensively before arming a new one, rather than relying solely on
-      // nav.onExit("historical", ...) below, which only fires when this
-      // entry is actually popped, not when it's merely covered and restored.
+      // the nav.onChange subscription below, which only fires when the stack
+      // changes, not when this function re-runs on the same entry.
       stopHistoricalPicking();
       const render = ++historicalRender;
       historicalBusy = false;
@@ -705,6 +720,7 @@ async function boot() {
           historicalMarker = new maplibregl.Marker({ element: dot });
         }
         historicalMarker.setLngLat([lon, lat]).addTo(map);
+        endMapPicking();
       };
 
       wireGeocodeSearch(container, fetch, (lon, lat, place) => {
@@ -714,11 +730,23 @@ async function boot() {
       });
       wireDateRange(container);
 
+      container.querySelector("#historical-lookup-pick")?.addEventListener("click", () => {
+        if (historicalBusy || historicalPickBar) return;
+        document.body.classList.add("hl-picking");
+        const bar = document.createElement("div");
+        bar.className = "hl-pickbar";
+        bar.setAttribute("role", "status");
+        bar.innerHTML = `<span>📍 Tap the map to pick a spot</span><button type="button">Cancel</button>`;
+        bar.querySelector("button")!.addEventListener("click", endMapPicking);
+        document.body.appendChild(bar);
+        historicalPickBar = bar;
+      });
+
       // Map-click mode: only active while this view is the current one.
       // Deliberately the plain, layer-less map.on('click', ...) form (not
       // routed through HANDLERS/CLICK_ORDER above), since a historical
       // lookup can target anywhere, not just an existing fire feature.
-      // Cleaned up by nav.onExit("historical", ...) below, and defensively
+      // Cleaned up by the nav.onChange subscription below, and defensively
       // at the top of this function on re-entry (see above).
       historicalClickHandler = (e) => {
         const { lng, lat } = e.lngLat;
@@ -736,9 +764,17 @@ async function boot() {
         const before = (document.getElementById("historical-lookup-before") as HTMLInputElement).value;
         const after = (document.getElementById("historical-lookup-after") as HTMLInputElement).value;
         const resultEl = document.getElementById("historical-lookup-result")!;
-        const go = form.querySelector<HTMLButtonElement>(".hl-go");
+        // Everything that could move the point is off while a lookup runs:
+        // the pending result is for THIS spot. The place search included, or
+        // it would print "Found: X" for a pick that is then ignored.
+        const locks = [
+          form.querySelector<HTMLButtonElement>(".hl-go"),
+          container.querySelector<HTMLInputElement>("#historical-lookup-q"),
+          container.querySelector<HTMLButtonElement>("#historical-lookup-search"),
+          container.querySelector<HTMLButtonElement>("#historical-lookup-pick"),
+        ];
         resultEl.textContent = "Looking up… this can take a few seconds.";
-        if (go) go.disabled = true;
+        for (const el of locks) if (el) el.disabled = true;
         historicalBusy = true;
         try {
           await runHistoricalLookup(pickedLocation.lon, pickedLocation.lat, pickedLocation.place, before, after, {
@@ -751,6 +787,10 @@ async function boot() {
             // proactively, right before that happens — the only path that
             // leaves this view without popping it off the stack first.
             openHistoricalLookup: (track, meta) => {
+              // A lookup started from a form the reader has since left (or
+              // re-opened) must not pull them into a card they no longer
+              // asked for.
+              if (render !== historicalRender || nav.top.view !== "historical") return Promise.resolve();
               stopHistoricalPicking();
               return fireCard.openHistoricalLookup(track, meta);
             },
@@ -759,8 +799,10 @@ async function boot() {
             onError: (message) => { resultEl.textContent = message; },
           });
         } finally {
-          historicalBusy = false;
-          if (go) go.disabled = false;
+          // Only this render's own flag: a stale lookup finishing after the
+          // form was re-opened must not unlock the NEW form's pending one.
+          if (render === historicalRender) historicalBusy = false;
+          for (const el of locks) if (el) el.disabled = false;
         }
       });
     };
