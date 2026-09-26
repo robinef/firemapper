@@ -312,8 +312,15 @@ import { localToday } from "../src/historical_lookup_ui";
 
 describe("localToday", () => {
   it("uses the local calendar day, not UTC's", () => {
-    // 00:30 local on 26 Sep: toISOString() would still say the 25th east of UTC.
-    expect(localToday(new Date(2026, 8, 26, 0, 30))).toBe("2026-09-26");
-    expect(localToday(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
+    // Pin the zone: built from local fields, this would pass under a UTC CI
+    // runner even with the old toISOString() version.
+    const tz = process.env.TZ;
+    process.env.TZ = "Europe/Paris";
+    try {
+      // 22:30 UTC on the 25th is 00:30 on the 26th in Paris (UTC+2).
+      expect(localToday(new Date("2026-09-25T22:30:00Z"))).toBe("2026-09-26");
+    } finally {
+      process.env.TZ = tz;
+    }
   });
 });
