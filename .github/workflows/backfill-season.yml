@@ -35,6 +35,11 @@ on:
     description: "Run id of the publish run whose artifact lists the ids to roll back"
     type: string
     default: ""
+# Least privilege: each job only reads the repo. A job that needs more
+# declares its own `permissions`, which replaces this block.
+permissions:
+  contents: read
+
 jobs:
  build:
   if: ${{ !inputs.rollback }}
