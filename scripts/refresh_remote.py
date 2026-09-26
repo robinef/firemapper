@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pipeline.config import Settings, load_settings, season_years
 from pipeline.export_scale_blob import run_export
-from pipeline.export_season import run_export_season, season_static_zone
+from pipeline.export_season import run_export_season, season_static_zone, sp_static_zone
 from pipeline.remote import hydrate, make_client, publish
 from pipeline.run import _safe, refresh
 
@@ -148,6 +148,7 @@ def main(argv: list[str], client=None, now: datetime | None = None) -> int:
                     r2_bucket=settings.r2_bucket,
                     time_budget_s=budget,
                     static_zone=zone,
+                    extra_zone=sp_static_zone(year),
                 ),
                 default=None,
                 label="export-season",

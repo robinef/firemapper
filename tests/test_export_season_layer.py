@@ -14,7 +14,7 @@ from pipeline.config import (
     season_key,
     season_sizes_key,
 )
-from pipeline.export_season import aggregate_r6, first_bin_date, run_export_season
+from pipeline.export_season import aggregate_r6, first_bin_date, run_export_season, zone_state_key
 
 NOW = datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc)
 
@@ -744,6 +744,32 @@ def test_a_fire_made_only_of_zone_cells_is_excluded_and_counted(tmp_path, capsys
     err = capsys.readouterr().err
     assert "static_zone_fires_excluded=1 " in err
     assert "static_zone_cells_removed=3" in err
+
+
+def test_the_nasa_flagged_zone_masks_on_top_of_the_raw_store_zone_and_is_never_stored(tmp_path):
+    """extra_zone (sp_static_zone) applies with or without a raw-store zone,
+    is never written into the stored zone, and gives its cells back when a
+    later run no longer passes it — the same reversible path as the other."""
+    settings = _settings(tmp_path)
+    _make_local_archive(settings.out_dir, {
+        "plant": _fire("plant", [PLANT]),
+        "mixed": _fire("mixed", [PLANT, FAR]),
+    })
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=None, extra_zone={PLANT})
+
+    cells = _read(settings, season_cells_key(2026))
+    assert set(cells) == {"mixed"} and cells["mixed"]["cells"] == [FAR]
+    assert zone_state_key(2026) not in _read(settings, SEASON_STATE_KEY)
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=set(), extra_zone={PLANT})
+    assert _read(settings, SEASON_STATE_KEY)[zone_state_key(2026)]["cells"] == []
+    assert set(_read(settings, season_cells_key(2026))) == {"mixed"}
+
+    run_export_season(settings, target_year=2026, now=NOW, static_zone=set())
+    cells = _read(settings, season_cells_key(2026))
+    assert cells["plant"]["cells"] == [PLANT]
+    assert sorted(cells["mixed"]["cells"]) == sorted([PLANT, FAR])
 
 
 def test_a_zone_emptied_fire_is_not_reprocessed_every_run(tmp_path, capsys):
