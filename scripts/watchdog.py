@@ -23,10 +23,11 @@ full run rewrites (pipeline/export_season.py::summarize). Its age is the
 full tier's heartbeat, checked through the same public URL for the same
 reason, and alarmed on its own issue so the two outages stay distinct.
 
-Residual risk, stated rather than hidden: GitHub disables scheduled workflows
-after ~60 days of repository inactivity. If that happens this dies the same
-quiet way it exists to catch. Closing that needs a third party outside both
-providers.
+GitHub disables scheduled workflows after ~60 days of repository inactivity;
+the Worker re-enables this one on every full tick (worker/index.ts
+reviveInactiveWorkflows). Residual risk, stated rather than hidden: the Worker
+and this check dying together is still silent. Closing that needs a third
+party outside both providers.
 """
 from __future__ import annotations
 
