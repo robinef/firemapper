@@ -314,13 +314,12 @@ describe("localToday", () => {
   it("uses the local calendar day, not UTC's", () => {
     // Pin the zone: built from local fields, this would pass under a UTC CI
     // runner even with the old toISOString() version.
-    const tz = process.env.TZ;
-    process.env.TZ = "Europe/Paris";
+    vi.stubEnv("TZ", "Europe/Paris");
     try {
       // 22:30 UTC on the 25th is 00:30 on the 26th in Paris (UTC+2).
       expect(localToday(new Date("2026-09-25T22:30:00Z"))).toBe("2026-09-26");
     } finally {
-      process.env.TZ = tz;
+      vi.unstubAllEnvs();
     }
   });
 });
