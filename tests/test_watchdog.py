@@ -210,6 +210,22 @@ class TestWorkflowWiring:
         assert "exit 1" in wf
 
 
+    def test_an_outside_dead_man_switch_hears_every_production_run(self):
+        """Nothing on GitHub can report this job no longer running. The ping
+        must run whatever came before (always()), skip drills (their /fail is
+        deliberate), report a frozen map as /fail, read the URL from a secret,
+        and never fail the run itself."""
+        wf = self._wf()
+        step = wf[wf.index("- name: Ping the outside dead-man switch"):]
+        step = step[: step.index("\n      - name:", 1)]
+        assert "if: always() && inputs.manifest_url == ''" in step
+        assert "PING_URL: ${{ secrets.WATCHDOG_PING_URL }}" in step
+        assert "steps.check.outputs.verdict == 'fresh' && steps.check.outputs.full_verdict == 'fresh'" in step
+        assert '"$PING_URL/fail"' in step
+        assert '|| echo "dead-man ping failed"' in step
+        assert "exit 1" not in step
+        assert wf.index("Ping the outside dead-man switch") < wf.index("Fail the run when the map")
+
 class TestFullTier:
     """The fast tier re-stamps every manifest layer each half hour, so a dead
     refresh-full reads fresh there. archive/season_{year}.json is written only
