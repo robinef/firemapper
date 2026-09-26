@@ -46,6 +46,19 @@ test.describe("getting back out", () => {
 test.describe("desktop navigation", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
+  test("picking a spot on the map for a past-fire lookup keeps the form open", async ({ page }) => {
+    await page.goto("/");
+    await waitForBoot(page);
+    await openRail(page, "rail-historical", "historical");
+
+    // #panel hosts this form, so the map's miss-click handler saw a "card"
+    // open and nav.back()'d the form away on the very click it asked for.
+    await page.mouse.click(760, 330);
+    await expect(page.locator("#view")).toHaveAttribute("data-view", "historical");
+    await expect(page.locator("#historical-lookup-location")).toHaveClass(/is-set/);
+    await expect(page.locator(".hl-marker")).toHaveCount(1);
+  });
+
   test("the rail icon opens and closes the same view", async ({ page }) => {
     await page.goto("/");
     await waitForBoot(page);
