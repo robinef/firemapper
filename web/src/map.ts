@@ -42,7 +42,37 @@ export function createMap(container: string): maplibregl.Map {
   }
   window.addEventListener("resize", () => map.resize());
   map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: "metric" }), "bottom-left");
+  addCompass(map);
   return map;
+}
+
+/** A north-up button, shown only once the map is off north or tilted.
+ *
+ *  A two-finger pinch on a phone also twists, so a reader who only meant to
+ *  zoom ends up with Italy on its side and no way back but a counter-twist.
+ *  maplibre's own compass: its needle follows the bearing, and a tap resets
+ *  bearing AND pitch (visualizePitch). Bottom-right, stacked above the
+ *  attribution, which the stylesheet already keeps clear of the time bar and
+ *  the rail; the top-right corner is the wind readout's on desktop. Hidden at
+ *  north-up because a control with nothing to do is clutter on a 375px map. */
+export function addCompass(map: maplibregl.Map): void {
+  const nav = new maplibregl.NavigationControl({
+    showZoom: false,
+    showCompass: true,
+    visualizePitch: true,
+  });
+  map.addControl(nav, "bottom-right");
+  const sync = () => {
+    const group = map.getContainer().querySelector<HTMLElement>(".maplibregl-ctrl-compass")
+      ?.closest<HTMLElement>(".maplibregl-ctrl-group");
+    if (!group) return;
+    const north = Math.abs(map.getBearing()) < 0.5 && map.getPitch() < 0.5;
+    group.classList.toggle("is-north", north);
+  };
+  map.on("rotate", sync);
+  map.on("pitch", sync);
+  map.on("moveend", sync);
+  sync();
 }
 
 /** How far the floating chrome reaches into the map from each edge, in CSS px.
