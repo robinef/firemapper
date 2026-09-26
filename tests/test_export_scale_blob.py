@@ -8,7 +8,6 @@ from pipeline.config import (
     SCALE_BLOB_STATE_KEY,
     Settings,
     scale_blob_fires_key,
-    scale_blob_key,
 )
 from pipeline.export_scale_blob import run_export, year_of_track
 
@@ -63,13 +62,10 @@ def _make_local_archive(out_dir: Path, tracks: dict[str, dict]) -> None:
     index_path.write_text(json.dumps(index))
 
 
-def test_run_export_writes_blob_for_tracks_in_target_year(tmp_path):
+def test_run_export_writes_the_summary_for_tracks_in_target_year_and_no_per_hex_blob(tmp_path):
     import h3
 
     settings = _settings(tmp_path)
-    # grid_disk, not two nearby lat/lngs: 45.000,5.000 and 45.001,5.001 land
-    # in the SAME res-8 cell (see the comment on the crash-recovery test
-    # below), which would make len(blob) == 2 fail against a 1-cell fixture.
     cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
     assert len(set(cells)) == 2
     tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
@@ -77,14 +73,13 @@ def test_run_export_writes_blob_for_tracks_in_target_year(tmp_path):
 
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    assert len(blob) == 2
-    assert all(cell["fire_id"] == "fire-2026" for cell in blob)
-    assert all(len(cell["vertices_m"]) >= 5 for cell in blob)
-
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert set(fires) == {"fire-2026"}
+    assert fires["fire-2026"]["area_km2"] > 0
     state = json.loads((settings.out_dir / SCALE_BLOB_STATE_KEY).read_text())
     assert state["fire-2026"]["year"] == 2026
-
+    # The web packs the shape from the summary; the 57 MB per-hex file is gone.
+    assert not (settings.out_dir / "archive" / "blob_2026.json").exists()
 
 def test_run_export_skips_tracks_outside_target_year(tmp_path):
     import h3
@@ -96,11 +91,9 @@ def test_run_export_skips_tracks_outside_target_year(tmp_path):
 
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    assert blob == []
+    assert json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text()) == {}
     state = json.loads((settings.out_dir / SCALE_BLOB_STATE_KEY).read_text())
-    assert state["fire-2025"]["year"] == 2025  # inspected and remembered, just not in this year's blob
-
+    assert state["fire-2025"]["year"] == 2025  # inspected and remembered, just not in this year's summary
 
 def test_run_export_does_not_reprocess_unchanged_digest(tmp_path, monkeypatch):
     import h3
@@ -127,97 +120,51 @@ def test_run_export_does_not_reprocess_unchanged_digest(tmp_path, monkeypatch):
     assert calls == []  # unchanged digest, never re-inspected
 
 
-def test_run_export_second_new_fire_never_moves_or_overlaps_the_first(tmp_path):
-    import h3
-
-    settings = _settings(tmp_path)
-    cells_a = [h3.latlng_to_cell(45.0, 5.0, 8)]
-    cells_b = [h3.latlng_to_cell(46.0, 6.0, 8)]  # far away geographically, but packing is position-independent
-    tracks_a = {"fire-a": _track_body("fire-a", cells_a, "2026-01-01T00:00:00+00:00")}
-    _make_local_archive(settings.out_dir, tracks_a)
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    blob_after_a = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    fire_a_before = [cell["vertices_m"] for cell in blob_after_a if cell["fire_id"] == "fire-a"]
-
-    tracks_b = {**tracks_a, "fire-b": _track_body("fire-b", cells_b, "2026-02-01T00:00:00+00:00")}
-    _make_local_archive(settings.out_dir, tracks_b)
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    by_fire: dict[str, list] = {}
-    for cell in blob:
-        by_fire.setdefault(cell["fire_id"], []).append(cell["vertices_m"])
-
-    # fire-a, already published, must not have been repacked or moved by
-    # fire-b's arrival — a spiral fill only ever appends.
-    assert by_fire["fire-a"] == fire_a_before
-
-    # No two hexes (from either fire) share a position — a gap-free spiral
-    # fill is collision-free by construction; this confirms it held here.
-    def centroid(poly):
-        return (round(sum(x for x, _ in poly) / len(poly), 3), round(sum(y for _, y in poly) / len(poly), 3))
-
-    all_centroids = [centroid(poly) for polys in by_fire.values() for poly in polys]
-    assert len(set(all_centroids)) == len(all_centroids)
-
-
-def test_run_export_reprocesses_a_track_whose_cells_never_reached_the_blob(tmp_path):
+def test_run_export_reprocesses_a_track_whose_summary_never_landed(tmp_path):
     """Self-heals a partial PUBLISH, which the local write ordering cannot cover.
 
-    Locally the blob is written before the state, so a crash between the two
-    only ever under-claims. The R2 boundary has no ordering at all: publish()
-    uploads archive/ through an unordered ThreadPoolExecutor, so
-    scale_blob_state.json can land in the bucket while blob_{year}.json does
-    not. hydrate() then restores a state marking the track processed with no
-    geometry to show for it — and since only a DIGEST CHANGE ever reprocesses a
-    track, that fire would be missing from the blob permanently.
+    Locally the summary is written before the state, so a crash between the
+    two only ever under-claims. The R2 boundary has no ordering at all:
+    publish() uploads archive/ through an unordered ThreadPoolExecutor, so
+    scale_blob_state.json can land in the bucket while blob_{year}_fires.json
+    does not. hydrate() then restores a state marking the track processed with
+    no summary entry for it — and since only a DIGEST CHANGE ever reprocesses a
+    track, that fire would be missing permanently.
     """
     import h3
 
     settings = _settings(tmp_path)
-    # grid_disk, not two nearby lat/lngs: 45.000,5.000 and 45.001,5.001 land in
-    # the SAME res-8 cell, which would make the no-duplicates assertion below
-    # fail against a fixture that was duplicated to begin with.
-    cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
-    assert len(set(cells)) == 2
+    cells = [h3.latlng_to_cell(45.0, 5.0, 8)]
     tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
     _make_local_archive(settings.out_dir, tracks)
     index = json.loads((settings.out_dir / ARCHIVE_TRACKS_INDEX).read_text())
 
     # Exactly what a half-finished publish leaves behind: state says done at the
-    # CURRENT digest (so nothing would re-trigger it), blob has none of its cells.
+    # CURRENT digest (so nothing would re-trigger it), summary has no entry.
     state_path = settings.out_dir / SCALE_BLOB_STATE_KEY
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps({
         "fire-2026": {"digest": index["fire-2026"], "year": 2026},
         # A different year, and no longer in the index at all: reconciliation
-        # must leave it alone. Dropping every stateful entry with no cells in
-        # THIS year's blob would re-fetch every past year's track body forever.
+        # must leave it alone. Dropping every stateful entry absent from THIS
+        # year's summary would re-fetch every past year's track body forever.
         "fire-2025-retired": {"digest": "whatever", "year": 2025},
     }))
-    blob_path = settings.out_dir / scale_blob_key(2026)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_text(json.dumps([]))
+    fires_path = settings.out_dir / scale_blob_fires_key(2026)
+    fires_path.write_text(json.dumps({}))
 
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    blob = json.loads(blob_path.read_text())
-    assert {cell["fire_id"] for cell in blob} == {"fire-2026"}, "the orphaned track must come back"
-    assert len(blob) == len(cells)
-    assert len({cell["cell_id"] for cell in blob}) == len(cells)  # no duplicates from the redo
-
+    assert set(json.loads(fires_path.read_text())) == {"fire-2026"}, "the orphaned track must come back"
     state_final = json.loads(state_path.read_text())
     assert state_final["fire-2026"]["year"] == 2026
     assert "fire-2025-retired" in state_final  # other years untouched
 
-
-def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, monkeypatch):
-    """Simulates a crash between the blob_{year}.json write and the
-    scale_blob_state.json write (export_scale_blob.py:107-108). The blob
-    write must survive, the state write must not have happened, and a
-    subsequent run must safely reprocess the affected track without
-    duplicating or corrupting its cells."""
+def test_run_export_recovers_from_crash_between_summary_and_state_write(tmp_path, monkeypatch):
+    """Simulates a crash between the blob_{year}_fires.json write and the
+    scale_blob_state.json write. The summary write must survive, the state
+    write must not have happened, and a subsequent run must safely reprocess
+    the affected track."""
     import h3
 
     settings = _settings(tmp_path)
@@ -227,11 +174,11 @@ def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, m
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
     state_path = settings.out_dir / SCALE_BLOB_STATE_KEY
-    blob_path = settings.out_dir / scale_blob_key(2026)
+    fires_path = settings.out_dir / scale_blob_fires_key(2026)
     state_before_crash = json.loads(state_path.read_text())
     assert "fire-a" in state_before_crash
 
-    cells_b = [h3.latlng_to_cell(46.0, 6.0, 8)]  # far from fire-a; packing is position-independent
+    cells_b = [h3.latlng_to_cell(46.0, 6.0, 8)]
     tracks_b = {**tracks_a, "fire-b": _track_body("fire-b", cells_b, "2026-02-01T00:00:00+00:00")}
     _make_local_archive(settings.out_dir, tracks_b)
 
@@ -249,30 +196,18 @@ def test_run_export_recovers_from_crash_between_blob_and_state_write(tmp_path, m
     with pytest.raises(RuntimeError, match="simulated crash"):
         run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    # Blob write succeeded and now contains fire-b's cells...
-    blob_after_crash = json.loads(blob_path.read_text())
-    fire_ids_after_crash = {cell["fire_id"] for cell in blob_after_crash}
-    assert "fire-b" in fire_ids_after_crash
-
+    # Summary write succeeded and now has fire-b...
+    assert "fire-b" in json.loads(fires_path.read_text())
     # ...but the state write never completed, so fire-b is NOT marked processed.
-    state_after_crash = json.loads(state_path.read_text())
-    assert "fire-b" not in state_after_crash
-    assert state_after_crash == state_before_crash  # untouched by the aborted write
+    assert json.loads(state_path.read_text()) == state_before_crash
 
     monkeypatch.setattr(mod, "_save_json", original_save_json)
 
-    # Next run (state file unmutated from before the crash) must safely reprocess fire-b.
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    blob_final = json.loads(blob_path.read_text())
-    fire_b_cells = [cell for cell in blob_final if cell["fire_id"] == "fire-b"]
-    assert len(fire_b_cells) == len(cells_b)  # no duplication from the crashed attempt
-    assert len({cell["cell_id"] for cell in fire_b_cells}) == len(fire_b_cells)  # no corrupted repeats
-
+    assert set(json.loads(fires_path.read_text())) == {"fire-a", "fire-b"}
     state_final = json.loads(state_path.read_text())
-    assert "fire-b" in state_final
     assert state_final["fire-b"]["year"] == 2026
-
 
 def _write_places(settings: Settings, rows: list[tuple[str, float, float, str]]) -> None:
     places_dir = settings.data_dir / "places"
@@ -333,36 +268,6 @@ def test_run_export_area_km2_matches_the_sum_of_real_cell_areas(tmp_path):
     assert fires["fire-2026"]["area_km2"] == expected
 
 
-def test_run_export_fires_summary_reconciles_like_the_blob(tmp_path):
-    """A partial publish could land scale_blob_state.json with a track marked
-    processed while blob_{year}_fires.json never made it (same R2-boundary risk
-    the cell blob already self-heals from). A state entry with no corresponding
-    fires-summary entry must also be treated as unprocessed."""
-    import h3
-
-    settings = _settings(tmp_path)
-    cells = [h3.latlng_to_cell(45.0, 5.0, 8)]
-    tracks = {"fire-2026": _track_body("fire-2026", cells, "2026-06-01T00:00:00+00:00")}
-    _make_local_archive(settings.out_dir, tracks)
-    index = json.loads((settings.out_dir / ARCHIVE_TRACKS_INDEX).read_text())
-
-    # Simulate: blob + state already written for this track, but the fires
-    # summary never landed (a partial publish).
-    (settings.out_dir / scale_blob_key(2026)).parent.mkdir(parents=True, exist_ok=True)
-    (settings.out_dir / scale_blob_key(2026)).write_text(json.dumps(
-        [{"fire_id": "fire-2026", "cell_id": cells[0], "res": 8, "vertices_m": [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 1.5]]}]
-    ))
-    (settings.out_dir / SCALE_BLOB_STATE_KEY).parent.mkdir(parents=True, exist_ok=True)
-    (settings.out_dir / SCALE_BLOB_STATE_KEY).write_text(json.dumps(
-        {"fire-2026": {"digest": index["fire-2026"], "year": 2026}}
-    ))
-
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
-    assert "fire-2026" in fires  # reprocessed, not left permanently missing
-
-
 def test_run_export_area_km2_does_not_double_count_parent_child_cells(tmp_path):
     """A track's cells can legitimately include both a coarse Meteosat cell
     and the finer VIIRS cells nested inside it (design spec: 'What can still
@@ -382,59 +287,6 @@ def test_run_export_area_km2_does_not_double_count_parent_child_cells(tmp_path):
     fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
     true_area = round(h3.cell_area(parent, unit="km^2"), 1)  # children exactly tile the parent
     assert fires["fire-2026"]["area_km2"] == true_area
-
-
-def test_run_export_reprocessing_a_middle_fire_does_not_overlap_a_later_untouched_fire(tmp_path):
-    """start_index for newly-(re)packed fires must be the true highest
-    occupied spiral position, not a sum of currently-tracked fires' hex
-    counts — summing undercounts whenever a fire earlier in the spiral gets
-    reprocessed (a digest change, an expected occurrence per the design doc)
-    while a fire packed after it is left untouched: the untouched fire's
-    cells no longer correspond to a contiguous range starting at 0, so a
-    naive sum silently reuses positions it still occupies."""
-    import h3
-
-    settings = _settings(tmp_path)
-    # fire-a: enough cells to be packed first (larger fires are placed
-    # first in a fresh batch) and to leave room for a real collision if
-    # start_index is wrong. fire-c: packed after fire-a, in a later run,
-    # never touched again.
-    cells_a = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 2))[:5]
-    cells_c = sorted(h3.grid_disk(h3.latlng_to_cell(50.0, 10.0, 8), 2))[:4]
-    tracks_a = {"fire-a": _track_body("fire-a", cells_a, "2026-01-01T00:00:00+00:00")}
-    _make_local_archive(settings.out_dir, tracks_a)
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    tracks_ac = {**tracks_a, "fire-c": _track_body("fire-c", cells_c, "2026-02-01T00:00:00+00:00")}
-    _make_local_archive(settings.out_dir, tracks_ac)
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    blob_before = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    fire_c_before = [cell["vertices_m"] for cell in blob_before if cell["fire_id"] == "fire-c"]
-
-    # fire-a's content changes (grew/corrected) — same track id, different
-    # cells, so a new digest. fire-c is untouched.
-    cells_a_grown = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 2))[:8]
-    tracks_grown = {
-        "fire-a": _track_body("fire-a", cells_a_grown, "2026-01-02T00:00:00+00:00"),
-        "fire-c": tracks_ac["fire-c"],
-    }
-    _make_local_archive(settings.out_dir, tracks_grown)
-    run_export(settings, target_year=2026, client=None, r2_bucket=None)
-
-    blob_after = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    by_fire: dict[str, list] = {}
-    for cell in blob_after:
-        by_fire.setdefault(cell["fire_id"], []).append(cell["vertices_m"])
-
-    # fire-c, never touched, must be byte-for-byte unchanged.
-    assert by_fire["fire-c"] == fire_c_before
-
-    def centroid(poly):
-        return (round(sum(x for x, _ in poly) / len(poly), 3), round(sum(y for _, y in poly) / len(poly), 3))
-
-    all_centroids = [centroid(poly) for polys in by_fire.values() for poly in polys]
-    assert len(set(all_centroids)) == len(all_centroids), "repacked fire-a must not collide with untouched fire-c"
 
 
 def test_run_export_stops_early_when_the_time_budget_runs_out(tmp_path):
@@ -469,9 +321,8 @@ def test_run_export_stops_early_when_the_time_budget_runs_out(tmp_path):
     processed = len(state)
     assert 0 < processed < 5, f"expected partial progress, got {processed} of 5 processed"
 
-    blob = json.loads((settings.out_dir / scale_blob_key(2026)).read_text())
-    blob_fire_ids = {cell["fire_id"] for cell in blob}
-    assert blob_fire_ids == set(state.keys()), "every processed fire must have cells in the blob"
+    fires = json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
+    assert set(fires) == set(state.keys()), "every processed fire must be in the summary"
 
     # A second run, unbudgeted, must pick up exactly the tracks the first
     # run didn't get to — nothing is lost, nothing is silently skipped.
@@ -480,23 +331,22 @@ def test_run_export_stops_early_when_the_time_budget_runs_out(tmp_path):
     assert set(state_final.keys()) == set(tracks.keys())
 
 
-def test_a_fire_the_state_files_under_another_year_leaves_this_years_blob(tmp_path):
-    # January: a fire in blob_2026 is re-archived with its last bin in 2027.
-    # The fast tier's 2027 pass re-reads it first and records it as 2027; the
-    # 2026 pass then sees an unchanged digest and would never look at it
-    # again — leaving it in both years' blobs. The state is authoritative.
+def test_a_fire_the_state_files_under_another_year_leaves_this_years_summary(tmp_path):
+    # January: a fire in blob_2026_fires is re-archived with its last bin in
+    # 2027. The fast tier's 2027 pass re-reads it first and records it as 2027;
+    # the 2026 pass then sees an unchanged digest and would never look at it
+    # again — leaving it in both years' summaries. The state is authoritative.
     import h3
 
     settings = _settings(tmp_path)
     cells = sorted(h3.grid_disk(h3.latlng_to_cell(45.0, 5.0, 8), 1))[:2]
     _make_local_archive(settings.out_dir, {"fire-x": _track_body("fire-x", cells, "2026-12-30T00:00:00+00:00")})
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
-    assert {c["fire_id"] for c in json.loads((settings.out_dir / scale_blob_key(2026)).read_text())} == {"fire-x"}
+    assert set(json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())) == {"fire-x"}
 
     _make_local_archive(settings.out_dir, {"fire-x": _track_body("fire-x", cells, "2027-01-02T00:00:00+00:00")})
     run_export(settings, target_year=2027, client=None, r2_bucket=None)  # fast tier, first
     run_export(settings, target_year=2026, client=None, r2_bucket=None)
 
-    assert json.loads((settings.out_dir / scale_blob_key(2026)).read_text()) == []
     assert "fire-x" not in json.loads((settings.out_dir / scale_blob_fires_key(2026)).read_text())
-    assert {c["fire_id"] for c in json.loads((settings.out_dir / scale_blob_key(2027)).read_text())} == {"fire-x"}
+    assert set(json.loads((settings.out_dir / scale_blob_fires_key(2027)).read_text())) == {"fire-x"}

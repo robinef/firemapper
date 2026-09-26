@@ -1,18 +1,19 @@
 // Geometry of the scale-comparison blob, built in the browser from the
 // per-fire summary (archive/blob_{year}_fires.json) alone.
 //
-// The blob used to ship as archive/blob_{year}.json: one polygon per 0.7 km²
-// display hex, ~163k of them for 2026 — a 57 MB download, and 163k fill
-// polygons plus 163k outlines for maplibre to re-tile on every select and
-// drop. At overview zoom a hex is 1–2 px, so those outlines were all the
-// reader saw: black/white static, coloured per fire with no legend.
+// The blob used to be packed by the pipeline and shipped as
+// archive/blob_{year}.json: one polygon per 0.7 km² display hex, ~163k of them
+// for 2026 — a 57 MB download, and 163k fill polygons plus 163k outlines for
+// maplibre to re-tile on every select and drop. At overview zoom a hex is
+// 1–2 px, so those outlines were all the reader saw: black/white static,
+// coloured per fire with no legend.
 //
-// Nothing in that file is needed. The packing (pipeline/pack_blob.py) is a
-// fixed hex size, a hex COUNT per fire (round(area / 0.7), never 0) and one
-// shared spiral — all derivable from each fire's area. So this module packs
-// the same counts on the same spiral, grouped by COUNTRY instead of by fire
-// (largest at the centre), and dissolves each country's run into a handful of
-// outline rings. The reader gets bands they can name from the breakdown
+// None of that geometry was needed: the packing is a fixed hex size, a hex
+// COUNT per fire (round(area / 0.7), never 0) and one shared spiral — all
+// derivable from each fire's area. This module is now the only packer (the
+// pipeline's pack_blob.py and the per-hex file are gone). It packs the counts
+// grouped by COUNTRY (largest at the centre) and dissolves each country's run
+// into a handful of outline rings. The reader gets bands they can name from the breakdown
 // panel; maplibre gets a few dozen polygons instead of 163k.
 import { isEuCountry } from "./eu27";
 import type { FiresSummary } from "./types";
@@ -26,7 +27,8 @@ export function euOnly(summary: FiresSummary): FiresSummary {
   return Object.fromEntries(Object.entries(summary).filter(([, f]) => isEuCountry(f.country)));
 }
 
-/** Mirrors pipeline/pack_blob.py's HEX_AREA_KM2 — the VIIRS cell quantum. */
+/** The VIIRS cell quantum (pipeline.metrics.CELL_KM2): one display hex per
+ * 0.7 km² of detected fire. */
 export const HEX_AREA_KM2 = 0.7;
 const HEX_EDGE_M = Math.sqrt((HEX_AREA_KM2 * 1_000_000) / ((3 * Math.sqrt(3)) / 2));
 
@@ -37,7 +39,8 @@ const COUNTRY_PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2", 
 export const OTHER_COLOR = "#9c9c9c";
 export const OTHER_KEY = "Other";
 
-/** Mirrors pipeline/pack_blob.py's hex_count_for_area. */
+/** Never 0: a fire too small to round up to one hex would vanish from the
+ * blob, which is worse than a slight oversize. */
 export function hexCountForArea(areaKm2: number): number {
   return Math.max(1, Math.round(areaKm2 / HEX_AREA_KM2));
 }
@@ -99,11 +102,13 @@ export function bandByCountry(groups: BlobGroup[]): (country: string) => Band {
   };
 }
 
-// Axial directions in ring-walk order — pipeline/pack_blob.py's _DIRECTIONS.
+// Axial directions in ring-walk order (redblobgames.com/grids/hexagons):
+// direction 4 is the start-of-ring corner; walking all six directions
+// `radius` steps each traces one full ring.
 const WALK = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]] as const;
 
-/** The first `n` axial (q, r) positions of the spiral, centre outwards —
- * pipeline/pack_blob.py's _spiral_axial_coords, position for position. */
+/** The first `n` axial (q, r) positions of the spiral, centre outwards; every
+ * position distinct, none skipped, so the fill has no gaps or collisions. */
 export function spiralAxial(n: number): [number, number][] {
   const out: [number, number][] = [];
   if (n <= 0) return out;
@@ -123,8 +128,7 @@ export function spiralAxial(n: number): [number, number][] {
   return out;
 }
 
-// Pointy-top hex, vertex i at angle 60i − 30° (pack_blob.py's
-// _hexagon_vertices_m), counter-clockwise in a y-up frame. On an integer
+// Pointy-top hex, vertex i at angle 60i − 30°, counter-clockwise in a y-up frame. On an integer
 // lattice of (edge·√3/2, edge/2) every hex vertex lands on whole numbers, so
 // shared vertices compare exactly — no float keys.
 const VERTEX_DX = [1, 1, 0, -1, -1, 0];

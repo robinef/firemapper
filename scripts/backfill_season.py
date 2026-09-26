@@ -67,7 +67,6 @@ from pipeline.config import (
     SEASON_STATE_KEY,
     load_settings,
     scale_blob_fires_key,
-    scale_blob_key,
     season_cells_key,
     season_key,
     season_sizes_key,
@@ -527,10 +526,10 @@ def rollback(
     - the live index, season_state, season cells and season sizes lose
       exactly `ids` (the next season export recomputes the summary from the
       cells file);
-    - the scale blob packs every fire into one gap-free spiral, and cutting
-      fires out would leave holes in it, so if its state took any of `ids`
-      its three files are deleted and the next refresh rebuilds it cold from
-      the (cleaned) index over a few runs' budgets.
+    - if the scale blob's state took any of `ids`, its state and per-fire
+      summary are deleted and the next refresh rebuilds them cold from the
+      (cleaned) index over a few runs' budgets. (Its per-hex blob_{year}.json
+      is no longer published; the web packs the shape from the summary.)
 
     - each target id's track body is deleted too: publish never overwrites
       an existing body key but does merge the new digest, so a body left
@@ -580,7 +579,7 @@ def rollback(
         return len(o.get("fires") or {}) if k == season_sizes else len(o)
 
     removed = {k: size(k, current[k]) - size(k, new[k]) for k in current}
-    scale_keys = [key(SCALE_BLOB_STATE_KEY), key(scale_blob_key(YEAR)), key(scale_blob_fires_key(YEAR))]
+    scale_keys = [key(SCALE_BLOB_STATE_KEY), key(scale_blob_fires_key(YEAR))]
     scale_state = _get_strict(client, bucket, scale_keys[0])
     delete = (
         [k for k in scale_keys if _get_strict(client, bucket, k) is not None]

@@ -61,9 +61,9 @@ describe("spiralAxial", () => {
     expect(pts.slice(7).every((p) => dist(p) === 2)).toBe(true);
   });
 
-  // pipeline/pack_blob.py's _spiral_axial_coords(8), pinned: the two must lay
-  // out the same spiral or the browser blob drifts from the pipeline's.
-  it("matches the pipeline's spiral order", () => {
+  // Pinned to the spiral the retired pipeline packer laid out, position for
+  // position, so the blob's shape did not change when packing moved here.
+  it("keeps the established spiral order", () => {
     expect(spiralAxial(8)).toEqual([[0, 0], [-1, 1], [0, 1], [1, 0], [1, -1], [0, -1], [-1, 0], [-2, 2]]);
   });
 });
