@@ -1067,12 +1067,17 @@ async function boot() {
       // view. (The desktop-layout rail column is already in insets.left.)
       const rail = document.getElementById("rail")?.getBoundingClientRect();
       const railRow = rail && rail.width > rail.height;
-      const bottom = railRow ? Math.max(insets.bottom, window.innerHeight - rail.top) : insets.bottom;
+      let bottom = railRow ? Math.max(insets.bottom, window.innerHeight - rail.top) : insets.bottom;
+      // The same 3/4 cap chromeInsets applies: a phone held sideways at 320px
+      // tall keeps the phone layout, and its rail + time bar can fill it.
+      if (insets.top + bottom + 16 > window.innerHeight * 0.75) bottom = insets.bottom;
       const camera = map.cameraForBounds(PHONE_START_BOUNDS, {
         padding: { ...insets, top: insets.top + 8, bottom: bottom + 8 },
       });
-      if (camera?.center) {
-        map.jumpTo({ center: camera.center, zoom: Math.max(camera.zoom ?? 3, 3) });
+      // cameraForBounds warns and returns undefined when the padding leaves no
+      // room; a non-finite zoom must not reach jumpTo either.
+      if (camera?.center && Number.isFinite(camera.zoom)) {
+        map.jumpTo({ center: camera.center, zoom: Math.max(camera.zoom!, 3) });
       }
     }
     const splash = document.getElementById("loading");
