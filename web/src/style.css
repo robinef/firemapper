@@ -674,6 +674,11 @@ body.compare-mode #timeline { display: none; }
    specificity it won, and neither control was lifted at all. */
 #map .maplibregl-ctrl-bottom-left,
 #map .maplibregl-ctrl-bottom-right { bottom: calc(var(--timebar) + 12px); }
+/* A map rotated during before/after hid the compass (and the credits) under
+   the after-map, which layer_imagery.ts appends after the control corners at
+   the same z-index. The corner holds only those two, so lift it above the
+   swipe. Any width: a map rotated before compare stays rotated on desktop. */
+body.compare-mode #map .maplibregl-ctrl-bottom-right { z-index: 3; }
 .maplibregl-ctrl-scale {
   background: var(--panel); border-color: var(--fg); color: var(--fg);
 }
@@ -772,4 +777,21 @@ body.compare-mode #timeline { display: none; }
    leaving the reader panning a magnified map. */
 @media not all and (min-width: 641px), (pointer: coarse) {
   .fl-search, .hl-search input, .hl-dates input { font-size: 16px; }
+
+  /* The last two controls under 44px, also placed here to win over their
+     base rules above: the card's before/after button (35px) and the info
+     panel's "Full source list" link (17px, an inline run of text). */
+  .fc-ba { min-height: 44px; }
+  .info-more { display: inline-flex; align-items: center; min-height: 44px; }
+
+  /* A phone held sideways at 320px keeps the phone layout, and the time bar
+     alone took 176px of it: with a card peeked, the rail row rode up over the
+     header and the credits off the top edge, leaving no map at all. Short
+     screens keep only the time bar's play/slider row — the slider picks a
+     day just as a bar tap does, and its label names the day and its count.
+     Nested, not ANDed: a width query written as a negation cannot be joined
+     to a height feature without negating that too. */
+  @media (max-height: 480px) {
+    #timeline .tl-head, #timeline .tl-bars, #timeline .tl-axis { display: none; }
+  }
 }
