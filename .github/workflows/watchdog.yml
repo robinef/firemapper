@@ -150,6 +150,24 @@ jobs:
             gh issue close "$NUM"
           fi
 
+      # The watchdog's own watchdog, outside both GitHub and Cloudflare: a
+      # healthchecks.io check (EU-hosted) that emails when these pings stop.
+      # That covers the case nothing else here can report: this job itself no
+      # longer running (schedule disabled, Actions down, account problem).
+      # A frozen map pings /fail, so the same inbox hears about it too.
+      # Unset secret = skipped, so forks and fresh clones stay quiet. Drills
+      # never ping: a drill's deliberate /fail would page for nothing. The
+      # ping never fails the run; the verdict above owns that.
+      - name: Ping the outside dead-man switch
+        if: always() && inputs.manifest_url == ''
+        env:
+          PING_URL: ${{ secrets.WATCHDOG_PING_URL }}
+          OK: ${{ steps.check.outputs.verdict == 'fresh' && steps.check.outputs.full_verdict == 'fresh' }}
+        run: |
+          if [ -z "$PING_URL" ]; then echo "WATCHDOG_PING_URL not set; skipping"; exit 0; fi
+          if [ "$OK" = "true" ]; then URL="$PING_URL"; else URL="$PING_URL/fail"; fi
+          curl -fsS -m 10 --retry 3 -o /dev/null "$URL" || echo "dead-man ping failed" >&2
+
       - name: Fail the run when the map is not advancing
         if: steps.check.outputs.verdict != 'fresh' || steps.check.outputs.full_verdict != 'fresh'
         run: |

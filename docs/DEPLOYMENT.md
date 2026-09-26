@@ -221,10 +221,20 @@ order they will actually reach you:
    `disabled_manually` workflow is left alone. It uses the dispatch token's
    existing `Actions: read and write`; nothing new to grant.
 
-   **It is not a proof.** The watchdog and the Worker now each keep the other
-   alive, but both going down at once (the Worker gone *and* its token
-   expired, say) is still silent. Closing that needs a third party outside
-   both Cloudflare and GitHub.
+   The watchdog and the Worker now each keep the other alive, but both going
+   down at once (the Worker gone *and* its token expired, say) would still be
+   silent. So every production watchdog run also pings an outside dead-man
+   switch, a [healthchecks.io](https://healthchecks.io) check (EU-hosted),
+   which emails when the pings stop. A frozen map pings `/fail`, so the same
+   inbox hears about outages too. Drills never ping. Setup, once:
+
+   1. Create a check at healthchecks.io: period 1 hour, grace 2 hours
+      (GitHub's hourly schedule drifts by up to an hour under throttling).
+   2. `gh secret set WATCHDOG_PING_URL` with the check's ping URL
+      (`https://hc-ping.com/<uuid>`). It is a secret because anyone holding
+      it can silence the alarm by pinging.
+
+   With the secret unset, the step logs a skip and does nothing.
 
 4. **`npx wrangler tail`** shows the HTTP status and GitHub's own explanation
    (401 expired, 403 wrong scope, 404 wrong path, 422 bad ref or disabled
