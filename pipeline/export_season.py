@@ -26,10 +26,12 @@ with two additions the scale blob does not need:
 See docs/superpowers/specs/2026-09-18-season-burned-layer-design.md."""
 from __future__ import annotations
 
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
 
 import h3
@@ -47,7 +49,7 @@ from .config import (
     season_sizes_key,
 )
 from .enrich import Places, load_places_tolerant, place_for
-from .events import static_classification
+from .events import STATIC_RING_K, static_classification
 from .export_scale_blob import _load_json, _load_track_body, _save_json, year_of_track
 from .geo_local import dedup_nested_cells
 from .store import read_hotspots
@@ -78,6 +80,31 @@ ZONE_STATE_KEY = "__zone__"
 
 def zone_state_key(year: int) -> str:
     return f"{ZONE_STATE_KEY}{year}"
+
+
+# NASA-flagged static cells per year (scripts/make_sp_static_zone.py): the
+# FIRMS SP archive labels each detection (`type` 2 = static land source).
+# The raw store behind season_static_zone starts 2026-06-30, and the Jan-Jun
+# backfill clustered SP rows, which put a plant's pings on neighbouring cells
+# that never reach STATIC_CELL_DAYS: Kryvyi Rih, Puertollano, Arzew, Fos and
+# ~180 more cells survived as 1-3-cell "fires". Data, not code; one year only,
+# because from 2027 the raw store covers the whole season.
+SP_STATIC_CELLS_FILE = Path(__file__).parent / "sp_static_cells.json"
+
+
+def sp_static_zone(year: int, path: Path = SP_STATIC_CELLS_FILE) -> set[str]:
+    """`year`'s NASA-flagged cells plus the STATIC_RING_K ring — the same
+    jitter margin the raw-store zone gets. Empty for a year with no entry or
+    a missing/unreadable file: this zone only ever adds to the other one."""
+    try:
+        cells = json.loads(path.read_text()).get(str(year), [])
+    except (OSError, ValueError, AttributeError):
+        return set()
+    zone: set[str] = set()
+    for c in cells:
+        if h3.is_valid_cell(c):
+            zone.update(h3.grid_disk(c, STATIC_RING_K))
+    return zone
 
 
 def _members_from_cells(cells: list[str]) -> list[dict]:
@@ -285,6 +312,7 @@ def run_export_season(
     clock: Callable[[], float] = time.monotonic,
     now: datetime | None = None,
     static_zone: set[str] | None = None,
+    extra_zone: set[str] | None = None,
 ) -> None:
     """Bring season_{target_year}.json / _cells.json up to date with the
     track archive, within `time_budget_s`; whatever is not reached this run
@@ -293,7 +321,11 @@ def run_export_season(
 
     `static_zone` (season_static_zone): cells no published fire may keep —
     see apply_static_zone. None applies the last good zone stored in state
-    (ZONE_STATE_KEY), or nothing if there has never been one."""
+    (ZONE_STATE_KEY), or nothing if there has never been one.
+
+    `extra_zone` (sp_static_zone): cells masked on top of that zone every
+    run. Never stored — it is data shipped with the code, so the stored zone
+    stays exactly what the raw store produced."""
     index_path = settings.out_dir / ARCHIVE_TRACKS_INDEX
     if not index_path.exists():
         return
@@ -427,6 +459,8 @@ def run_export_season(
             "computed_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
     zone = static_zone if static_zone is not None else (set(stored_zone["cells"]) if stored_zone else None)
+    if extra_zone:
+        zone = (zone or set()) | extra_zone
     zone_emptied = zone_removed = 0
     if zone is not None:
         zone_emptied, zone_removed = apply_static_zone(target_year, state, cells_by_fire, zone)
