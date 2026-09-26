@@ -51,4 +51,4 @@ desc="$(printf '%s' "$note" | head -c 140 | { iconv -c -f UTF-8 -t UTF-8 2>/dev/
 
 gh api -X POST "repos/$repo/statuses/$head_sha" \
   -f state="$verdict" -f context="claude-review" -f description="$desc" \
-  --jq '.context + ": " + .state + " @ " + .sha[0:7]'
+  --jq '.context + ": " + .state + " @ " + (.url | split("/") | last | .[0:7])'
