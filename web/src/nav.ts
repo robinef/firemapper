@@ -97,7 +97,7 @@ export function createNav(opts: {
    *  A real popstate lands in milliseconds, so a second is generous. */
   let pendingUntil = 0;
   const PENDING_MS = 1000;
-  const pending = () => Date.now() < pendingUntil;
+  const pending = () => performance.now() < pendingUntil;
   const exits = new Map<ViewId, Array<() => void>>();
   const changes: Array<(s: readonly Entry[]) => void> = [];
 
@@ -189,18 +189,18 @@ export function createNav(opts: {
       // pop run to completion, and the outer pop then re-grows `entries` over
       // the shorter array, leaving a hole that throws on the next restore().
       if (unwinding || pending() || cursor === 0) return; // never navigate off the site
-      pendingUntil = Date.now() + PENDING_MS;
+      pendingUntil = performance.now() + PENDING_MS;
       history.back();
     },
     backTo(depth) {
       const wanted = Math.max(0, depth);
       if (unwinding || pending() || wanted >= cursor) return;
-      pendingUntil = Date.now() + PENDING_MS;
+      pendingUntil = performance.now() + PENDING_MS;
       history.go(wanted - cursor);
     },
     reset() {
       if (unwinding || pending() || cursor === 0) return;
-      pendingUntil = Date.now() + PENDING_MS;
+      pendingUntil = performance.now() + PENDING_MS;
       history.go(-cursor);
     },
     onExit(view, fn) {

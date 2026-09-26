@@ -264,7 +264,7 @@ export function createShell(deps: ShellDeps): Shell {
    *  stack change. */
   let closingFireUntil = 0;
   const openRail = (view: ViewId, title: string, enter?: () => void) => {
-    if (Date.now() < closingFireUntil) return; // the fire's pop is still in flight
+    if (performance.now() < closingFireUntil) return; // the fire's pop is still in flight
     // The icon is a toggle: tapping the one you are already on closes it.
     // It used to be a no-op, which left the icon looking like a dead control
     // and made the back bar the only way out of a panel the same icon had
@@ -281,10 +281,10 @@ export function createShell(deps: ShellDeps): Shell {
     // asynchronous (nav only moves on popstate), hence the one-shot listener.
     const fireAt = nav.stack.findIndex((e) => e.view === "detail");
     if (fireAt > 0 && (view === "search" || view === "historical")) {
-      closingFireUntil = Date.now() + 1000;
+      closingFireUntil = performance.now() + 1000;
       const off = nav.onChange((stack) => {
         off();
-        const late = Date.now() >= closingFireUntil;
+        const late = performance.now() >= closingFireUntil;
         closingFireUntil = 0;
         if (late || stack.some((e) => e.view === "detail")) return;
         // Opened from search: popping the fire already restored the results.
