@@ -17,7 +17,8 @@ web/public/data/
 .env
 
 # Local dev / agent tooling (not part of the project)
-.claude/
+.claude/*
+!.claude/settings.json
 .lean-ctx/
 scratch/
 docs/superpowers/

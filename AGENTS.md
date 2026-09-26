@@ -104,6 +104,27 @@ map, layout or the build, `npm run smoke` too — CI runs it on every PR, plus a
 assertion that `maplibre-gl*.mjs` was emitted beside the bundle. Add a test with
 any behaviour change, and confirm it fails without the fix.
 
+## Shipping (review gate + auto-merge)
+
+`main` is protected: a PR merges only when `pipeline (pytest)`,
+`web (tsc + vitest + build)`, `web (browser smoke)`, CodeQL's `Analyze (*)`
+jobs and a `claude-review` commit status are all green. No Claude credential
+lives in the repo or in Actions — the review runs in the local agent session:
+
+1. Push the branch and open the PR.
+2. Run `/code-review` and `/security-review` on the pushed head. Fix findings,
+   push, and review again — the status binds to one SHA, so every push needs
+   a fresh review.
+3. `bash scripts/review_gate.sh <pr> success "<one-line summary>"` (or
+   `failure`) posts the status; it refuses unless the clean local HEAD is the
+   PR head.
+4. `gh pr merge --auto --squash --delete-branch <pr> --repo robinef/firemapper`
+   queues the merge; GitHub performs it once every required check is green,
+   and the merge deploys (see below).
+
+Fork PRs never get the status, so they wait for a human. Dependency review
+runs on every PR as an advisory check.
+
 ## Deployment
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Three things matter when touching it:

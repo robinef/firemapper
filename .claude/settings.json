@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash scripts/review_gate.sh *)",
+      "Bash(gh pr merge --auto *)"
+    ]
+  }
+}
