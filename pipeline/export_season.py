@@ -107,6 +107,18 @@ def sp_static_zone(year: int, path: Path = SP_STATIC_CELLS_FILE) -> set[str]:
     return zone
 
 
+# OpenStreetMap-confirmed residue the SP flag misses (scripts/make_osm_static_zone.py):
+# Jan-Jun fires of <= 3 cells on a recurring cell, within 400 m of mapped
+# industry (Kirkuk refinery, Huta Czestochowa, Hanson Cement, a MOL flare).
+# Same format, same loader.
+OSM_STATIC_CELLS_FILE = Path(__file__).parent / "osm_static_cells.json"
+
+
+def extra_static_zone(year: int) -> set[str]:
+    """Both committed static-cell lists for `year`, each with its ring."""
+    return sp_static_zone(year) | sp_static_zone(year, OSM_STATIC_CELLS_FILE)
+
+
 def _members_from_cells(cells: list[str]) -> list[dict]:
     """One point per burnt cell, in enrich.place_for's expected shape — the
     same "nearest to any detection, not the centroid" rule the live map uses

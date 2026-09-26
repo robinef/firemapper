@@ -128,7 +128,12 @@ for runs where the raw store cannot be read). For 2026 only, a second zone is
 masked on top: `pipeline/sp_static_cells.json`, the cells NASA's FIRMS SP archive
 flags as static land sources (`type` 2), built once from the January–June
 backfill by `scripts/make_sp_static_zone.py` — the raw store starts 2026-06-30, so
-the zone above cannot see the plants in the backfilled months. The season export runs in the full refresh tier only (two-hourly, `refresh-full.yml`),
+the zone above cannot see the plants in the backfilled months. With it,
+`pipeline/osm_static_cells.json` (`scripts/make_osm_static_zone.py`): small
+January–June fires on a recurring cell that OpenStreetMap places within 400 m
+of mapped industry (solar and wind farms excluded; Ukraine and Russia left
+out, where cells recur because the front line does). Derived from
+OpenStreetMap data, © OpenStreetMap contributors, ODbL. The season export runs in the full refresh tier only (two-hourly, `refresh-full.yml`),
 not the fast tier. `remote.publish()` uploads anything under `archive/`; `remote.hydrate()`
 restores these by name, so a fresh CI runner continues where the last left off.
 
