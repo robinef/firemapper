@@ -119,6 +119,43 @@ export function createShell(deps: ShellDeps): Shell {
     );
   };
 
+  /** A fire stays selected under ⚙ and ℹ — its outline, its histogram and
+   *  its level-2 layers are all still on the map — but the panel in front of
+   *  it says nothing about that, so the reader can browse level-1 menus
+   *  without knowing a fire is still in play. The pill names the fire and
+   *  offers the two ways out of that state. Only for a fire DIRECTLY beneath
+   *  a rail view: openRail keeps it that way (see there), and compare's own
+   *  bar already names the fire. */
+  const firePill = document.getElementById("fire-pill");
+  const renderFirePill = (stack: readonly (typeof nav.top)[]) => {
+    if (!firePill) return;
+    const top = stack[stack.length - 1];
+    const under = stack[stack.length - 2];
+    const show = under?.view === "detail" && (top.view === "layers" || top.view === "info");
+    firePill.hidden = !show;
+    firePill.innerHTML = show
+      ? // The title is a place name from feature properties: escaped, as in renderBar.
+        `<span class="fp-text">Selected: <b>${escapeHtml(under.title)}</b></span>` +
+        `<button class="fp-show" type="button">Show</button>` +
+        `<button class="fp-close" type="button" aria-label="Close this fire">✕</button>`
+      : "";
+  };
+  const onPillClick = (e: Event) => {
+    const btn = (e.target as HTMLElement)?.closest("button");
+    if (!btn || !firePill) return;
+    // Gone at once, not on the next sync: the pop lands on a later popstate,
+    // and a second tap before it would compute its target from a stale stack
+    // (a double ✕ overshoots, from a shallow stack right off the site).
+    firePill.hidden = true;
+    firePill.innerHTML = "";
+    // Show: the fire is the entry directly beneath. ✕: unwind the fire too,
+    // landing on whatever it was opened from (the map, or search results).
+    if (btn.classList.contains("fp-show")) nav.back();
+    else if (btn.classList.contains("fp-close")) nav.backTo(nav.stack.length - 3);
+  };
+  firePill?.addEventListener("click", onPillClick);
+  offs.push(() => firePill?.removeEventListener("click", onPillClick));
+
   const sync = (stack: readonly (typeof nav.top)[]) => {
     const current = stack[stack.length - 1];
     view?.setAttribute("data-view", current.view);
@@ -139,6 +176,7 @@ export function createShell(deps: ShellDeps): Shell {
     document.body.dataset.view = current.view;
     if (current.view !== "compare") document.body.classList.remove("compare-mode");
     renderBar(stack);
+    renderFirePill(stack);
     // Every view change can change what #timeline shows (a fire card swaps in
     // its own title/series), so the measured --timebar can go stale here too.
     syncTimebar();
@@ -220,7 +258,13 @@ export function createShell(deps: ShellDeps): Shell {
   /** Open a rail view. Re-tapping the icon of the view you are already on is a
    *  no-op rather than a second identical entry, so back does not need two
    *  presses to undo one deliberate action. */
+  /** Set while a rail tap waits for the fire's pop to land. Expires, like
+   *  nav's own pending window, so a swallowed popstate cannot leave the rail
+   *  dead — or a stale listener to open a view on some later, unrelated
+   *  stack change. */
+  let closingFireUntil = 0;
   const openRail = (view: ViewId, title: string, enter?: () => void) => {
+    if (performance.now() < closingFireUntil) return; // the fire's pop is still in flight
     // The icon is a toggle: tapping the one you are already on closes it.
     // It used to be a no-op, which left the icon looking like a dead control
     // and made the back bar the only way out of a panel the same icon had
@@ -230,8 +274,35 @@ export function createShell(deps: ShellDeps): Shell {
       nav.back();
       return;
     }
+    // Search and the historical lookup render into #panel, which is the fire
+    // card's own element. Stacked over a fire they overwrote its card, and
+    // backing out landed on a "detail" entry showing the search list. They
+    // are ways to find ANOTHER fire, so they close this one first. The pop is
+    // asynchronous (nav only moves on popstate), hence the one-shot listener.
+    const fireAt = nav.stack.findIndex((e) => e.view === "detail");
+    if (fireAt > 0 && (view === "search" || view === "historical")) {
+      closingFireUntil = performance.now() + 1000;
+      const off = nav.onChange((stack) => {
+        off();
+        const late = performance.now() >= closingFireUntil;
+        closingFireUntil = 0;
+        if (late || stack.some((e) => e.view === "detail")) return;
+        // Opened from search: popping the fire already restored the results.
+        if (nav.top.view === view) return;
+        enter?.();
+        nav.push({ view, title, restore: enter });
+      });
+      nav.backTo(fireAt - 1);
+      return;
+    }
     enter?.();
-    nav.push({ view, title, restore: enter });
+    // ⚙ ↔ ℹ over a fire swap in place, so the fire stays directly beneath:
+    // the back bar then names it, and the fire pill can reach it in one pop.
+    const under = nav.stack[nav.stack.length - 2];
+    const railOverFire =
+      under?.view === "detail" && (nav.top.view === "layers" || nav.top.view === "info");
+    if (railOverFire) nav.replace({ view, title, restore: enter });
+    else nav.push({ view, title, restore: enter });
   };
   const bindRail = (id: string, view: ViewId, title: string, enter?: () => void) => {
     const el = document.getElementById(id);

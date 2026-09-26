@@ -62,6 +62,77 @@ describe("nav stack", () => {
     expect(nav.stack.map((e) => e.view)).toEqual(["map"]);
   });
 
+  it("backTo(depth) unwinds to that depth in one navigation", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    const seen: string[] = [];
+    nav.onExit("detail", () => seen.push("detail"));
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    nav.push(entry("layers", "Layers"));
+    const spy = vi.spyOn(history, "go");
+    nav.backTo(1);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith(-2);
+    expect(nav.stack.map((e) => e.view)).toEqual(["map", "search"]);
+    expect(seen).toEqual(["detail"]);
+  });
+
+  it("ignores back/backTo/reset while its own navigation awaits popstate", () => {
+    // A browser answers history.back()/go() with popstate LATER. Until then
+    // the cursor is stale, and a second request computed from it overshoots:
+    // a double tap on "‹" at depth 1 used to walk right off the site.
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.push(entry("search", "Search"));
+    nav.push(entry("detail", "Pedrógão"));
+    const queued: number[] = [];
+    const realGo = history.go.bind(history);
+    vi.spyOn(history, "go").mockImplementation((d) => void queued.push(d));
+    vi.spyOn(history, "back").mockImplementation(() => void queued.push(-1));
+    nav.back();
+    nav.back();
+    nav.backTo(0);
+    nav.reset();
+    expect(queued).toEqual([-1]);
+    // The popstate lands; nav answers requests again.
+    realGo(queued.shift()!);
+    expect(nav.top.view).toBe("search");
+    nav.back();
+    expect(queued).toEqual([-1]);
+  });
+
+  it("stops waiting for a popstate that never lands, so back can never freeze", () => {
+    // A frozen tab or a bfcache round trip can swallow the popstate; without
+    // an expiry every later "‹", Escape and ✕ would be a silent no-op.
+    vi.useFakeTimers();
+    try {
+      const { history, target } = fakeHistory();
+      const nav = createNav({ history, target });
+      nav.push(entry("detail", "Pedrógão"));
+      const back = vi.spyOn(history, "back").mockImplementation(() => {});
+      nav.back();
+      nav.back();
+      expect(back).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(1500);
+      nav.back();
+      expect(back).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backTo() at or above the current depth is a no-op", () => {
+    const { history, target } = fakeHistory();
+    const nav = createNav({ history, target });
+    nav.push(entry("detail", "Pedrógão"));
+    const spy = vi.spyOn(history, "go");
+    nav.backTo(1);
+    nav.backTo(5);
+    expect(spy).not.toHaveBeenCalled();
+    expect(nav.stack).toHaveLength(2);
+  });
+
   it("calls onExit for every level it unwinds, deepest first", () => {
     const { history, target } = fakeHistory();
     const nav = createNav({ history, target });
