@@ -8,7 +8,7 @@ dependencies = [
     "duckdb>=1.0",
     "global-land-mask>=1.0.0",
     "h3>=4.0",
-    "pyarrow>=25.0.1",
+    "pyarrow>=26.0.0",
     "requests>=2.32",
 ]
 
